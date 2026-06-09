@@ -14,6 +14,7 @@ from pydantic_ai.models import Model
 
 from .a2a import ask_agent, neighbor_instructions
 from .capabilities import make_dev_toolset
+from .history import compaction_capability
 from .models_domain import AgentSpec
 from .persona import build_instructions
 from .todos import AgentDeps, write_todos
@@ -34,6 +35,7 @@ def build_agent(spec: AgentSpec, *, model: Model, dev_tools: DevTools) -> Agent[
         instructions=build_instructions(spec),
         toolsets=[make_dev_toolset(dev_tools)],
         tools=[write_todos, ask_agent],
+        capabilities=[compaction_capability()],
     )
 
     @agent.instructions

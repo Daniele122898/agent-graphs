@@ -178,15 +178,19 @@ Goal: `history_processors` compaction (persona stays in instructions, never
 touched); the gateway as the chokepoint ALL model calls route through, with the
 per-session parallel/serial toggle; per-session write-lock confirmed correct.
 
-- [ ] 6.1 `persona.py`/`history.py` — compaction history processor (summarize-
-      oldest / slice-recent, keep tool-call pairs together; trigger near limit).
-- [ ] 6.2 `gateway.py` — parallel pass-through | serial `Semaphore(1)`; route
-      every model call (turns, ask_agent, reviewer, compaction) through it.
-- [ ] 6.3 Per-session serial/parallel toggle + "waiting for model slot" SSE.
-- [ ] 6.4 Tests: `test_gateway.py` (serial admits one at a time; parallel
-      doesn't serialize; per-session isolation), `test_history.py` (compaction
-      keeps instructions + tool-call pairs; triggers at threshold).
-- [ ] 6.5 All tests pass → **commit**.
+- [x] 6.1 `history.py` — `compact_history` (pure slice-recent; cuts only at a
+      clean user-prompt boundary so tool-call/return pairs never orphan) +
+      `compaction_capability()`; wired into every agent via `ProcessHistory`.
+- [x] 6.2 `gateway.py` — `Gateway.slot()` (serial `Semaphore(1)` | parallel
+      no-op) + `GatedModel(WrapperModel)` so every model call (turns, ask_agent,
+      reviewer, compaction) routes through the session gateway.
+- [x] 6.3 Per-session mode toggle `POST /api/session/mode` + header control;
+      `model_wait` SSE event via the gateway's `on_wait` callback.
+- [x] 6.4 Tests: `test_gateway.py` (serial non-interleave, parallel interleave,
+      on_wait fires, per-session isolation, GatedModel transparent),
+      `test_history.py` (no-op below threshold, user-anchored window, no orphaned
+      tool returns).
+- [x] 6.5 All tests pass (75 + 1 skipped) + frontend builds → **commit**.
 
 ## Phase 7 — Team library
 
@@ -239,7 +243,7 @@ plus polish items as time allows.
 | 3 | Long-lived tasks | ✅ done (50 tests) |
 | 4 | Agent-to-agent | ✅ done (56 tests) |
 | 5 | Task system | ✅ done (66 tests + e2e) |
-| 6 | Compaction + gateway | not started |
+| 6 | Compaction + gateway | ✅ done (75 tests) |
 | 7 | Team library | not started |
 | 8 | Multi-session | not started |
 | 9 | Snapshot/resume + polish | not started |

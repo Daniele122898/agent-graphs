@@ -28,9 +28,10 @@ from pydantic_ai import Agent
 from . import db as db_module
 from .a2a import MessageLog
 from .agent_state import AgentStateStore
+from .gateway import GatedModel
 from .graph import validate_structure
 from .models import resolve_model
-from .models_domain import AgentSpec, Capabilities, GraphNode, TeamGraph
+from .models_domain import AgentSpec, Capabilities, GraphNode, SessionMode, TeamGraph
 from .runtime import RunningAgent
 from .sessions import Session, SessionManager
 from .stats import lmstudio_models
@@ -130,6 +131,14 @@ def create_app(
         session = app.state.sessions.get(app.state.default_session_id)
         if session is None:
             raise HTTPException(500, "no default session")
+        return session.info().model_dump()
+
+    @app.post("/api/session/mode")
+    def set_mode(body: ModeRequest) -> dict:
+        """Toggle the LLM execution gateway mode for this session: parallel
+        (default) or serial (low-spec, one model call at a time)."""
+        session = _default_session(app)
+        session.gateway.set_mode(body.mode)
         return session.info().model_dump()
 
     @app.get("/api/team")
@@ -256,6 +265,10 @@ class NewTaskRequest(BaseModel):
     completion_signal: str = "self_reported"
 
 
+class ModeRequest(BaseModel):
+    mode: SessionMode
+
+
 class RunRequest(BaseModel):
     prompt: str
 
@@ -294,7 +307,7 @@ def _make_task_runner(app: FastAPI, session: Session) -> TaskRunner:
         if spec is None:
             return ReviewVerdict(approved=True, critique=f"(no reviewer '{reviewer_id}'; auto-approved)")
         reviewer = Agent(
-            model=resolve_model(spec.model),
+            model=GatedModel(resolve_model(spec.model), session.gateway),
             output_type=ReviewVerdict,
             instructions=(spec.persona or f"You are {spec.name}.") + REVIEW_GUIDANCE,
         )

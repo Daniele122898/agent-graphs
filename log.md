@@ -82,6 +82,34 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   (add node, drag-connect) are standard React Flow and will be exercised
   for real once an agent is wired up (Phase 2).
 
+## Phase 6 — Compaction + LLM execution gateway
+
+### 2026-06-09 — Decisions
+
+- **Compaction is slice-recent, not summarize-oldest (v1).** Deterministic and
+  needs no extra model call. The only hard requirement is correctness: the kept
+  window must begin at a clean boundary (a `ModelRequest` with a real
+  `UserPromptPart`), never mid tool-call/return pair — else the model sees an
+  orphaned tool result. If no clean boundary exists in the tail, leave history
+  intact. Persona is untouched because it lives in `instructions`, not history.
+- **History processing is a pydantic-ai *capability* (`ProcessHistory`) in
+  1.x**, not an `Agent(history_processors=...)` kwarg (that param doesn't exist
+  in 1.106). Added to every agent via `compaction_capability()`.
+- **The gateway serializes at the *model-call* level via `GatedModel`
+  (a `WrapperModel`), not by wrapping whole agent runs.** Wrapping whole runs
+  with a `Semaphore(1)` would deadlock on delegation (the parent run holds the
+  slot while `ask_agent` waits for it). Gating each `request`/`request_stream`
+  means turns, delegations, reviewer gates, and compaction all serialize
+  correctly and independently. `GatedModel` is transparent in parallel mode.
+- **`Gateway.slot()` async CM is the primitive**; `run()` is a thin wrapper.
+  `on_wait` fires when a serial slot is busy so the UI can show "waiting for
+  model slot" (`model_wait` SSE). Mode is per-session (toggle endpoint), proving
+  the gateway is not a global — a low-spec local session can serialize while a
+  hosted session runs parallel.
+- **Note:** `agent.iter()` uses `model.request` (non-stream) per node, so
+  `GatedModel.request` is the hot path; `request_stream` gating is there for
+  completeness/real streaming. This is why wrapping FunctionModel works fine.
+
 ## Phase 5 — Task system (headline milestone)
 
 ### 2026-06-09 — Task orchestration design

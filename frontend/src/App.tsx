@@ -39,8 +39,18 @@ export default function App() {
       >
         <strong>Agent Graphs</strong>
         {session && (
-          <span style={{ fontSize: 12, color: "#6b7280" }}>
-            session {session.id.slice(0, 12)} · repo {session.repo_path} · {session.mode}
+          <span style={{ fontSize: 12, color: "#6b7280", display: "flex", alignItems: "center", gap: 8 }}>
+            session {session.id.slice(0, 12)} · repo {session.repo_path}
+            <button
+              title="LLM execution gateway: serial = one model call at a time (low-spec)"
+              onClick={() => {
+                const next = session.mode === "serial" ? "parallel" : "serial";
+                api.setMode(next).then(setSession);
+              }}
+              style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #d1d5db", borderRadius: 6, cursor: "pointer", background: "white" }}
+            >
+              {session.mode}
+            </button>
           </span>
         )}
         <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>

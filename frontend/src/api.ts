@@ -15,6 +15,12 @@ async function json<T>(res: Response): Promise<T> {
 export const api = {
   health: () => fetch("/health").then(json<{ status: string; tables: string[]; sessions: number }>),
   session: () => fetch("/api/session").then(json<SessionInfo>),
+  setMode: (mode: "parallel" | "serial") =>
+    fetch("/api/session/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    }).then(json<SessionInfo>),
   getGraph: () => fetch("/api/team/graph").then(json<TeamGraph>),
   putGraph: (graph: TeamGraph) =>
     fetch("/api/team/graph", {

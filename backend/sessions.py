@@ -96,8 +96,13 @@ class Session:
 
         # Per-session infrastructure — NOT global singletons.
         self.write_lock = asyncio.Lock()
-        self.gateway = Gateway(mode=mode)
         self.bus = EventBus(session_id)
+        # The gateway publishes "waiting for model slot" so the UI can show why
+        # an agent is momentarily idle in serial mode.
+        self.gateway = Gateway(
+            mode=mode,
+            on_wait=lambda: self.bus.publish("model_wait", {"session_id": session_id}),
+        )
         self.registry = AgentRegistry()
         self.usage = UsageTally()
 

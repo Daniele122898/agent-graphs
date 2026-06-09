@@ -26,6 +26,7 @@ from pydantic_ai.models import Model
 
 from .a2a import Delegator, MessageLog
 from .agents import build_agent
+from .gateway import GatedModel
 from .models import resolve_model
 from .models_domain import AgentSpec
 from .streaming import run_agent_streamed
@@ -62,7 +63,9 @@ class RunningAgent:
         self._bash_runner = bash_runner
         self._model_resolver = model_resolver
 
-        self.agent = build_agent(spec, model=model, dev_tools=self._dev_tools(spec))
+        # Route this agent's model calls through the session gateway (serial on
+        # low-spec machines, pass-through otherwise).
+        self.agent = build_agent(spec, model=GatedModel(model, session.gateway), dev_tools=self._dev_tools(spec))
 
         # A delegator lets this agent (and its delegation targets) consult
         # neighbors via ask_agent. Targets are built on demand with their own
@@ -77,7 +80,8 @@ class RunningAgent:
         return DevTools(self.session.repo_root, spec.capabilities, **kwargs)
 
     def _build_target(self, spec: AgentSpec):
-        return build_agent(spec, model=self._model_resolver(spec.model), dev_tools=self._dev_tools(spec))
+        model = GatedModel(self._model_resolver(spec.model), self.session.gateway)
+        return build_agent(spec, model=model, dev_tools=self._dev_tools(spec))
 
     # lifecycle ---------------------------------------------------------
 
