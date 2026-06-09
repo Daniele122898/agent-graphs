@@ -36,6 +36,8 @@ export default function AgentTab({
     return (last?.data?.todos as TodoItem[] | undefined) ?? [];
   }, [mine]);
 
+  const busy = lifecycle === "running" || lifecycle === "waiting-on-agent";
+
   const run = async () => {
     if (!prompt.trim()) return;
     setPosting(true);
@@ -45,6 +47,10 @@ export default function AgentTab({
     } finally {
       setPosting(false);
     }
+  };
+
+  const stop = async () => {
+    await api.stopAgent(agentId);
   };
 
   return (
@@ -57,16 +63,19 @@ export default function AgentTab({
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
         rows={3}
-        placeholder="Give this agent a task…"
+        placeholder={busy ? "Interject a message (runs after the current step)…" : "Give this agent a task…"}
         style={{ width: "100%", padding: 6, fontFamily: "inherit", resize: "vertical" }}
       />
-      <button
-        onClick={run}
-        disabled={posting || !prompt.trim()}
-        style={{ alignSelf: "flex-start", padding: "6px 14px", cursor: "pointer" }}
-      >
-        {posting ? "starting…" : "Run"}
-      </button>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={run} disabled={posting || !prompt.trim()} style={{ padding: "6px 14px", cursor: "pointer" }}>
+          {posting ? "starting…" : busy ? "Interject" : "Run"}
+        </button>
+        {busy && (
+          <button onClick={stop} style={{ padding: "6px 14px", cursor: "pointer", color: "crimson" }}>
+            Stop
+          </button>
+        )}
+      </div>
 
       {todos.length > 0 && (
         <div style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: 8, background: "white" }}>

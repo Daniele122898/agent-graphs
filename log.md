@@ -82,6 +82,33 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   (add node, drag-connect) are standard React Flow and will be exercised
   for real once an agent is wired up (Phase 2).
 
+## Phase 3 — Long-lived tasks
+
+### 2026-06-09 — RunningAgent and interjection semantics
+
+- **An agent is a durable `asyncio` worker with an inbox queue, not a
+  request handler.** `RunningAgent` (`backend/runtime.py`) loops: pull a prompt,
+  run it (history threaded so follow-ups build on context), persist, return to
+  idle if nothing queued.
+- **Interjection is *queued*, not spliced mid-turn — a deliberate, honest
+  choice.** Pydantic AI runs a whole multi-turn `iter` to completion; you can't
+  inject a user message between its internal model turns. So an interjection
+  submitted while running is processed the instant the current run finishes,
+  with full history — which reads as continuous work. The agent stays visibly
+  "running" while items are queued. To *truly* interrupt, `stop()` cancels the
+  in-flight run. Documented in the module + the UI button morphs Run→Interject.
+- **`stop()` cancels cleanly without marking blocked.** `CancelledError` is
+  re-raised past the `except Exception` handler (it's `BaseException` in 3.13),
+  so a deliberate stop never looks like a failure; `stop()` then sets `idle`.
+  Tested by `test_stop_is_clean_and_does_not_mark_blocked`.
+- **`agent_state` is written continuously from Phase 3** (per spec), serialized
+  via `ModelMessagesTypeAdapter` so a stored history round-trips back into
+  `message_history`. Only the resume *rehydration* UI is deferred to Phase 9.
+- **RunningAgent caches its resolved model.** Editing an agent's model in the
+  Capabilities tab won't affect a running worker until it's stopped (then the
+  next run recreates it with the new model). Acceptable for the MVP; revisit if
+  hot model-swap is wanted.
+
 ## Phase 2 — Single working agent + tools
 
 ### 2026-06-09 — The edit tool: line-range + content-hash + edit-token

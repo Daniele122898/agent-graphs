@@ -14,7 +14,6 @@ tests spin up an isolated app against a temp DB and temp repo. Run for real with
 
 from __future__ import annotations
 
-import asyncio
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,15 +24,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from . import db as db_module
-from .agents import build_agent
+from .agent_state import AgentStateStore
 from .graph import validate_structure
 from .models import resolve_model
 from .models_domain import AgentSpec, Capabilities, GraphNode, TeamGraph
+from .runtime import RunningAgent
 from .sessions import Session, SessionManager
 from .stats import lmstudio_models
-from .streaming import run_agent_streamed, sse_stream
-from .todos import AgentDeps
-from .tools import DevTools
+from .streaming import sse_stream
 from .teams import TeamStore
 
 
@@ -84,14 +82,15 @@ def create_app(
         app.state.conn = conn
         app.state.teams = teams
         app.state.sessions = sessions
+        app.state.agent_state = AgentStateStore(conn)
         app.state.default_team_id = team.id
         app.state.default_session_id = session.id
-        app.state.running_tasks = set()
         try:
             yield
         finally:
-            for t in list(app.state.running_tasks):
-                t.cancel()
+            for s in sessions.list():
+                for ra in s.registry.all_running():
+                    await ra.stop()  # type: ignore[attr-defined]
             conn.close()
 
     app = FastAPI(title="Agent Graphs", lifespan=lifespan)
@@ -161,34 +160,28 @@ def create_app(
 
     @app.post("/api/agent/{agent_id}/run")
     async def run_agent(agent_id: str, body: RunRequest) -> dict:
-        session = _default_session(app)
-        spec = _find_spec(session, agent_id)
-        if spec is None:
-            raise HTTPException(404, f"no agent '{agent_id}' in this session")
-
-        dev = DevTools(session.repo_root, spec.capabilities, write_lock=session.write_lock)
-        agent = build_agent(spec, model=resolve_model(spec.model), dev_tools=dev)
-        deps = AgentDeps(session_id=session.id, agent_id=agent_id)
-
-        async def _run() -> None:
-            try:
-                await run_agent_streamed(
-                    bus=session.bus,
-                    registry=session.registry,
-                    agent_id=agent_id,
-                    agent=agent,
-                    prompt=body.prompt,
-                    deps=deps,
-                    usage_tally=session.usage,
-                )
-            except Exception:  # noqa: BLE001 — already surfaced via agent_error
-                pass
-
-        # Fire-and-forget background task (Phase 3 formalizes the lifecycle).
-        task = asyncio.create_task(_run())
-        app.state.running_tasks.add(task)
-        task.add_done_callback(app.state.running_tasks.discard)
+        """Give a long-lived agent a prompt. Creates+starts the RunningAgent on
+        first use; thereafter the same worker handles follow-ups with history."""
+        ra = _get_or_create_running(app, agent_id)
+        ra.submit(body.prompt)
         return {"status": "started", "agent_id": agent_id}
+
+    @app.post("/api/agent/{agent_id}/interject")
+    async def interject_agent(agent_id: str, body: RunRequest) -> dict:
+        """Inject a message. If the agent is running, it's processed right after
+        the current run (with full history); if idle, it runs now."""
+        ra = _get_or_create_running(app, agent_id)
+        ra.submit(body.prompt)
+        return {"status": "queued", "agent_id": agent_id}
+
+    @app.post("/api/agent/{agent_id}/stop")
+    async def stop_agent(agent_id: str) -> dict:
+        session = _default_session(app)
+        ra = session.registry.running(agent_id)
+        if ra is not None:
+            await ra.stop()  # type: ignore[attr-defined]
+            session.registry.detach_running(agent_id)  # allow a fresh start
+        return {"status": "stopped", "agent_id": agent_id}
 
     @app.get("/api/stats/models")
     async def stats_models() -> dict:
@@ -223,6 +216,25 @@ def _find_spec(session: Session, agent_id: str) -> AgentSpec | None:
         if node.spec.id == agent_id:
             return node.spec
     return None
+
+
+def _get_or_create_running(app: FastAPI, agent_id: str) -> RunningAgent:
+    session = _default_session(app)
+    existing = session.registry.running(agent_id)
+    if existing is not None:
+        return existing  # type: ignore[return-value]
+    spec = _find_spec(session, agent_id)
+    if spec is None:
+        raise HTTPException(404, f"no agent '{agent_id}' in this session")
+    ra = RunningAgent(
+        session=session,
+        spec=spec,
+        model=resolve_model(spec.model),
+        state_store=app.state.agent_state,
+    )
+    session.registry.attach_running(agent_id, ra)
+    ra.start()
+    return ra
 
 
 app = create_app()

@@ -54,9 +54,16 @@ async def run_agent_streamed(
     prompt: str,
     deps: AgentDeps,
     usage_tally=None,
+    message_history: list | None = None,
+    history_out: list | None = None,
 ) -> str:
     """Run an agent to completion, publishing its work to the bus and driving the
     agent's lifecycle. Returns the final output text.
+
+    ``message_history`` continues a prior conversation (so follow-ups and
+    interjections build on context). If ``history_out`` is provided, it is
+    replaced in-place with the full message list after the run, so the caller
+    (a ``RunningAgent``) can persist and continue.
 
     On error, the agent lands in ``blocked`` (the user's attention) and an
     ``agent_error`` event is published — never a silent failure.
@@ -64,7 +71,7 @@ async def run_agent_streamed(
     registry.set_lifecycle(agent_id, "running")
     bus.publish("agent_lifecycle", {"agent_id": agent_id, "lifecycle": "running"})
     try:
-        async with agent.iter(prompt, deps=deps) as run:
+        async with agent.iter(prompt, deps=deps, message_history=message_history) as run:
             async for node in run:
                 if Agent.is_model_request_node(node):
                     bus.publish("model_request", {"agent_id": agent_id})
@@ -98,14 +105,17 @@ async def run_agent_streamed(
                     # tab's todo list stays live.
                     bus.publish("todos", {"agent_id": agent_id, "todos": _todos_payload(deps)})
             output = run.result.output if run.result else ""
-            if usage_tally is not None and run.result is not None:
-                u = run.result.usage()
-                usage_tally.add(
-                    agent_id,
-                    requests=u.requests,
-                    input_tokens=u.input_tokens,
-                    output_tokens=u.output_tokens,
-                )
+            if run.result is not None:
+                if usage_tally is not None:
+                    u = run.result.usage
+                    usage_tally.add(
+                        agent_id,
+                        requests=u.requests,
+                        input_tokens=u.input_tokens,
+                        output_tokens=u.output_tokens,
+                    )
+                if history_out is not None:
+                    history_out[:] = run.result.all_messages()
         registry.set_lifecycle(agent_id, "done")
         bus.publish("agent_done", {"agent_id": agent_id, "output": str(output)})
         return str(output)

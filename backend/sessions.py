@@ -41,9 +41,24 @@ class AgentRegistry:
 
     def __init__(self) -> None:
         self._lifecycle: dict[str, AgentLifecycle] = {}
+        # RunningAgent objects, kept untyped here to avoid a circular import with
+        # runtime.py. Populated lazily when an agent is first run.
+        self._running: dict[str, object] = {}
 
     def register(self, agent_id: str, lifecycle: AgentLifecycle = "idle") -> None:
         self._lifecycle[agent_id] = lifecycle
+
+    def attach_running(self, agent_id: str, running: object) -> None:
+        self._running[agent_id] = running
+
+    def detach_running(self, agent_id: str) -> None:
+        self._running.pop(agent_id, None)
+
+    def running(self, agent_id: str) -> object | None:
+        return self._running.get(agent_id)
+
+    def all_running(self) -> list[object]:
+        return list(self._running.values())
 
     def lifecycle(self, agent_id: str) -> AgentLifecycle | None:
         return self._lifecycle.get(agent_id)

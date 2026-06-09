@@ -110,17 +110,20 @@ Goal: each agent runs as a background `asyncio` task with a lifecycle
 (idle/running/waiting-on-agent/blocked/done) owned by the session registry; can
 interject mid-run; status shown on canvas nodes.
 
-- [ ] 3.1 `runtime.py` — `RunningAgent`: long-lived task wrapper + lifecycle
-      state machine + inbox for interjections.
-- [ ] 3.2 Wire registry to spawn/track/stop RunningAgents per session.
-- [ ] 3.3 Endpoints: start an agent on a prompt, interject, stop; lifecycle
-      events on the SSE bus.
-- [ ] 3.4 `agent_state` persistence written continuously as state changes.
-- [ ] 3.5 Frontend: live lifecycle badge on `AgentNode`; interject box in Agent
-      tab.
-- [ ] 3.6 Tests: `test_runtime.py` (lifecycle transitions; interjection
-      delivered; stop is clean) — driven with FunctionModel.
-- [ ] 3.7 All tests pass → **commit**.
+- [x] 3.1 `runtime.py` — `RunningAgent`: long-lived `asyncio` task + inbox
+      queue + lifecycle + history continuity + clean stop (cancel mid-run
+      without marking blocked).
+- [x] 3.2 Registry tracks RunningAgents (`attach/detach/running`); created on
+      first run, stopped on shutdown.
+- [x] 3.3 Endpoints: run / interject / stop; lifecycle events on the SSE bus.
+- [x] 3.4 `agent_state.py` — `AgentStateStore` persists history (serialized via
+      `ModelMessagesTypeAdapter`) + lifecycle + usage continuously after each
+      run (resume rehydration deferred to Phase 9).
+- [x] 3.5 Frontend: lifecycle badge on `AgentNode` (from SSE); Agent tab gains
+      Interject + Stop (button morphs Run→Interject while busy).
+- [x] 3.6 Tests: `test_runtime.py` (idle→running→idle; interjection continues
+      with history; stop is clean & not blocked; state persisted+reloadable).
+- [x] 3.7 All tests pass (50 + 1 skipped) + frontend builds → **commit**.
 
 ## Phase 4 — Agent-to-agent communication
 
@@ -223,7 +226,7 @@ plus polish items as time allows.
 | 0 | Skeleton + seams | ✅ done (13 tests) |
 | 1 | Graph MVP | ✅ done (21 tests + build) |
 | 2 | Single working agent + tools | ✅ done (46 tests + live) |
-| 3 | Long-lived tasks | not started |
+| 3 | Long-lived tasks | ✅ done (50 tests) |
 | 4 | Agent-to-agent | not started |
 | 5 | Task system | not started |
 | 6 | Compaction + gateway | not started |

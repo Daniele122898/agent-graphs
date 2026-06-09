@@ -28,6 +28,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt }),
     }).then(json<{ status: string; agent_id: string }>),
+  stopAgent: (agentId: string) =>
+    fetch(`/api/agent/${agentId}/stop`, { method: "POST" }).then(
+      json<{ status: string; agent_id: string }>
+    ),
   lmstudioModels: () =>
     fetch("/api/stats/models").then(json<{ models: LMStudioModel[]; error: string | null }>),
   usage: (agentId: string) =>
