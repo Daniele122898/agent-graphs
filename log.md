@@ -82,6 +82,22 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   (add node, drag-connect) are standard React Flow and will be exercised
   for real once an agent is wired up (Phase 2).
 
+## Phase 7 — Team library
+
+### 2026-06-09 — Pin semantics made explicit
+
+- **`_apply_team_graph(team_id, graph)` is the one place graph edits land**, used
+  by both the default `/api/team/graph` and the new `/api/teams/{id}/graph`. It
+  syncs the running session's in-memory graph **only if** that session is bound
+  to the edited team. Editing any *other* saved team (a library template) never
+  touches a running session — that's the pin-at-launch guarantee, now
+  test-enforced (`test_editing_a_template_does_not_mutate_a_running_session`).
+- **The editor became team-scoped on the frontend** (`useTeamGraph(teamId)` +
+  `snapshot()`), with a header team selector (load-into-editor) and "Save as…".
+  The session's own team is marked "(session)" so it's clear which one is live.
+  This is the whole price of the team library — the runtime already supported
+  multiple team definitions; only the CRUD endpoints + a selector were missing.
+
 ## Phase 6 — Compaction + LLM execution gateway
 
 ### 2026-06-09 — Decisions

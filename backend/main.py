@@ -157,23 +157,46 @@ def create_app(
 
     @app.put("/api/team/graph")
     def put_graph(graph: TeamGraph) -> dict:
+        return _apply_team_graph(app, app.state.default_team_id, graph)
+
+    # --- team library (Phase 7) --------------------------------------------
+
+    @app.get("/api/teams")
+    def list_teams() -> dict:
+        return {"teams": [t.model_dump() for t in app.state.teams.list()]}
+
+    @app.post("/api/teams")
+    def create_team(body: NewTeamRequest) -> dict:
+        graph = body.graph or TeamGraph()
         errors = validate_structure(graph)
         if errors:
             raise HTTPException(422, {"errors": errors})
-        team = app.state.teams.update_graph(app.state.default_team_id, graph)
+        return app.state.teams.create(body.name, graph).model_dump()
+
+    @app.get("/api/teams/{team_id}")
+    def get_team(team_id: str) -> dict:
+        team = app.state.teams.get(team_id)
         if team is None:
-            raise HTTPException(500, "no default team")
-        # Reflect the edited graph into the running session so a freshly-added
-        # agent can be run immediately. (A session normally pins its definition
-        # at launch; in the single-session MVP the editor and the running
-        # session are the same team, so we keep them in sync. Phase 7/8 make the
-        # pin-vs-edit distinction explicit.)
-        session = _default_session(app)
-        session.graph = team.graph
-        for node in team.graph.nodes:
-            if session.registry.lifecycle(node.spec.id) is None:
-                session.registry.register(node.spec.id, "idle")
+            raise HTTPException(404, "no such team")
+        return team.model_dump()
+
+    @app.get("/api/teams/{team_id}/graph")
+    def get_team_graph(team_id: str) -> dict:
+        team = app.state.teams.get(team_id)
+        if team is None:
+            raise HTTPException(404, "no such team")
         return team.graph.model_dump()
+
+    @app.put("/api/teams/{team_id}/graph")
+    def put_team_graph(team_id: str, graph: TeamGraph) -> dict:
+        return _apply_team_graph(app, team_id, graph)
+
+    @app.post("/api/teams/{team_id}/rename")
+    def rename_team(team_id: str, body: RenameRequest) -> dict:
+        team = app.state.teams.rename(team_id, body.name)
+        if team is None:
+            raise HTTPException(404, "no such team")
+        return team.model_dump()
 
     @app.get("/events")
     async def events() -> StreamingResponse:
@@ -263,6 +286,37 @@ class NewTaskRequest(BaseModel):
     title: str = ""
     assigned_agent_id: str | None = None
     completion_signal: str = "self_reported"
+
+
+class NewTeamRequest(BaseModel):
+    name: str
+    graph: TeamGraph | None = None
+
+
+class RenameRequest(BaseModel):
+    name: str
+
+
+def _apply_team_graph(app: FastAPI, team_id: str, graph: TeamGraph) -> dict:
+    """Validate + persist a team's graph. If the team is the one a running
+    session is currently bound to, also sync the session's *pinned* graph so the
+    editor doubles as the live control room for that session. Editing any *other*
+    team (a template in the library) never mutates a running session — that's the
+    pin-at-launch guarantee.
+    """
+    errors = validate_structure(graph)
+    if errors:
+        raise HTTPException(422, {"errors": errors})
+    team = app.state.teams.update_graph(team_id, graph)
+    if team is None:
+        raise HTTPException(404, "no such team")
+    for session in app.state.sessions.list():
+        if session.team_id == team_id:
+            session.graph = team.graph
+            for node in team.graph.nodes:
+                if session.registry.lifecycle(node.spec.id) is None:
+                    session.registry.register(node.spec.id, "idle")
+    return team.graph.model_dump()
 
 
 class ModeRequest(BaseModel):

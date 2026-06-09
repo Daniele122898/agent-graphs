@@ -198,12 +198,16 @@ Goal: save current graph as a named team; list; load into editor. Pure CRUD on
 `teams`; runtime already supports it. Enforce "session pins its definition at
 launch."
 
-- [ ] 7.1 Backend: team CRUD endpoints (already have store; add list/save/load).
-- [ ] 7.2 Session pins (copies/versions) the team definition at launch.
-- [ ] 7.3 Frontend: save-as / team list / load-into-editor UI.
-- [ ] 7.4 Tests: `test_teams.py` (CRUD; editing template doesn't mutate a
-      running session's pinned definition).
-- [ ] 7.5 All tests pass → **commit**.
+- [x] 7.1 Backend: team CRUD endpoints — `GET/POST /api/teams`,
+      `GET /api/teams/{id}`, `GET/PUT /api/teams/{id}/graph`, rename. Shared
+      `_apply_team_graph` helper validates + persists.
+- [x] 7.2 Session pins its definition at launch (graph copied at create);
+      `_apply_team_graph` syncs *only* the session bound to that team.
+- [x] 7.3 Frontend: header team selector (load-into-editor) + "Save as…";
+      graph hook is team-scoped (`useTeamGraph(teamId)` + `snapshot()`).
+- [x] 7.4 Tests: `test_teams.py` (CRUD; editing a *template* doesn't mutate a
+      running session; editing the session's own team does sync; malformed → 422).
+- [x] 7.5 All tests pass (79 + 1 skipped) + frontend builds → **commit**.
 
 ## Phase 8 — Multi-session
 
@@ -244,6 +248,6 @@ plus polish items as time allows.
 | 4 | Agent-to-agent | ✅ done (56 tests) |
 | 5 | Task system | ✅ done (66 tests + e2e) |
 | 6 | Compaction + gateway | ✅ done (75 tests) |
-| 7 | Team library | not started |
+| 7 | Team library | ✅ done (79 tests) |
 | 8 | Multi-session | not started |
 | 9 | Snapshot/resume + polish | not started |

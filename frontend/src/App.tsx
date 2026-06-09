@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import Canvas from "./Canvas";
 import Sidebar from "./Sidebar";
 import TaskBoard from "./TaskBoard";
-import { api } from "./api";
+import { api, type TeamRow } from "./api";
 import { useEvents } from "./useEvents";
 import { useTeamGraph } from "./useTeamGraph";
 import type { SessionInfo } from "./types";
@@ -10,14 +10,30 @@ import type { SessionInfo } from "./types";
 // The control room. Canvas (team graph editor) + five-tab sidebar, with a live
 // SSE event stream powering lifecycle badges and the Agent tab.
 export default function App() {
-  const graph = useTeamGraph();
+  const [activeTeamId, setActiveTeamId] = useState<string | null>(null);
+  const [teams, setTeams] = useState<TeamRow[]>([]);
+  const graph = useTeamGraph(activeTeamId);
   const { events, lifecycles, activeEdges } = useEvents();
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [view, setView] = useState<"canvas" | "board">("canvas");
 
+  const refreshTeams = () => api.listTeams().then((r) => setTeams(r.teams)).catch(() => {});
+
   useEffect(() => {
-    api.session().then(setSession).catch(() => setSession(null));
+    api.session().then((s) => {
+      setSession(s);
+      setActiveTeamId(s.team_id);
+    }).catch(() => setSession(null));
+    refreshTeams();
   }, []);
+
+  const saveAs = async () => {
+    const name = window.prompt("Save current graph as team:");
+    if (!name) return;
+    const team = await api.createTeam(name, graph.snapshot());
+    await refreshTeams();
+    setActiveTeamId(team.id);
+  };
 
   const agents = graph.nodes.map((n) => ({
     id: n.data.spec.id,
@@ -38,6 +54,23 @@ export default function App() {
         }}
       >
         <strong>Agent Graphs</strong>
+        <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+          <select
+            value={activeTeamId ?? ""}
+            onChange={(e) => setActiveTeamId(e.target.value)}
+            title="Load a team definition into the editor"
+          >
+            {teams.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+                {session && t.id === session.team_id ? " (session)" : ""}
+              </option>
+            ))}
+          </select>
+          <button onClick={saveAs} style={{ fontSize: 11, padding: "2px 8px", cursor: "pointer" }}>
+            Save as…
+          </button>
+        </span>
         {session && (
           <span style={{ fontSize: 12, color: "#6b7280", display: "flex", alignItems: "center", gap: 8 }}>
             session {session.id.slice(0, 12)} · repo {session.repo_path}

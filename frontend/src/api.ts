@@ -21,9 +21,16 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode }),
     }).then(json<SessionInfo>),
-  getGraph: () => fetch("/api/team/graph").then(json<TeamGraph>),
-  putGraph: (graph: TeamGraph) =>
-    fetch("/api/team/graph", {
+  listTeams: () => fetch("/api/teams").then(json<{ teams: TeamRow[] }>),
+  createTeam: (name: string, graph: TeamGraph) =>
+    fetch("/api/teams", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, graph }),
+    }).then(json<TeamRow>),
+  getTeamGraph: (teamId: string) => fetch(`/api/teams/${teamId}/graph`).then(json<TeamGraph>),
+  putTeamGraph: (teamId: string, graph: TeamGraph) =>
+    fetch(`/api/teams/${teamId}/graph`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(graph),
@@ -67,6 +74,11 @@ export interface TaskRow {
   completion_signal: string;
   parent_task_id: string | null;
   result: string;
+}
+
+export interface TeamRow {
+  id: string;
+  name: string;
 }
 
 export interface LMStudioModel {

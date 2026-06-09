@@ -26,7 +26,7 @@ function newAgentSpec(id: string): AgentSpec {
   };
 }
 
-export function useTeamGraph() {
+export function useTeamGraph(teamId: string | null) {
   const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -34,9 +34,14 @@ export function useTeamGraph() {
   const loaded = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // (Re)load whenever the active team changes (loading a library team into the
+  // editor). Suppress the save effect until the new graph is in place.
   useEffect(() => {
+    if (!teamId) return;
+    loaded.current = false;
+    setStatus("loading…");
     api
-      .getGraph()
+      .getTeamGraph(teamId)
       .then((g) => {
         const { nodes: n, edges: e } = toReactFlow(g);
         setNodes(n);
@@ -45,22 +50,22 @@ export function useTeamGraph() {
         setStatus("saved");
       })
       .catch((err) => setStatus(`load error: ${err}`));
-  }, [setNodes, setEdges]);
+  }, [teamId, setNodes, setEdges]);
 
   useEffect(() => {
-    if (!loaded.current) return;
+    if (!loaded.current || !teamId) return;
     setStatus("saving…");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       api
-        .putGraph(fromReactFlow(nodes, edges))
+        .putTeamGraph(teamId, fromReactFlow(nodes, edges))
         .then(() => setStatus("saved"))
         .catch((err) => setStatus(`save error: ${err}`));
     }, 600);
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [nodes, edges]);
+  }, [nodes, edges, teamId]);
 
   const onConnect = useCallback(
     (conn: Connection) =>
@@ -115,5 +120,6 @@ export function useTeamGraph() {
     selectedId,
     selectedSpec,
     status,
+    snapshot: () => fromReactFlow(nodes, edges),
   };
 }
