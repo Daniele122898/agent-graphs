@@ -152,19 +152,25 @@ Goal: full `tasks` lifecycle (queued→running→blocked→needs_review→done/�
 `parent_task_id`; safety rails (turn/depth caps → blocked; cycle guard).
 **"Give the team a task and track it to completion."**
 
-- [ ] 5.1 `tasks.py` — Task object, status state machine (pure transitions),
-      completion-signal types, caps + cycle guard (pure functions).
-- [ ] 5.2 Wire task execution to RunningAgents + delegation tree.
-- [ ] 5.3 Completion gates: self_reported, reviewer:<agent_id> (evaluator-
-      optimizer), check:<command> (programmatic, runs in repo).
-- [ ] 5.4 Endpoints + SSE for task lifecycle; `NewTaskDialog` intake.
-- [ ] 5.5 Frontend: `TaskBoard.tsx` Kanban (canvas ⇄ board toggle), sub-tasks
-      nested under parent.
-- [ ] 5.6 Tests: `test_tasks.py` (state machine, gates incl. check failure →
-      needs_revision, caps → blocked, cycle guard refuses revisit).
-- [ ] 5.7 `test_e2e_session.py` — FunctionModel end-to-end: task → todos → edit
-      → delegate → reviewer gate → done, asserting REAL repo + state changes.
-- [ ] 5.8 All tests pass → **commit**.
+- [x] 5.1 `tasks.py` — pure state machine (`ALLOWED_TRANSITIONS`,
+      `validate_transition`, `parse_completion_signal`), `TaskStore` CRUD,
+      `TaskRunner` orchestration with injected effect callables.
+- [x] 5.2 Wired task execution to `RunningAgent.run_once` (awaitable single run
+      sharing history + delegator).
+- [x] 5.3 Completion gates: self_reported → done; `check:<cmd>` runs in repo
+      (nonzero → needs_revision); `reviewer:<id>` runs a structured-output
+      (`ReviewVerdict`) reviewer agent; revision ping-pong cap → blocked.
+- [x] 5.4 Endpoints `POST/GET /api/tasks` + `GET /api/tasks/{id}`; `task_status`
+      SSE events; `NewTaskDialog` intake (prompt + agent + signal).
+- [x] 5.5 Frontend: `TaskBoard.tsx` Kanban (canvas ⇄ board toggle in header),
+      sub-tasks nested under parent, refreshes on `task_status` events.
+- [x] 5.6 Tests: `test_tasks.py` (transitions, signal parse, store round-trip,
+      all three gates incl. check-fail→revision→recover, ping-pong→blocked,
+      agent-error→blocked).
+- [x] 5.7 `test_e2e_session.py` — FunctionModel end-to-end: task → todos →
+      ask_agent(expert) → write_file → reviewer gate → done, asserting the REAL
+      file, the logged delegation, and the final `done` status.
+- [x] 5.8 All tests pass (66 + 1 skipped) + frontend builds → **commit**.
 
 ## Phase 6 — Compaction + LLM execution gateway
 
@@ -232,7 +238,7 @@ plus polish items as time allows.
 | 2 | Single working agent + tools | ✅ done (46 tests + live) |
 | 3 | Long-lived tasks | ✅ done (50 tests) |
 | 4 | Agent-to-agent | ✅ done (56 tests) |
-| 5 | Task system | not started |
+| 5 | Task system | ✅ done (66 tests + e2e) |
 | 6 | Compaction + gateway | not started |
 | 7 | Team library | not started |
 | 8 | Multi-session | not started |

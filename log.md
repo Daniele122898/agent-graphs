@@ -82,6 +82,36 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   (add node, drag-connect) are standard React Flow and will be exercised
   for real once an agent is wired up (Phase 2).
 
+## Phase 5 — Task system (headline milestone)
+
+### 2026-06-09 — Task orchestration design
+
+- **`TaskRunner` takes its effectful steps as injected callables**
+  (`run_agent`, `run_reviewer`, `run_check`). This is the key testability move:
+  the whole completion-gate + revision-loop + blocked-on-cap orchestration is
+  tested with plain fakes (no models, no subprocess) in `test_tasks.py`, while
+  `main.py` wires the real callables (RunningAgent / reviewer Agent / shell).
+- **Task execution uses `RunningAgent.run_once` (awaitable), not the `submit`
+  inbox.** The task system needs the result back to apply a gate, so it runs the
+  assigned agent to completion and returns output. `run_once` shares the same
+  agent/history/delegator as the interactive path — delegation and continuity
+  behave identically. The inbox (`submit`/`start`) remains the interactive
+  Agent-tab path; tasks never start the loop. (Caveat: running a task and
+  interjecting on the same agent simultaneously is user error; not guarded.)
+- **Reviewer gate uses structured output** (`output_type=ReviewVerdict`,
+  `{approved, critique}`) — the evaluator-optimizer pattern. On reject, the
+  critique is injected into the next run's prompt (needs_revision→running).
+  A hard `MAX_REVISION_ROUNDS=3` cap stops reviewer/check ping-pong by parking
+  the task in `blocked` (the user's attention) rather than looping forever.
+- **Turn caps:** delegation depth is capped in a2a (Phase 4); a runaway worker
+  run surfaces as an exception from the agent run, which `TaskRunner` catches →
+  `blocked` with the error in the result. No infinite loops by construction.
+- **The e2e spine test is the proof of the whole system.** `test_e2e_session.py`
+  drives task→todos→ask_agent→write_file→reviewer→done with FunctionModel and
+  asserts the REAL file content, the logged delegation, and the final status —
+  zero tokens. Green here means sandbox + toolset + delegation + gates + state
+  machine are all wired correctly together.
+
 ## Phase 4 — Agent-to-agent communication
 
 ### 2026-06-09 — Delegation design

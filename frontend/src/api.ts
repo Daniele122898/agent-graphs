@@ -38,7 +38,30 @@ export const api = {
     fetch(`/api/stats/usage/${agentId}`).then(
       json<{ requests: number; input_tokens: number; output_tokens: number }>
     ),
+  listTasks: () => fetch("/api/tasks").then(json<{ tasks: TaskRow[] }>),
+  createTask: (body: {
+    prompt: string;
+    title?: string;
+    assigned_agent_id?: string | null;
+    completion_signal?: string;
+  }) =>
+    fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(json<TaskRow>),
 };
+
+export interface TaskRow {
+  id: string;
+  title: string;
+  prompt: string;
+  assigned_agent_id: string;
+  status: string;
+  completion_signal: string;
+  parent_task_id: string | null;
+  result: string;
+}
 
 export interface LMStudioModel {
   id: string;

@@ -90,6 +90,35 @@ class RunningAgent:
         processed right after the current run (with history)."""
         self._inbox.put_nowait(prompt)
 
+    async def run_once(self, prompt: str) -> str:
+        """Run a single prompt to completion and return the output (awaitable).
+
+        Used by the task system, which needs the result back to apply a
+        completion gate — distinct from the interactive ``submit`` inbox path.
+        Shares the agent's history/delegator, so delegated work and continuity
+        behave identically.
+        """
+        history_out: list = []
+        try:
+            output = await run_agent_streamed(
+                bus=self.session.bus,
+                registry=self.session.registry,
+                agent_id=self.agent_id,
+                agent=self.agent,
+                prompt=prompt,
+                deps=self._deps,
+                usage_tally=self.session.usage,
+                message_history=self._messages or None,
+                history_out=history_out,
+            )
+            if history_out:
+                self._messages = history_out
+            return output
+        finally:
+            self._persist()
+            if self._inbox.empty():
+                self._set_lifecycle("idle")
+
     async def stop(self) -> None:
         """Cancel any in-flight run and end the loop. Idempotent."""
         self._stopped = True

@@ -14,6 +14,7 @@ tests spin up an isolated app against a temp DB and temp repo. Run for real with
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,6 +23,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from pydantic_ai import Agent
 
 from . import db as db_module
 from .a2a import MessageLog
@@ -33,7 +35,14 @@ from .runtime import RunningAgent
 from .sessions import Session, SessionManager
 from .stats import lmstudio_models
 from .streaming import sse_stream
+from .tasks import ReviewVerdict, TaskRunner, TaskStore, run_check
 from .teams import TeamStore
+
+REVIEW_GUIDANCE = (
+    "\n\nYou are acting as a reviewer. Decide whether the result fully satisfies "
+    "the task. Approve only if it does; otherwise reject with a concrete, "
+    "actionable critique of what is missing or wrong."
+)
 
 
 def _default_repo_path() -> Path:
@@ -85,6 +94,8 @@ def create_app(
         app.state.sessions = sessions
         app.state.agent_state = AgentStateStore(conn)
         app.state.messages = MessageLog(conn)
+        app.state.tasks = TaskStore(conn)
+        app.state.task_runs = set()
         app.state.default_team_id = team.id
         app.state.default_session_id = session.id
         try:
@@ -204,7 +215,45 @@ def create_app(
         session = _default_session(app)
         return {"messages": app.state.messages.for_session(session.id)}
 
+    @app.get("/api/tasks")
+    def list_tasks() -> dict:
+        session = _default_session(app)
+        return {"tasks": [t.model_dump() for t in app.state.tasks.list_for_session(session.id)]}
+
+    @app.post("/api/tasks")
+    async def create_task(body: NewTaskRequest) -> dict:
+        session = _default_session(app)
+        agent_id = body.assigned_agent_id or _default_entry_point(session)
+        if _find_spec(session, agent_id) is None:
+            raise HTTPException(404, f"no agent '{agent_id}' to assign the task to")
+        task = app.state.tasks.create(
+            session_id=session.id,
+            title=body.title or body.prompt[:60],
+            prompt=body.prompt,
+            assigned_agent_id=agent_id,
+            completion_signal=body.completion_signal,
+        )
+        runner = _make_task_runner(app, session)
+        t = asyncio.create_task(runner.run(task.id))
+        app.state.task_runs.add(t)
+        t.add_done_callback(app.state.task_runs.discard)
+        return task.model_dump()
+
+    @app.get("/api/tasks/{task_id}")
+    def get_task(task_id: str) -> dict:
+        task = app.state.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(404, "no such task")
+        return task.model_dump()
+
     return app
+
+
+class NewTaskRequest(BaseModel):
+    prompt: str
+    title: str = ""
+    assigned_agent_id: str | None = None
+    completion_signal: str = "self_reported"
 
 
 class RunRequest(BaseModel):
@@ -223,6 +272,42 @@ def _find_spec(session: Session, agent_id: str) -> AgentSpec | None:
         if node.spec.id == agent_id:
             return node.spec
     return None
+
+
+def _default_entry_point(session: Session) -> str:
+    entry = session.graph.entry_points()
+    if not entry:
+        raise HTTPException(422, "team has no entry-point agent to receive the task")
+    return entry[0]
+
+
+def _make_task_runner(app: FastAPI, session: Session) -> TaskRunner:
+    """Build a TaskRunner whose effectful steps run real agents/checks against
+    the session: the assigned agent via its RunningAgent, a reviewer agent with
+    structured ReviewVerdict output, and a shell check in the repo root."""
+
+    async def run_agent(agent_id: str, prompt: str) -> str:
+        return await _get_or_create_running(app, agent_id).run_once(prompt)
+
+    async def run_reviewer(reviewer_id: str, task_prompt: str, result: str) -> ReviewVerdict:
+        spec = _find_spec(session, reviewer_id)
+        if spec is None:
+            return ReviewVerdict(approved=True, critique=f"(no reviewer '{reviewer_id}'; auto-approved)")
+        reviewer = Agent(
+            model=resolve_model(spec.model),
+            output_type=ReviewVerdict,
+            instructions=(spec.persona or f"You are {spec.name}.") + REVIEW_GUIDANCE,
+        )
+        r = await reviewer.run(f"Task:\n{task_prompt}\n\nResult to review:\n{result}")
+        return r.output
+
+    return TaskRunner(
+        app.state.tasks,
+        run_agent=run_agent,
+        run_reviewer=run_reviewer,
+        run_check=lambda cmd: run_check(cmd, session.repo_root),
+        publish=session.bus.publish,
+    )
 
 
 def _get_or_create_running(app: FastAPI, agent_id: str) -> RunningAgent:

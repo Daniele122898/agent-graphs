@@ -22,6 +22,7 @@ const EVENT_TYPES = [
   "agent_done",
   "agent_error",
   "a2a_message",
+  "task_status",
 ];
 
 export function useEvents() {
