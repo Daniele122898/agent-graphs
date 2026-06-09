@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Database (local state)
+backend/db.sqlite
+backend/db.sqlite-*
+*.sqlite
+*.sqlite-journal
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
