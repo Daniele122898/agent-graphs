@@ -22,6 +22,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import db as db_module
+from .graph import validate_structure
 from .models_domain import AgentSpec, Capabilities, GraphNode, TeamGraph
 from .sessions import SessionManager
 from .teams import TeamStore
@@ -113,6 +114,23 @@ def create_app(
         if team is None:
             raise HTTPException(500, "no default team")
         return team.model_dump()
+
+    @app.get("/api/team/graph")
+    def get_graph() -> dict:
+        team = app.state.teams.get(app.state.default_team_id)
+        if team is None:
+            raise HTTPException(500, "no default team")
+        return team.graph.model_dump()
+
+    @app.put("/api/team/graph")
+    def put_graph(graph: TeamGraph) -> dict:
+        errors = validate_structure(graph)
+        if errors:
+            raise HTTPException(422, {"errors": errors})
+        team = app.state.teams.update_graph(app.state.default_team_id, graph)
+        if team is None:
+            raise HTTPException(500, "no default team")
+        return team.graph.model_dump()
 
     return app
 

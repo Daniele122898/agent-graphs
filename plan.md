@@ -57,16 +57,19 @@ registry/lock/gateway/bus; app auto-creates one team + one session on startup.
 Goal: editable React Flow canvas; add nodes via floating "+"; drag-to-connect
 edges; 5-tab sidebar shells; graph persists as the one team's definition.
 
-- [ ] 1.1 Backend: graph model in team definition (`graph.py` — nodes/edges as
-      plain data); endpoints to GET/PUT the current team's graph.
-- [ ] 1.2 Frontend: install `@xyflow/react`; `Canvas.tsx` with React Flow.
-- [ ] 1.3 `AgentNode.tsx` custom node (name + placeholder status badge).
-- [ ] 1.4 Floating "+" to add a node; drag-to-connect edges.
-- [ ] 1.5 5-tab sidebar shells: Persona / Capabilities / Links / Agent / Stats.
-- [ ] 1.6 Persist graph to backend on change; reload on mount.
-- [ ] 1.7 Tests: `test_graph.py` (graph round-trips through DB; node/edge
-      validation rejects malformed graphs).
-- [ ] 1.8 All tests pass → **commit**.
+- [x] 1.1 Backend: graph model in team definition (`graph.py` — pure
+      structural + runnable validation); endpoints GET/PUT the team's graph.
+- [x] 1.2 Frontend: installed `@xyflow/react` (v12.11); `Canvas.tsx` with
+      React Flow + `graphMapping.ts` (backend ⇄ React Flow conversion).
+- [x] 1.3 `AgentNode.tsx` custom node (name, model, entry-point ⭐, lifecycle
+      badge placeholder).
+- [x] 1.4 Floating "+" adds a node; drag-to-connect edges via handles.
+- [x] 1.5 5-tab sidebar shells in `Sidebar.tsx` (Persona/Capabilities/Links/
+      Agent/Stats) showing selected agent read-only.
+- [x] 1.6 Persist graph to backend (debounced PUT) on change; load on mount.
+- [x] 1.7 Tests: `test_graph.py` (structural + runnable validation; API
+      round-trip incl. positions/labels; malformed graph → 422).
+- [x] 1.8 All tests pass (21 backend) + frontend builds → **commit**.
 
 ## Phase 2 — Single working agent + tools
 
@@ -214,7 +217,7 @@ plus polish items as time allows.
 | Phase | Title | Status |
 |---|---|---|
 | 0 | Skeleton + seams | ✅ done (13 tests) |
-| 1 | Graph MVP | not started |
+| 1 | Graph MVP | ✅ done (21 tests + build) |
 | 2 | Single working agent + tools | not started |
 | 3 | Long-lived tasks | not started |
 | 4 | Agent-to-agent | not started |

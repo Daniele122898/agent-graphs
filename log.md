@@ -54,6 +54,34 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   without pointing at anything important. The auto-created team has a single
   entry-point "lead" agent so a team always satisfies the ">=1 entry point" rule.
 
+## Phase 1 — Graph MVP
+
+### 2026-06-09 — Graph editor decisions
+
+- **Two-tier graph validation, separated on purpose** (`graph.py`):
+  *structural* (unique ids, edges reference real nodes, no self-loops/dupes) is
+  enforced on every save (PUT → 422 on failure); *runnable* (>=1 entry point,
+  non-empty) is only required at session launch. Reason: the editor must let you
+  build a graph incrementally — forcing an entry point before you've added one
+  would make editing miserable. The save endpoint rejects only what would
+  corrupt the runtime.
+- **React Flow node `data` carries the full `AgentSpec`; node `position` is the
+  only UI-owned field.** `graphMapping.ts` is the single place the two formats
+  meet, so the rest of the UI never juggles both. The backend round-trip test
+  guards the wire format; the TS types guard the frontend.
+- **Persistence is a debounced (600ms) PUT of the whole graph** on any change,
+  guarded by a `loaded` ref so the initial load doesn't echo back a save.
+  Whole-graph PUT (not per-node patches) is simplest and the graph is tiny;
+  revisit only if graphs get large.
+- **Sidebar is one `Sidebar.tsx` with inline tab shells**, not five files yet.
+  The spec lists `Sidebar/{...}.tsx`; splitting is premature while they're
+  read-only shells. Will split when each gains real editing behavior (Phase 2+).
+- **Browser-level verification deferred.** Phase 1 confidence rests on backend
+  graph tests (round-trip + validation, 21 passing) + a clean frontend
+  type-check/build. No headless browser test yet; the canvas interactions
+  (add node, drag-connect) are standard React Flow and will be exercised
+  for real once an agent is wired up (Phase 2).
+
 ### 2026-06-09 — Phase 0 complete
 
 - 13 tests pass; real uvicorn server verified (`/health`, `/api/session`,
