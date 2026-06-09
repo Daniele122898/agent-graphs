@@ -1,122 +1,50 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  addEdge,
   Background,
   Controls,
   ReactFlow,
-  useEdgesState,
-  useNodesState,
-  type Connection,
   type Edge,
+  type EdgeChange,
+  type NodeChange,
+  type Connection,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
 import AgentNode from "./AgentNode";
-import { api } from "./api";
-import { fromReactFlow, toReactFlow, type RFNode } from "./graphMapping";
-import { defaultCapabilities, type AgentSpec } from "./types";
+import type { RFNode } from "./graphMapping";
+import type { AgentLifecycle } from "./types";
 
 const nodeTypes = { agent: AgentNode };
 
-function uniqueId(existing: Set<string>): string {
-  let n = existing.size + 1;
-  while (existing.has(`agent_${n}`)) n += 1;
-  return `agent_${n}`;
-}
-
-function newAgentSpec(id: string): AgentSpec {
-  return {
-    id,
-    name: "New Agent",
-    persona: "",
-    model: "lmstudio:qwen2.5-coder-7b-instruct-mlx",
-    is_entry_point: false,
-    capabilities: defaultCapabilities(),
-  };
-}
-
-export default function Canvas({ onSelect }: { onSelect: (spec: AgentSpec | null) => void }) {
-  const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const loaded = useRef(false);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [status, setStatus] = useState("loading…");
-
-  // Initial load from the backend.
-  useEffect(() => {
-    api
-      .getGraph()
-      .then((g) => {
-        const { nodes: n, edges: e } = toReactFlow(g);
-        setNodes(n);
-        setEdges(e);
-        loaded.current = true;
-        setStatus("saved");
-      })
-      .catch((err) => setStatus(`load error: ${err}`));
-  }, [setNodes, setEdges]);
-
-  // Debounced persistence on any change (after the initial load).
-  useEffect(() => {
-    if (!loaded.current) return;
-    setStatus("saving…");
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      api
-        .putGraph(fromReactFlow(nodes, edges))
-        .then(() => setStatus("saved"))
-        .catch((err) => setStatus(`save error: ${err}`));
-    }, 600);
-    return () => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-    };
-  }, [nodes, edges]);
-
-  const onConnect = useCallback(
-    (conn: Connection) => {
-      setEdges((eds) =>
-        addEdge({ ...conn, id: `e_${conn.source}_${conn.target}`, label: "" }, eds)
-      );
-    },
-    [setEdges]
-  );
-
-  const addNode = useCallback(() => {
-    setNodes((nds) => {
-      const ids = new Set(nds.map((n) => n.id));
-      const id = uniqueId(ids);
-      const node: RFNode = {
-        id,
-        type: "agent",
-        position: { x: 80 + Math.random() * 240, y: 80 + Math.random() * 240 },
-        data: { spec: newAgentSpec(id) },
-      };
-      return [...nds, node];
-    });
-  }, [setNodes]);
-
-  const onSelectionChange = useCallback(
-    ({ nodes: selected }: { nodes: RFNode[] }) => {
-      onSelect(selected.length === 1 ? selected[0].data.spec : null);
-    },
-    [onSelect]
-  );
-
-  const statusColor = useMemo(
-    () => (status.includes("error") ? "crimson" : "#6b7280"),
-    [status]
-  );
+// Presentational React Flow canvas. All graph state lives in useTeamGraph;
+// lifecycle badges come from the SSE event stream. The floating "+" adds an agent.
+export default function Canvas(props: {
+  nodes: RFNode[];
+  edges: Edge[];
+  lifecycles: Record<string, AgentLifecycle>;
+  onNodesChange: (c: NodeChange<RFNode>[]) => void;
+  onEdgesChange: (c: EdgeChange<Edge>[]) => void;
+  onConnect: (c: Connection) => void;
+  onSelectionChange: (p: { nodes: RFNode[] }) => void;
+  addNode: () => void;
+  status: string;
+}) {
+  // Inject the live lifecycle into each node's data so AgentNode can color its badge.
+  const nodes = props.nodes.map((n) => ({
+    ...n,
+    data: { ...n.data, lifecycle: props.lifecycles[n.id] ?? "idle" },
+  }));
+  const statusColor = props.status.includes("error") ? "crimson" : "#6b7280";
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <ReactFlow
         nodes={nodes}
-        edges={edges}
+        edges={props.edges}
         nodeTypes={nodeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        onSelectionChange={onSelectionChange}
+        onNodesChange={props.onNodesChange}
+        onEdgesChange={props.onEdgesChange}
+        onConnect={props.onConnect}
+        onSelectionChange={props.onSelectionChange}
         fitView
       >
         <Background />
@@ -124,7 +52,7 @@ export default function Canvas({ onSelect }: { onSelect: (spec: AgentSpec | null
       </ReactFlow>
 
       <button
-        onClick={addNode}
+        onClick={props.addNode}
         title="Add agent"
         style={{
           position: "absolute",
@@ -144,7 +72,6 @@ export default function Canvas({ onSelect }: { onSelect: (spec: AgentSpec | null
       >
         +
       </button>
-
       <span
         style={{
           position: "absolute",
@@ -155,7 +82,7 @@ export default function Canvas({ onSelect }: { onSelect: (spec: AgentSpec | null
           fontFamily: "system-ui, sans-serif",
         }}
       >
-        {status}
+        {props.status}
       </span>
     </div>
   );

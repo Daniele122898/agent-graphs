@@ -2,13 +2,15 @@ import { useEffect, useState } from "react";
 import Canvas from "./Canvas";
 import Sidebar from "./Sidebar";
 import { api } from "./api";
-import type { AgentSpec, SessionInfo } from "./types";
+import { useEvents } from "./useEvents";
+import { useTeamGraph } from "./useTeamGraph";
+import type { SessionInfo } from "./types";
 
-// The control room. Phase 1: a React Flow canvas (team graph editor) + the
-// five-tab sidebar. A top bar shows the current session. Task board, live
-// streaming, and multi-session switching arrive in later phases.
+// The control room. Canvas (team graph editor) + five-tab sidebar, with a live
+// SSE event stream powering lifecycle badges and the Agent tab.
 export default function App() {
-  const [selected, setSelected] = useState<AgentSpec | null>(null);
+  const graph = useTeamGraph();
+  const { events, lifecycles } = useEvents();
   const [session, setSession] = useState<SessionInfo | null>(null);
 
   useEffect(() => {
@@ -37,9 +39,24 @@ export default function App() {
 
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <Canvas onSelect={setSelected} />
+          <Canvas
+            nodes={graph.nodes}
+            edges={graph.edges}
+            lifecycles={lifecycles}
+            onNodesChange={graph.onNodesChange}
+            onEdgesChange={graph.onEdgesChange}
+            onConnect={graph.onConnect}
+            onSelectionChange={graph.onSelectionChange}
+            addNode={graph.addNode}
+            status={graph.status}
+          />
         </div>
-        <Sidebar selected={selected} />
+        <Sidebar
+          selected={graph.selectedSpec}
+          onUpdate={graph.updateSpec}
+          events={events}
+          lifecycles={lifecycles}
+        />
       </div>
     </div>
   );

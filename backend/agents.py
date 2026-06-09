@@ -1,0 +1,34 @@
+"""Build a Pydantic AI ``Agent`` for a graph node from its spec.
+
+The model is **injected** (never constructed here) so tests pass a
+``FunctionModel``. The toolset is generated from the agent's capability profile
+(``capabilities.py``), so the agent only ever sees tools it's allowed to use.
+The ``write_todos`` tool is always available (progress tracking is universal).
+Persona goes in sticky ``instructions``.
+"""
+
+from __future__ import annotations
+
+from pydantic_ai import Agent
+from pydantic_ai.models import Model
+
+from .capabilities import make_dev_toolset
+from .models_domain import AgentSpec
+from .persona import build_instructions
+from .todos import AgentDeps, write_todos
+from .tools import DevTools
+
+
+def build_agent(spec: AgentSpec, *, model: Model, dev_tools: DevTools) -> Agent[AgentDeps]:
+    """Wire a spec + injected model + capability-derived toolset into an Agent.
+
+    ``dev_tools`` must be bound to the session's repo root, this spec's
+    capabilities, and the session's write-lock (the caller owns those).
+    """
+    return Agent(
+        model=model,
+        deps_type=AgentDeps,
+        instructions=build_instructions(spec),
+        toolsets=[make_dev_toolset(dev_tools)],
+        tools=[write_todos],
+    )

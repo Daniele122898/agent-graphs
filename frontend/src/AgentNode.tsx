@@ -15,7 +15,7 @@ const LIFECYCLE_COLOR: Record<AgentLifecycle, string> = {
 // wires it to live status from the session registry.
 export default function AgentNode({ data, selected }: NodeProps) {
   const spec = (data as AgentNodeData).spec;
-  const lifecycle: AgentLifecycle = "idle";
+  const lifecycle: AgentLifecycle = ((data as { lifecycle?: AgentLifecycle }).lifecycle) ?? "idle";
   return (
     <div
       style={{

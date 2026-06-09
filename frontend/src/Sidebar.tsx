@@ -1,46 +1,46 @@
 import { useState } from "react";
-import type { AgentSpec } from "./types";
+import AgentTab from "./tabs/AgentTab";
+import CapabilitiesTab from "./tabs/CapabilitiesTab";
+import PersonaTab from "./tabs/PersonaTab";
+import StatsTab from "./tabs/StatsTab";
+import type { BusEvent } from "./useEvents";
+import type { AgentLifecycle, AgentSpec } from "./types";
 
 // The five-tab sidebar. Each tab owns one question; configure-vs-observe is
-// cleanly split (Persona/Capabilities/Links = write, Agent/Stats = observe).
-// Phase 1 ships shells that show the selected agent; the tabs gain real
-// behavior in later phases (Capabilities/Persona editing → Phase 2,
-// Links → Phase 4, Agent stream → Phase 2/3, Stats → Phase 2).
-
+// cleanly split: Persona/Capabilities/Links = write, Agent/Stats = observe.
 type TabKey = "persona" | "capabilities" | "links" | "agent" | "stats";
 
-const TABS: { key: TabKey; label: string; phase: string }[] = [
-  { key: "persona", label: "Persona", phase: "Phase 2" },
-  { key: "capabilities", label: "Capabilities", phase: "Phase 2" },
-  { key: "links", label: "Links", phase: "Phase 4" },
-  { key: "agent", label: "Agent", phase: "Phase 2/3" },
-  { key: "stats", label: "Stats", phase: "Phase 2" },
+const TABS: { key: TabKey; label: string }[] = [
+  { key: "persona", label: "Persona" },
+  { key: "capabilities", label: "Capabilities" },
+  { key: "links", label: "Links" },
+  { key: "agent", label: "Agent" },
+  { key: "stats", label: "Stats" },
 ];
 
-function Shell({ title, phase, children }: { title: string; phase: string; children?: React.ReactNode }) {
-  return (
-    <div style={{ padding: 16 }}>
-      <h3 style={{ margin: "0 0 8px" }}>{title}</h3>
-      {children}
-      <p style={{ color: "#9ca3af", fontSize: 12, marginTop: 12 }}>
-        Editing arrives in {phase}.
-      </p>
-    </div>
-  );
-}
-
-export default function Sidebar({ selected }: { selected: AgentSpec | null }) {
+export default function Sidebar({
+  selected,
+  onUpdate,
+  events,
+  lifecycles,
+}: {
+  selected: AgentSpec | null;
+  onUpdate: (s: AgentSpec) => void;
+  events: BusEvent[];
+  lifecycles: Record<string, AgentLifecycle>;
+}) {
   const [tab, setTab] = useState<TabKey>("persona");
 
   return (
     <div
       style={{
-        width: 320,
+        width: 340,
         borderLeft: "1px solid #e5e7eb",
         display: "flex",
         flexDirection: "column",
         fontFamily: "system-ui, sans-serif",
         background: "#fafafa",
+        minHeight: 0,
       }}
     >
       <div style={{ display: "flex", borderBottom: "1px solid #e5e7eb" }}>
@@ -65,45 +65,24 @@ export default function Sidebar({ selected }: { selected: AgentSpec | null }) {
         ))}
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto" }}>
+      <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
         {!selected ? (
           <p style={{ padding: 16, color: "#9ca3af" }}>Select an agent on the canvas.</p>
+        ) : tab === "persona" ? (
+          <PersonaTab spec={selected} onUpdate={onUpdate} />
+        ) : tab === "capabilities" ? (
+          <CapabilitiesTab spec={selected} onUpdate={onUpdate} />
+        ) : tab === "agent" ? (
+          <AgentTab agentId={selected.id} events={events} lifecycle={lifecycles[selected.id] ?? "idle"} />
+        ) : tab === "stats" ? (
+          <StatsTab spec={selected} />
         ) : (
-          <>
-            {tab === "persona" && (
-              <Shell title="Persona" phase="Phase 2">
-                <p style={{ fontSize: 13 }}>
-                  <strong>{selected.name}</strong>
-                </p>
-                <pre
-                  style={{
-                    whiteSpace: "pre-wrap",
-                    fontSize: 12,
-                    background: "white",
-                    border: "1px solid #e5e7eb",
-                    borderRadius: 6,
-                    padding: 8,
-                  }}
-                >
-                  {selected.persona || "(no persona yet)"}
-                </pre>
-              </Shell>
-            )}
-            {tab === "capabilities" && (
-              <Shell title="Capabilities" phase="Phase 2">
-                <ul style={{ fontSize: 13, paddingLeft: 18 }}>
-                  <li>filesystem: {selected.capabilities.filesystem}</li>
-                  <li>read: {selected.capabilities.read_paths.join(", ") || "—"}</li>
-                  <li>write: {selected.capabilities.write_paths.join(", ") || "—"}</li>
-                  <li>bash: {selected.capabilities.bash ? "on" : "off"}</li>
-                  <li>model: {selected.model}</li>
-                </ul>
-              </Shell>
-            )}
-            {tab === "links" && <Shell title="Links" phase="Phase 4" />}
-            {tab === "agent" && <Shell title="Agent" phase="Phase 2/3" />}
-            {tab === "stats" && <Shell title="Stats" phase="Phase 2" />}
-          </>
+          <div style={{ padding: 16 }}>
+            <h3 style={{ margin: "0 0 8px" }}>Links</h3>
+            <p style={{ color: "#9ca3af", fontSize: 12 }}>
+              Edge labels + delegation wiring arrive in Phase 4. For now, draw edges on the canvas.
+            </p>
+          </div>
         )}
       </div>
     </div>

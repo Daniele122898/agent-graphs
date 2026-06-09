@@ -79,26 +79,30 @@ streams text/thinking/tools over SSE; Stats tab from LM Studio REST.
 **Milestone: an agent edits the session's repo, uninterrupted, in its box, with a
 visible checklist.**
 
-- [ ] 2.1 `tools.py` — dev toolset core: `read_file(range)`, `write_file`,
-      `edit_file(start,end,new,hash)` with content-hash staleness check,
-      `list_dir`, `grep`, `run_bash`. Pure helpers (path resolve, glob check,
-      numbered slice, hash) split out for testing.
-- [ ] 2.2 `capabilities.py` — `make_dev_toolset(root, caps)` builds toolset
-      per profile (read-only never gets write/edit; no-bash never gets bash).
-- [ ] 2.3 `models.py` — per-agent model resolution (hosted + LM Studio OpenAI-
-      compatible), **injected** into the agent, never built in place.
-- [ ] 2.4 `persona.py` — `instructions` builder (sticky persona).
-- [ ] 2.5 `todos.py` — `write_todos` tool + checklist state.
-- [ ] 2.6 `agents.py` — build a Pydantic AI `Agent` for a node from its spec.
-- [ ] 2.7 `streaming.py` — SSE endpoint; bridge `agent.run_stream_events()` →
-      AG-UI-ish events tagged with `session_id`.
-- [ ] 2.8 Frontend: Capabilities tab (fs level + globs + bash + model select);
-      Persona tab; Agent tab renders streaming text/thinking/tool cards + todos.
-- [ ] 2.9 `stats.py` + Stats tab — LM Studio REST + Pydantic AI usage.
-- [ ] 2.10 Tests: `test_tools.py` (path/glob enforcement, stale-hash reject,
-      line-range edits, bash cwd), `test_capabilities.py` (profile→toolset
-      shape: read-only has no write tool).
-- [ ] 2.11 All tests pass → **commit**.
+- [x] 2.1 `tools.py` — dev toolset core: `read_file(range)` (emits an
+      **edit-token** the model copies back), `write_file`, `edit_file` with
+      content-hash staleness check, `list_dir`, `grep`, `run_bash`. Pure helpers
+      (resolve, glob, effective_range, numbered_slice, hash, apply_line_edit).
+- [x] 2.2 `capabilities.py` — `make_dev_toolset(DevTools)` builds toolset per
+      profile (read-only never gets write/edit; no-bash never gets bash).
+- [x] 2.3 `models.py` — per-agent model resolution (LM Studio/local OpenAI-
+      compatible, openai:, infer fallback), **injected** into the agent.
+- [x] 2.4 `persona.py` — sticky `instructions` builder (persona + tool/edit
+      guidance + 3-task rule).
+- [x] 2.5 `todos.py` — `write_todos` tool + `AgentDeps` + `all_completed`.
+- [x] 2.6 `agents.py` — `build_agent(spec, model, dev_tools)`.
+- [x] 2.7 `streaming.py` — SSE bridge (`format_sse`/`sse_stream`) + runner
+      driven by `agent.iter()` (works with FunctionModel), publishing
+      lifecycle/text/thinking/tool_call/tool_result/todos/done to the bus.
+- [x] 2.8 Frontend: editable Persona + Capabilities tabs (fs level + advanced
+      globs + bash + model select); Agent tab streams events + live todos + run
+      box; lifecycle badges on canvas nodes via SSE.
+- [x] 2.9 `stats.py` + Stats tab — LM Studio `/api/v0/models` rich stats +
+      per-session usage tally.
+- [x] 2.10 Tests: `test_tools.py`, `test_capabilities.py`, `test_agents.py`,
+      `test_streaming.py` + env-gated `test_live_smoke.py`.
+- [x] 2.11 All tests pass (46 + 1 skipped); **live-validated** against
+      qwen2.5-coder-7b (created hello.txt in 17s) → **commit**.
 
 ## Phase 3 — Long-lived tasks (agents as background workers)
 
@@ -218,7 +222,7 @@ plus polish items as time allows.
 |---|---|---|
 | 0 | Skeleton + seams | ✅ done (13 tests) |
 | 1 | Graph MVP | ✅ done (21 tests + build) |
-| 2 | Single working agent + tools | not started |
+| 2 | Single working agent + tools | ✅ done (46 tests + live) |
 | 3 | Long-lived tasks | not started |
 | 4 | Agent-to-agent | not started |
 | 5 | Task system | not started |

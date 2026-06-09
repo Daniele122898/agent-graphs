@@ -10,8 +10,25 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from pydantic_ai.messages import ModelResponse, ModelResponsePart
+from pydantic_ai.models.function import FunctionModel
 
 from backend import db as db_module
+
+
+def make_sequence_model(turns: list[list[ModelResponsePart]]) -> FunctionModel:
+    """A FunctionModel that emits a scripted sequence of responses, one per
+    model call. ``turns[i]`` is the list of parts for the i-th assistant turn;
+    the last turn repeats if the model is called again. This is the deterministic,
+    zero-token seam that drives whole agent/session runs in tests.
+    """
+
+    def fn(messages, info):
+        idx = sum(1 for m in messages if isinstance(m, ModelResponse))
+        parts = turns[min(idx, len(turns) - 1)]
+        return ModelResponse(parts=parts)
+
+    return FunctionModel(fn)
 
 
 @pytest.fixture

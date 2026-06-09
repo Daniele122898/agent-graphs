@@ -22,4 +22,27 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(graph),
     }).then(json<TeamGraph>),
+  runAgent: (agentId: string, prompt: string) =>
+    fetch(`/api/agent/${agentId}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    }).then(json<{ status: string; agent_id: string }>),
+  lmstudioModels: () =>
+    fetch("/api/stats/models").then(json<{ models: LMStudioModel[]; error: string | null }>),
+  usage: (agentId: string) =>
+    fetch(`/api/stats/usage/${agentId}`).then(
+      json<{ requests: number; input_tokens: number; output_tokens: number }>
+    ),
 };
+
+export interface LMStudioModel {
+  id: string;
+  type?: string;
+  arch?: string;
+  quantization?: string;
+  state?: string;
+  max_context_length?: number;
+  loaded_context_length?: number;
+  capabilities?: string[];
+}

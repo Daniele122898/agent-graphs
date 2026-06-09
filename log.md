@@ -82,6 +82,58 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   (add node, drag-connect) are standard React Flow and will be exercised
   for real once an agent is wired up (Phase 2).
 
+## Phase 2 — Single working agent + tools
+
+### 2026-06-09 — The edit tool: line-range + content-hash + edit-token
+
+- **The edit tool ships as line-range + content-hash (per spec v1), but with a
+  model-usability twist: `read_file` appends an `[edit-token <start>-<end>
+  <hash>]` the model copies verbatim into `edit_file`.** Reason: a weak local
+  model cannot compute a sha1 of the target lines, so requiring a raw hash arg
+  would be unusable. The token is a coarse, range-level stand-in for oh-my-pi's
+  per-line hashline anchors — it keeps both wins (no re-emitted surrounding
+  code; stale-edit rejection when the file changed since the read) while being
+  copy-paste trivial for the model. Graduate to full per-line anchors only if
+  edit reliability disappoints. `effective_range` is the single source of truth
+  shared by `numbered_slice` and the token hash so they never disagree.
+
+### 2026-06-09 — Streaming via agent.iter, not run_stream_events
+
+- **The streaming runner uses `agent.iter()` (node-level), not
+  `run_stream_events()` (token deltas).** Reason: `run_stream_events` requires
+  the model to support streaming, and `FunctionModel` (our deterministic test
+  seam) does not unless given a `stream_function`. `agent.iter()` works with
+  plain `FunctionModel`, so the runner is fully exercised in tests with zero
+  tokens. Node-level granularity (tool calls/results via `CallToolsNode.stream`,
+  text/thinking from response parts) is exactly what the Agent tab needs.
+  Token-by-token deltas for real models are an additive enhancement, not a
+  prerequisite — deferred.
+- **Tools are plain (no `RunContext`); events come from the stream, not from
+  inside tools.** Keeps the sandbox logic pure and testable. Only `write_todos`
+  takes `ctx` (it mutates `AgentDeps.todos`).
+
+### 2026-06-09 — Other Phase 2 choices
+
+- **`models_domain` name kept; new `models.py` is model *resolution*.** A model
+  string (`lmstudio:qwen…`, `openai:gpt-4o`, else `infer_model`) → instance,
+  **injected** into the agent. Tests inject `FunctionModel` instead.
+- **Run endpoint is fire-and-forget `asyncio.create_task`** stored in
+  `app.state.running_tasks`. This is a Phase-2 precursor to the Phase-3
+  `RunningAgent`; lifecycle is already published over SSE and reflected on
+  canvas nodes. Errors land the agent in `blocked` + an `agent_error` event,
+  never a silent failure.
+- **PUT /api/team/graph syncs the running session's graph** (single-session
+  MVP). The pin-at-launch vs. live-edit distinction is real but only matters
+  once there are multiple sessions (Phase 7/8); deferred there.
+- **Stats from LM Studio `/api/v0/models`** (richer than `/v1/models`):
+  quantization, state, capabilities (tool_use), and the loaded-vs-max context
+  quirk flagged in the UI. Endpoint returns a friendly payload (not 500) when
+  LM Studio is down, so the UI degrades gracefully.
+- **Live validation done once (sparingly, per the user):** real
+  qwen2.5-coder-7b created `hello.txt` with content `hi` in 17s, streaming
+  tool_call/tool_result/todos events. Confirms the whole stack works with an
+  actual LLM. Repeatable via `AGENT_GRAPHS_LIVE=1 pytest tests/test_live_smoke.py`.
+
 ### 2026-06-09 — Phase 0 complete
 
 - 13 tests pass; real uvicorn server verified (`/health`, `/api/session`,

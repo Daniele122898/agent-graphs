@@ -26,6 +26,7 @@ from typing import Callable
 from .bus import EventBus
 from .gateway import Gateway
 from .models_domain import AgentLifecycle, SessionInfo, SessionMode, TeamGraph
+from .stats import UsageTally
 from .util import iso_now, new_id
 
 
@@ -83,6 +84,7 @@ class Session:
         self.gateway = Gateway(mode=mode)
         self.bus = EventBus(session_id)
         self.registry = AgentRegistry()
+        self.usage = UsageTally()
 
         # Seed the registry from the team graph so every agent has a lifecycle.
         for node in graph.nodes:

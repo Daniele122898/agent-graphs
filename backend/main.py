@@ -14,17 +14,26 @@ tests spin up an isolated app against a temp DB and temp repo. Run for real with
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from . import db as db_module
+from .agents import build_agent
 from .graph import validate_structure
+from .models import resolve_model
 from .models_domain import AgentSpec, Capabilities, GraphNode, TeamGraph
-from .sessions import SessionManager
+from .sessions import Session, SessionManager
+from .stats import lmstudio_models
+from .streaming import run_agent_streamed, sse_stream
+from .todos import AgentDeps
+from .tools import DevTools
 from .teams import TeamStore
 
 
@@ -77,9 +86,12 @@ def create_app(
         app.state.sessions = sessions
         app.state.default_team_id = team.id
         app.state.default_session_id = session.id
+        app.state.running_tasks = set()
         try:
             yield
         finally:
+            for t in list(app.state.running_tasks):
+                t.cancel()
             conn.close()
 
     app = FastAPI(title="Agent Graphs", lifespan=lifespan)
@@ -130,9 +142,87 @@ def create_app(
         team = app.state.teams.update_graph(app.state.default_team_id, graph)
         if team is None:
             raise HTTPException(500, "no default team")
+        # Reflect the edited graph into the running session so a freshly-added
+        # agent can be run immediately. (A session normally pins its definition
+        # at launch; in the single-session MVP the editor and the running
+        # session are the same team, so we keep them in sync. Phase 7/8 make the
+        # pin-vs-edit distinction explicit.)
+        session = _default_session(app)
+        session.graph = team.graph
+        for node in team.graph.nodes:
+            if session.registry.lifecycle(node.spec.id) is None:
+                session.registry.register(node.spec.id, "idle")
         return team.graph.model_dump()
 
+    @app.get("/events")
+    async def events() -> StreamingResponse:
+        session = _default_session(app)
+        return StreamingResponse(sse_stream(session.bus), media_type="text/event-stream")
+
+    @app.post("/api/agent/{agent_id}/run")
+    async def run_agent(agent_id: str, body: RunRequest) -> dict:
+        session = _default_session(app)
+        spec = _find_spec(session, agent_id)
+        if spec is None:
+            raise HTTPException(404, f"no agent '{agent_id}' in this session")
+
+        dev = DevTools(session.repo_root, spec.capabilities, write_lock=session.write_lock)
+        agent = build_agent(spec, model=resolve_model(spec.model), dev_tools=dev)
+        deps = AgentDeps(session_id=session.id, agent_id=agent_id)
+
+        async def _run() -> None:
+            try:
+                await run_agent_streamed(
+                    bus=session.bus,
+                    registry=session.registry,
+                    agent_id=agent_id,
+                    agent=agent,
+                    prompt=body.prompt,
+                    deps=deps,
+                    usage_tally=session.usage,
+                )
+            except Exception:  # noqa: BLE001 — already surfaced via agent_error
+                pass
+
+        # Fire-and-forget background task (Phase 3 formalizes the lifecycle).
+        task = asyncio.create_task(_run())
+        app.state.running_tasks.add(task)
+        task.add_done_callback(app.state.running_tasks.discard)
+        return {"status": "started", "agent_id": agent_id}
+
+    @app.get("/api/stats/models")
+    async def stats_models() -> dict:
+        """LM Studio model stats for the Stats tab + Capabilities model picker.
+        Returns a friendly error payload (not a 500) if LM Studio is unreachable,
+        so the UI degrades gracefully when no local server is running."""
+        try:
+            return {"models": await lmstudio_models(), "error": None}
+        except Exception as e:  # noqa: BLE001
+            return {"models": [], "error": str(e)}
+
+    @app.get("/api/stats/usage/{agent_id}")
+    def stats_usage(agent_id: str) -> dict:
+        return _default_session(app).usage.get(agent_id)
+
     return app
+
+
+class RunRequest(BaseModel):
+    prompt: str
+
+
+def _default_session(app: FastAPI) -> Session:
+    session = app.state.sessions.get(app.state.default_session_id)
+    if session is None:
+        raise HTTPException(500, "no default session")
+    return session
+
+
+def _find_spec(session: Session, agent_id: str) -> AgentSpec | None:
+    for node in session.graph.nodes:
+        if node.spec.id == agent_id:
+            return node.spec
+    return None
 
 
 app = create_app()
