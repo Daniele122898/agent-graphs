@@ -157,6 +157,25 @@ def create_app(
         )
         return info
 
+    @app.post("/api/sessions/{session_id}/resume")
+    def resume_session(session_id: str) -> dict:
+        """Rehydrate a persisted session into memory (snapshot/resume). The team
+        graph is reloaded from its definition; per-agent history reloads lazily
+        when each agent next runs."""
+        if app.state.sessions.get(session_id) is not None:
+            return app.state.sessions.get(session_id).info().model_dump()
+        row = app.state.conn.execute(
+            "SELECT team_id FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "no such session")
+        team = app.state.teams.get(row["team_id"])
+        graph = team.graph if team else TeamGraph()
+        session = app.state.sessions.resume_session(session_id, graph)
+        if session is None:
+            raise HTTPException(404, "no such session")
+        return session.info().model_dump()
+
     @app.post("/api/session/mode")
     def set_mode(body: ModeRequest, session_id: str | None = None) -> dict:
         """Toggle the LLM execution gateway mode for this session: parallel
@@ -424,6 +443,8 @@ def _get_or_create_running(app: FastAPI, session: Session, agent_id: str) -> Run
         model=resolve_model(spec.model),
         state_store=app.state.agent_state,
         message_log=app.state.messages,
+        # Resume with any persisted conversation history for this agent.
+        initial_messages=app.state.agent_state.load_messages(session.id, agent_id),
     )
     session.registry.attach_running(agent_id, ra)
     ra.start()

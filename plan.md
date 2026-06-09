@@ -230,13 +230,19 @@ session switcher; concurrent session views. Runtime already supports N sessions.
 Goal: persist + rehydrate `agent_state` and in-flight `tasks` for pause/resume;
 plus polish items as time allows.
 
-- [ ] 9.1 Snapshot: persist agent histories + in-flight task state.
-- [ ] 9.2 Resume: rehydrate a session from DB (full history + task state).
-- [ ] 9.3 Tests: `test_resume.py` (snapshot → fresh manager → resume → state
-      matches; in-flight task continues).
-- [ ] 9.4 Polish backlog: cost estimates, persisted work logs, export/import
-      teams, per-command bash allowlist, optional Docker sandbox executor.
-- [ ] 9.5 Commit.
+- [x] 9.1 Snapshot: agent histories persisted continuously (Phase 3) + in-flight
+      tasks persisted in the `tasks` table (Phase 5) — the snapshot already
+      exists; this phase adds the rehydrate side.
+- [x] 9.2 Resume: `SessionManager.resume_session(id, graph)` rehydrates a
+      persisted session into memory; `RunningAgent(initial_messages=...)` seeds
+      from persisted history; `POST /api/sessions/{id}/resume` endpoint.
+- [x] 9.3 Tests: `test_resume.py` (fresh manager rehydrates session + history,
+      agent continues with context; in-flight tasks survive across managers).
+- [~] 9.4 Polish backlog (ongoing): export/import teams = the team CRUD
+      (`GET/POST /api/teams` with graph); cost estimates, persisted work-log UI,
+      per-command bash allowlist, Docker sandbox executor — **not yet built**,
+      left as the explicit ongoing backlog.
+- [x] 9.5 All tests pass (84 + 1 skipped) → **commit**.
 
 ---
 
@@ -253,4 +259,4 @@ plus polish items as time allows.
 | 6 | Compaction + gateway | ✅ done (75 tests) |
 | 7 | Team library | ✅ done (79 tests) |
 | 8 | Multi-session | ✅ done (82 tests) |
-| 9 | Snapshot/resume + polish | not started |
+| 9 | Snapshot/resume + polish | ✅ core done (84 tests); polish backlog ongoing |

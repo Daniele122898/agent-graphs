@@ -51,13 +51,16 @@ class RunningAgent:
         message_log: "MessageLog | None" = None,
         model_resolver: Callable[[str], Model] = resolve_model,
         bash_runner: Callable | None = None,
+        initial_messages: list | None = None,
     ):
         self.session = session
         self.spec = spec
         self.agent_id = spec.id
         self._state_store = state_store
         self._inbox: asyncio.Queue = asyncio.Queue()
-        self._messages: list = []
+        # Seed from persisted history on resume, so the agent continues with
+        # full prior context rather than a blank slate.
+        self._messages: list = list(initial_messages or [])
         self._task: asyncio.Task | None = None
         self._stopped = False
         self._bash_runner = bash_runner

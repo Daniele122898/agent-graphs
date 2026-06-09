@@ -166,6 +166,31 @@ class SessionManager:
         self._sessions[session_id] = session
         return session
 
+    def resume_session(self, session_id: str, graph: TeamGraph) -> Session | None:
+        """Rehydrate a persisted session into memory (pause repo today, resume
+        tomorrow). Reconstructs the live ``Session`` from its DB row + the team
+        graph; per-agent conversation histories are reloaded lazily when each
+        ``RunningAgent`` is (re)created. Returns None if no such session row.
+        """
+        if session_id in self._sessions:
+            return self._sessions[session_id]
+        row = self._conn.execute(
+            "SELECT * FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        session = Session(
+            session_id=row["id"],
+            team_id=row["team_id"],
+            repo_root=Path(row["repo_path"]),
+            graph=graph,
+            mode=row["mode"],
+            status=row["status"],
+            created_at=row["created_at"],
+        )
+        self._sessions[session_id] = session
+        return session
+
     def get(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)
 

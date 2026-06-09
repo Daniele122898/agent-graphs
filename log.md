@@ -82,6 +82,26 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   (add node, drag-connect) are standard React Flow and will be exercised
   for real once an agent is wired up (Phase 2).
 
+## Phase 9 — Snapshot/resume + polish
+
+### 2026-06-09 — Resume is the rehydrate half; snapshot already existed
+
+- **The snapshot side was already built** — `agent_state` is written
+  continuously from Phase 3, and `tasks` are persisted from Phase 5. So Phase 9
+  is just the *rehydrate* logic: `SessionManager.resume_session(id, graph)`
+  reconstructs a live `Session` from its DB row, and
+  `RunningAgent(initial_messages=...)` seeds from the persisted history so a
+  resumed agent continues with full context (verified by `test_resume.py` with
+  a fresh manager on the same DB, simulating a new process).
+- **Resume UI is intentionally minimal** (an endpoint, no dedicated button).
+  The spec scoped "resume-and-rehydrate logic + UI" to Phase 9; the logic +
+  endpoint are the load-bearing part. A one-click resume button is trivial to
+  add on top.
+- **Polish backlog (9.4) is explicitly ongoing, not silently skipped.**
+  export/import teams already falls out of the team CRUD. Cost estimates,
+  persisted work-log UI, per-command bash allowlist, and the optional Docker
+  sandbox executor are documented as not-yet-built in plan.md.
+
 ## Phase 8 — Multi-session
 
 ### 2026-06-09 — Threading session_id
