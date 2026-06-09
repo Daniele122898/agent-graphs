@@ -1,6 +1,8 @@
 import { useState } from "react";
+import type { Edge } from "@xyflow/react";
 import AgentTab from "./tabs/AgentTab";
 import CapabilitiesTab from "./tabs/CapabilitiesTab";
+import LinksTab from "./tabs/LinksTab";
 import PersonaTab from "./tabs/PersonaTab";
 import StatsTab from "./tabs/StatsTab";
 import type { BusEvent } from "./useEvents";
@@ -23,11 +25,15 @@ export default function Sidebar({
   onUpdate,
   events,
   lifecycles,
+  edges,
+  onUpdateEdgeLabel,
 }: {
   selected: AgentSpec | null;
   onUpdate: (s: AgentSpec) => void;
   events: BusEvent[];
   lifecycles: Record<string, AgentLifecycle>;
+  edges: Edge[];
+  onUpdateEdgeLabel: (edgeId: string, label: string) => void;
 }) {
   const [tab, setTab] = useState<TabKey>("persona");
 
@@ -77,12 +83,7 @@ export default function Sidebar({
         ) : tab === "stats" ? (
           <StatsTab spec={selected} />
         ) : (
-          <div style={{ padding: 16 }}>
-            <h3 style={{ margin: "0 0 8px" }}>Links</h3>
-            <p style={{ color: "#9ca3af", fontSize: 12 }}>
-              Edge labels + delegation wiring arrive in Phase 4. For now, draw edges on the canvas.
-            </p>
-          </div>
+          <LinksTab agentId={selected.id} edges={edges} onUpdateLabel={onUpdateEdgeLabel} />
         )}
       </div>
     </div>

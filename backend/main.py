@@ -24,6 +24,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from . import db as db_module
+from .a2a import MessageLog
 from .agent_state import AgentStateStore
 from .graph import validate_structure
 from .models import resolve_model
@@ -83,6 +84,7 @@ def create_app(
         app.state.teams = teams
         app.state.sessions = sessions
         app.state.agent_state = AgentStateStore(conn)
+        app.state.messages = MessageLog(conn)
         app.state.default_team_id = team.id
         app.state.default_session_id = session.id
         try:
@@ -197,6 +199,11 @@ def create_app(
     def stats_usage(agent_id: str) -> dict:
         return _default_session(app).usage.get(agent_id)
 
+    @app.get("/api/messages")
+    def messages() -> dict:
+        session = _default_session(app)
+        return {"messages": app.state.messages.for_session(session.id)}
+
     return app
 
 
@@ -231,6 +238,7 @@ def _get_or_create_running(app: FastAPI, agent_id: str) -> RunningAgent:
         spec=spec,
         model=resolve_model(spec.model),
         state_store=app.state.agent_state,
+        message_log=app.state.messages,
     )
     session.registry.attach_running(agent_id, ra)
     ra.start()

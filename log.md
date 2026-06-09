@@ -82,6 +82,34 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   (add node, drag-connect) are standard React Flow and will be exercised
   for real once an agent is wired up (Phase 2).
 
+## Phase 4 — Agent-to-agent communication
+
+### 2026-06-09 — Delegation design
+
+- **`ask_agent(target, question)` runs a *fresh* sub-run of the target, not an
+  interjection into the target's long-lived inbox.** Delegation should answer
+  from the target's expertise without polluting the asker's context or
+  disturbing the target's own task queue — so the `Delegator` builds a throwaway
+  agent run for the question and returns its output. Shared `ctx.usage` +
+  `UsageLimits(request_limit=50)` keep delegated work on the same budget.
+- **Three structural guards in code (not prompt):** target must be a graph
+  neighbor of the asker; no revisiting an agent already in the delegation chain
+  (cycle guard); chain length capped at `MAX_DELEGATION_DEPTH=3`. All raise
+  `ModelRetry` so the model self-corrects rather than the run crashing. This is
+  the inoculation against A→B→C→A runaway loops.
+- **`agent_factory` is injected into `Delegator`** so tests fully control each
+  target's model (FunctionModel) and the production path resolves real models +
+  DevTools. RunningAgent supplies a factory that builds targets with their own
+  capabilities + the session write-lock + an injected `model_resolver`.
+- **Neighbor list is injected dynamically** via `@agent.instructions` reading
+  the live graph each run, so editing edges immediately changes who an agent
+  knows to consult — no rebuild needed.
+- **Added a 5th table, `messages`**, for the inter-agent log. The spec's
+  "four-table spine" is about the *core* entities (teams/sessions/agent_state/
+  tasks); the message log is a peripheral observability store the spec explicitly
+  calls for ("stream/log inter-agent conversations"). Kept separate from
+  `agent_state` (which is per-agent history) because it's a cross-agent stream.
+
 ## Phase 3 — Long-lived tasks
 
 ### 2026-06-09 — RunningAgent and interjection semantics

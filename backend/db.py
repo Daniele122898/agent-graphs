@@ -73,7 +73,19 @@ CREATE TABLE IF NOT EXISTS tasks (
     FOREIGN KEY (session_id) REFERENCES sessions (id)
 );
 
+CREATE TABLE IF NOT EXISTS messages (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    from_agent  TEXT NOT NULL,
+    to_agent    TEXT NOT NULL,
+    kind        TEXT NOT NULL,               -- 'question' | 'reply'
+    body        TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (session_id) REFERENCES sessions (id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_team   ON sessions (team_id);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (session_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_session   ON tasks (session_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent    ON tasks (parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_agentstate_sess ON agent_state (session_id);

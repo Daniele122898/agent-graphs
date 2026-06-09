@@ -9,9 +9,10 @@ Persona goes in sticky ``instructions``.
 
 from __future__ import annotations
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 
+from .a2a import ask_agent, neighbor_instructions
 from .capabilities import make_dev_toolset
 from .models_domain import AgentSpec
 from .persona import build_instructions
@@ -23,12 +24,23 @@ def build_agent(spec: AgentSpec, *, model: Model, dev_tools: DevTools) -> Agent[
     """Wire a spec + injected model + capability-derived toolset into an Agent.
 
     ``dev_tools`` must be bound to the session's repo root, this spec's
-    capabilities, and the session's write-lock (the caller owns those).
+    capabilities, and the session's write-lock (the caller owns those). The
+    agent also gets ``ask_agent`` (delegation) and a *dynamic* neighbor list
+    appended to its instructions, re-evaluated each run so it tracks graph edits.
     """
-    return Agent(
+    agent: Agent[AgentDeps] = Agent(
         model=model,
         deps_type=AgentDeps,
         instructions=build_instructions(spec),
         toolsets=[make_dev_toolset(dev_tools)],
-        tools=[write_todos],
+        tools=[write_todos, ask_agent],
     )
+
+    @agent.instructions
+    def _neighbors(ctx: RunContext[AgentDeps]) -> str:
+        delegator = ctx.deps.delegator
+        if delegator is None:
+            return ""
+        return neighbor_instructions(delegator.session.graph, ctx.deps.agent_id)
+
+    return agent

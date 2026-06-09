@@ -131,14 +131,18 @@ Goal: `ask_agent(target, question)` delegation tool; dynamic neighbor-list
 injection into instructions; Links tab edits edge labels; inter-agent messages
 streamed/logged/visualized (edge animation).
 
-- [ ] 4.1 `a2a.py` — `ask_agent` tool (delegation via ctx.usage + UsageLimits);
-      session-scoped target resolution.
-- [ ] 4.2 Dynamic neighbor injection (`@agent.instructions`) from graph edges.
-- [ ] 4.3 Inter-agent message log (persisted) + SSE events.
-- [ ] 4.4 Frontend: Links tab edits edge "why" labels; animate active edge.
-- [ ] 4.5 Tests: `test_a2a.py` (neighbor list built from edges; ask_agent routes
-      to correct target; usage propagates; unknown target rejected).
-- [ ] 4.6 All tests pass → **commit**.
+- [x] 4.1 `a2a.py` — `ask_agent` tool + `Delegator` (shared `ctx.usage`,
+      `UsageLimits`, must-be-neighbor + cycle + depth guards); session-scoped
+      target resolution via injected `agent_factory`.
+- [x] 4.2 Dynamic neighbor injection via `@agent.instructions` in `build_agent`
+      (reads live graph each run).
+- [x] 4.3 Inter-agent message log: new `messages` table + `MessageLog`;
+      `a2a_message` SSE events; `GET /api/messages`.
+- [x] 4.4 Frontend: `LinksTab` edits edge "why" labels (in/out lists); canvas
+      animates the active edge on delegation (`useEvents.activeEdges`).
+- [x] 4.5 Tests: `test_a2a.py` (neighbor list from edges; routing + answer;
+      non-neighbor refused; cycle guard; full ask_agent tool flow with logging).
+- [x] 4.6 All tests pass (56 + 1 skipped) + frontend builds → **commit**.
 
 ## Phase 5 — Task system (the headline milestone)
 
@@ -227,7 +231,7 @@ plus polish items as time allows.
 | 1 | Graph MVP | ✅ done (21 tests + build) |
 | 2 | Single working agent + tools | ✅ done (46 tests + live) |
 | 3 | Long-lived tasks | ✅ done (50 tests) |
-| 4 | Agent-to-agent | not started |
+| 4 | Agent-to-agent | ✅ done (56 tests) |
 | 5 | Task system | not started |
 | 6 | Compaction + gateway | not started |
 | 7 | Team library | not started |

@@ -13,6 +13,7 @@ can reach session-scoped services later. Kept tiny on purpose.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from pydantic_ai import RunContext
 
@@ -24,6 +25,11 @@ class AgentDeps:
     session_id: str = ""
     agent_id: str = ""
     todos: list[Todo] = field(default_factory=list)
+    # Delegation wiring (Phase 4). ``delegator`` is a a2a.Delegator, kept untyped
+    # here to avoid a circular import. ``delegation_chain`` is the agents already
+    # visited in this delegation path, for cycle/depth guards.
+    delegator: Any = None
+    delegation_chain: list[str] = field(default_factory=list)
 
 
 def write_todos(ctx: RunContext[AgentDeps], todos: list[Todo]) -> str:

@@ -27,19 +27,27 @@ export default function Canvas(props: {
   onSelectionChange: (p: { nodes: RFNode[] }) => void;
   addNode: () => void;
   status: string;
+  activeEdges: Set<string>;
 }) {
   // Inject the live lifecycle into each node's data so AgentNode can color its badge.
   const nodes = props.nodes.map((n) => ({
     ...n,
     data: { ...n.data, lifecycle: props.lifecycles[n.id] ?? "idle" },
   }));
+  // Animate edges that have a recent delegation message flowing along them.
+  const edges = props.edges.map((e) => {
+    const active = props.activeEdges.has(`${e.source}->${e.target}`);
+    return active
+      ? { ...e, animated: true, style: { ...e.style, stroke: "#2563eb", strokeWidth: 2 } }
+      : e;
+  });
   const statusColor = props.status.includes("error") ? "crimson" : "#6b7280";
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <ReactFlow
         nodes={nodes}
-        edges={props.edges}
+        edges={edges}
         nodeTypes={nodeTypes}
         onNodesChange={props.onNodesChange}
         onEdgesChange={props.onEdgesChange}

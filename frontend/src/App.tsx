@@ -10,7 +10,7 @@ import type { SessionInfo } from "./types";
 // SSE event stream powering lifecycle badges and the Agent tab.
 export default function App() {
   const graph = useTeamGraph();
-  const { events, lifecycles } = useEvents();
+  const { events, lifecycles, activeEdges } = useEvents();
   const [session, setSession] = useState<SessionInfo | null>(null);
 
   useEffect(() => {
@@ -49,6 +49,7 @@ export default function App() {
             onSelectionChange={graph.onSelectionChange}
             addNode={graph.addNode}
             status={graph.status}
+            activeEdges={activeEdges}
           />
         </div>
         <Sidebar
@@ -56,6 +57,8 @@ export default function App() {
           onUpdate={graph.updateSpec}
           events={events}
           lifecycles={lifecycles}
+          edges={graph.edges}
+          onUpdateEdgeLabel={graph.updateEdgeLabel}
         />
       </div>
     </div>

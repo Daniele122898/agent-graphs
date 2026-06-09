@@ -89,6 +89,12 @@ export function useTeamGraph() {
     [setNodes]
   );
 
+  const updateEdgeLabel = useCallback(
+    (edgeId: string, label: string) =>
+      setEdges((eds) => eds.map((e) => (e.id === edgeId ? { ...e, label } : e))),
+    [setEdges]
+  );
+
   const onSelectionChange = useCallback(
     ({ nodes: sel }: { nodes: RFNode[] }) => setSelectedId(sel.length === 1 ? sel[0].id : null),
     []
@@ -105,6 +111,7 @@ export function useTeamGraph() {
     onSelectionChange,
     addNode,
     updateSpec,
+    updateEdgeLabel,
     selectedId,
     selectedSpec,
     status,

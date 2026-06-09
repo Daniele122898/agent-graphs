@@ -21,11 +21,14 @@ const EVENT_TYPES = [
   "todos",
   "agent_done",
   "agent_error",
+  "a2a_message",
 ];
 
 export function useEvents() {
   const [events, setEvents] = useState<BusEvent[]>([]);
   const [lifecycles, setLifecycles] = useState<Record<string, AgentLifecycle>>({});
+  // Edges with a recent delegation message, keyed `from->to`, for canvas animation.
+  const [activeEdges, setActiveEdges] = useState<Set<string>>(new Set());
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -42,6 +45,18 @@ export function useEvents() {
           setLifecycles((p) => ({ ...p, [agentId]: "done" }));
         } else if (parsed.type === "agent_error" && agentId) {
           setLifecycles((p) => ({ ...p, [agentId]: "blocked" }));
+        } else if (parsed.type === "a2a_message") {
+          const key = `${parsed.data.from}->${parsed.data.to}`;
+          setActiveEdges((p) => new Set(p).add(key));
+          setTimeout(
+            () =>
+              setActiveEdges((p) => {
+                const next = new Set(p);
+                next.delete(key);
+                return next;
+              }),
+            2500
+          );
         }
       } catch {
         /* ignore malformed frame */
@@ -54,5 +69,5 @@ export function useEvents() {
     return () => es.close();
   }, []);
 
-  return { events, lifecycles };
+  return { events, lifecycles, activeEdges };
 }
