@@ -25,7 +25,7 @@ const EVENT_TYPES = [
   "task_status",
 ];
 
-export function useEvents() {
+export function useEvents(sessionId: string | null) {
   const [events, setEvents] = useState<BusEvent[]>([]);
   const [lifecycles, setLifecycles] = useState<Record<string, AgentLifecycle>>({});
   // Edges with a recent delegation message, keyed `from->to`, for canvas animation.
@@ -33,7 +33,12 @@ export function useEvents() {
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    const es = new EventSource("/events");
+    // Reset accumulated state when switching sessions.
+    setEvents([]);
+    setLifecycles({});
+    setActiveEdges(new Set());
+    const url = sessionId ? `/events?session_id=${sessionId}` : "/events";
+    const es = new EventSource(url);
     esRef.current = es;
     const handler = (e: MessageEvent) => {
       try {
@@ -68,7 +73,7 @@ export function useEvents() {
       /* EventSource auto-reconnects */
     };
     return () => es.close();
-  }, []);
+  }, [sessionId]);
 
   return { events, lifecycles, activeEdges };
 }

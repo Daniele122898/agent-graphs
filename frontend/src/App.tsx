@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import Canvas from "./Canvas";
 import Sidebar from "./Sidebar";
+import SessionSwitcher from "./SessionSwitcher";
 import TaskBoard from "./TaskBoard";
-import { api, type TeamRow } from "./api";
+import { api, setActiveSession, type TeamRow } from "./api";
 import { useEvents } from "./useEvents";
 import { useTeamGraph } from "./useTeamGraph";
 import type { SessionInfo } from "./types";
@@ -11,19 +12,28 @@ import type { SessionInfo } from "./types";
 // SSE event stream powering lifecycle badges and the Agent tab.
 export default function App() {
   const [activeTeamId, setActiveTeamId] = useState<string | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [teams, setTeams] = useState<TeamRow[]>([]);
   const graph = useTeamGraph(activeTeamId);
-  const { events, lifecycles, activeEdges } = useEvents();
+  const { events, lifecycles, activeEdges } = useEvents(activeSessionId);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [view, setView] = useState<"canvas" | "board">("canvas");
 
   const refreshTeams = () => api.listTeams().then((r) => setTeams(r.teams)).catch(() => {});
 
-  useEffect(() => {
+  // Load the (newly) active session's info, and point its editor at that
+  // session's team. setActiveSession() makes module-level api calls target it.
+  const loadSession = (id: string | null) => {
+    setActiveSession(id);
     api.session().then((s) => {
       setSession(s);
+      setActiveSessionId(s.id);
       setActiveTeamId(s.team_id);
     }).catch(() => setSession(null));
+  };
+
+  useEffect(() => {
+    loadSession(null);
     refreshTeams();
   }, []);
 
@@ -71,6 +81,12 @@ export default function App() {
             Save as…
           </button>
         </span>
+        <SessionSwitcher
+          activeSessionId={activeSessionId}
+          teams={teams}
+          onSwitch={(id) => loadSession(id)}
+          onLaunched={(id) => loadSession(id)}
+        />
         {session && (
           <span style={{ fontSize: 12, color: "#6b7280", display: "flex", alignItems: "center", gap: 8 }}>
             session {session.id.slice(0, 12)} · repo {session.repo_path}

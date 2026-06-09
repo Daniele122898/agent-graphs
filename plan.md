@@ -214,13 +214,16 @@ launch."
 Goal: launch a team against a chosen repo (repo picker + same-repo warning);
 session switcher; concurrent session views. Runtime already supports N sessions.
 
-- [ ] 8.1 Backend: launch-session endpoint (team_id + repo_path + mode);
-      same-repo active-session warning.
-- [ ] 8.2 Frontend: `SessionSwitcher.tsx`, repo-picker dialog, per-session
-      subscription.
-- [ ] 8.3 Tests: `test_multisession.py` (two sessions isolated: separate locks/
-      registries/buses; same-repo warning fires).
-- [ ] 8.4 All tests pass → **commit**.
+- [x] 8.1 Backend: `POST /api/sessions` (launch team_id+repo_path+mode, returns
+      same-repo warning), `GET /api/sessions`; `session_id` query param threaded
+      through all session-scoped endpoints (defaulting to the auto-created one).
+- [x] 8.2 Frontend: `SessionSwitcher.tsx` (switch + launch form); active
+      session id is module state in `api.ts` so calls target it; `useEvents`
+      reconnects per session.
+- [x] 8.3 Tests: `test_multisession.py` (launch + list; independent
+      bus/lock/gateway; same-repo warning fires; `?session_id=` targets the
+      right session's tasks).
+- [x] 8.4 All tests pass (82 + 1 skipped) + frontend builds → **commit**.
 
 ## Phase 9 — Snapshot/resume + polish (ongoing)
 
@@ -249,5 +252,5 @@ plus polish items as time allows.
 | 5 | Task system | ✅ done (66 tests + e2e) |
 | 6 | Compaction + gateway | ✅ done (75 tests) |
 | 7 | Team library | ✅ done (79 tests) |
-| 8 | Multi-session | not started |
+| 8 | Multi-session | ✅ done (82 tests) |
 | 9 | Snapshot/resume + polish | not started |

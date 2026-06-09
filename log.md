@@ -82,6 +82,24 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   (add node, drag-connect) are standard React Flow and will be exercised
   for real once an agent is wired up (Phase 2).
 
+## Phase 8 — Multi-session
+
+### 2026-06-09 — Threading session_id
+
+- **`_default_session(app)` became `_session(app, session_id=None)`** —
+  resolves a given id or falls back to the auto-created default. Every
+  session-scoped endpoint gained an optional `session_id` query param, so the
+  MVP UI keeps working without one while the API is fully multi-session. The
+  runtime already held `dict[session_id, Session]` from Phase 0, so this was
+  plumbing, not architecture — exactly the payoff the spec predicted.
+- **Same-repo launch warns but doesn't block** (`active_sessions_for_repo`),
+  per spec — two task forces over one repo is allowed but flagged.
+- **Frontend active session is module state in `api.ts`** (`setActiveSession`),
+  so session-scoped fetches target it without threading a prop through every
+  component. `useEvents(sessionId)` reconnects (and clears accumulated state) on
+  switch. Pragmatic for a single-user local UI; a multi-tab future would move
+  this into context/props.
+
 ## Phase 7 — Team library
 
 ### 2026-06-09 — Pin semantics made explicit

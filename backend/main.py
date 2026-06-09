@@ -127,17 +127,41 @@ def create_app(
         }
 
     @app.get("/api/session")
-    def current_session() -> dict:
-        session = app.state.sessions.get(app.state.default_session_id)
-        if session is None:
-            raise HTTPException(500, "no default session")
-        return session.info().model_dump()
+    def current_session(session_id: str | None = None) -> dict:
+        return _session(app, session_id).info().model_dump()
+
+    @app.get("/api/sessions")
+    def list_sessions() -> dict:
+        return {
+            "sessions": [s.info().model_dump() for s in app.state.sessions.list()],
+            "default_session_id": app.state.default_session_id,
+        }
+
+    @app.post("/api/sessions")
+    def launch_session(body: LaunchSessionRequest) -> dict:
+        """Launch a new session: bind a team definition to a repo. Warns (does
+        not block) if another active session already binds that repo — two task
+        forces will fight over the same files."""
+        team = app.state.teams.get(body.team_id)
+        if team is None:
+            raise HTTPException(404, f"no team '{body.team_id}'")
+        existing = app.state.sessions.active_sessions_for_repo(body.repo_path)
+        Path(body.repo_path).mkdir(parents=True, exist_ok=True)
+        session = app.state.sessions.create_session(
+            team_id=team.id, repo_path=body.repo_path, graph=team.graph, mode=body.mode
+        )
+        info = session.info().model_dump()
+        info["warning"] = (
+            f"{len(existing)} other active session(s) already bound to this repo"
+            if existing else None
+        )
+        return info
 
     @app.post("/api/session/mode")
-    def set_mode(body: ModeRequest) -> dict:
+    def set_mode(body: ModeRequest, session_id: str | None = None) -> dict:
         """Toggle the LLM execution gateway mode for this session: parallel
         (default) or serial (low-spec, one model call at a time)."""
-        session = _default_session(app)
+        session = _session(app, session_id)
         session.gateway.set_mode(body.mode)
         return session.info().model_dump()
 
@@ -199,29 +223,29 @@ def create_app(
         return team.model_dump()
 
     @app.get("/events")
-    async def events() -> StreamingResponse:
-        session = _default_session(app)
+    async def events(session_id: str | None = None) -> StreamingResponse:
+        session = _session(app, session_id)
         return StreamingResponse(sse_stream(session.bus), media_type="text/event-stream")
 
     @app.post("/api/agent/{agent_id}/run")
-    async def run_agent(agent_id: str, body: RunRequest) -> dict:
+    async def run_agent(agent_id: str, body: RunRequest, session_id: str | None = None) -> dict:
         """Give a long-lived agent a prompt. Creates+starts the RunningAgent on
         first use; thereafter the same worker handles follow-ups with history."""
-        ra = _get_or_create_running(app, agent_id)
+        ra = _get_or_create_running(app, _session(app, session_id), agent_id)
         ra.submit(body.prompt)
         return {"status": "started", "agent_id": agent_id}
 
     @app.post("/api/agent/{agent_id}/interject")
-    async def interject_agent(agent_id: str, body: RunRequest) -> dict:
+    async def interject_agent(agent_id: str, body: RunRequest, session_id: str | None = None) -> dict:
         """Inject a message. If the agent is running, it's processed right after
         the current run (with full history); if idle, it runs now."""
-        ra = _get_or_create_running(app, agent_id)
+        ra = _get_or_create_running(app, _session(app, session_id), agent_id)
         ra.submit(body.prompt)
         return {"status": "queued", "agent_id": agent_id}
 
     @app.post("/api/agent/{agent_id}/stop")
-    async def stop_agent(agent_id: str) -> dict:
-        session = _default_session(app)
+    async def stop_agent(agent_id: str, session_id: str | None = None) -> dict:
+        session = _session(app, session_id)
         ra = session.registry.running(agent_id)
         if ra is not None:
             await ra.stop()  # type: ignore[attr-defined]
@@ -239,22 +263,22 @@ def create_app(
             return {"models": [], "error": str(e)}
 
     @app.get("/api/stats/usage/{agent_id}")
-    def stats_usage(agent_id: str) -> dict:
-        return _default_session(app).usage.get(agent_id)
+    def stats_usage(agent_id: str, session_id: str | None = None) -> dict:
+        return _session(app, session_id).usage.get(agent_id)
 
     @app.get("/api/messages")
-    def messages() -> dict:
-        session = _default_session(app)
+    def messages(session_id: str | None = None) -> dict:
+        session = _session(app, session_id)
         return {"messages": app.state.messages.for_session(session.id)}
 
     @app.get("/api/tasks")
-    def list_tasks() -> dict:
-        session = _default_session(app)
+    def list_tasks(session_id: str | None = None) -> dict:
+        session = _session(app, session_id)
         return {"tasks": [t.model_dump() for t in app.state.tasks.list_for_session(session.id)]}
 
     @app.post("/api/tasks")
-    async def create_task(body: NewTaskRequest) -> dict:
-        session = _default_session(app)
+    async def create_task(body: NewTaskRequest, session_id: str | None = None) -> dict:
+        session = _session(app, session_id)
         agent_id = body.assigned_agent_id or _default_entry_point(session)
         if _find_spec(session, agent_id) is None:
             raise HTTPException(404, f"no agent '{agent_id}' to assign the task to")
@@ -323,14 +347,24 @@ class ModeRequest(BaseModel):
     mode: SessionMode
 
 
+class LaunchSessionRequest(BaseModel):
+    team_id: str
+    repo_path: str
+    mode: SessionMode = "parallel"
+
+
 class RunRequest(BaseModel):
     prompt: str
 
 
-def _default_session(app: FastAPI) -> Session:
-    session = app.state.sessions.get(app.state.default_session_id)
+def _session(app: FastAPI, session_id: str | None = None) -> Session:
+    """Resolve a session by id, defaulting to the auto-created one when omitted.
+    This is what lets every endpoint be multi-session-aware while the MVP UI can
+    keep calling without a session_id."""
+    sid = session_id or app.state.default_session_id
+    session = app.state.sessions.get(sid)
     if session is None:
-        raise HTTPException(500, "no default session")
+        raise HTTPException(404 if session_id else 500, f"no session '{sid}'")
     return session
 
 
@@ -354,7 +388,7 @@ def _make_task_runner(app: FastAPI, session: Session) -> TaskRunner:
     structured ReviewVerdict output, and a shell check in the repo root."""
 
     async def run_agent(agent_id: str, prompt: str) -> str:
-        return await _get_or_create_running(app, agent_id).run_once(prompt)
+        return await _get_or_create_running(app, session, agent_id).run_once(prompt)
 
     async def run_reviewer(reviewer_id: str, task_prompt: str, result: str) -> ReviewVerdict:
         spec = _find_spec(session, reviewer_id)
@@ -377,8 +411,7 @@ def _make_task_runner(app: FastAPI, session: Session) -> TaskRunner:
     )
 
 
-def _get_or_create_running(app: FastAPI, agent_id: str) -> RunningAgent:
-    session = _default_session(app)
+def _get_or_create_running(app: FastAPI, session: Session, agent_id: str) -> RunningAgent:
     existing = session.registry.running(agent_id)
     if existing is not None:
         return existing  # type: ignore[return-value]
