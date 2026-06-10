@@ -442,3 +442,18 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   `specs/lmstudio-api.md` (v1 endpoints can load/unload models — one at a time
   on this laptop).
 - **Reversibility:** model strings are per-agent config; edit in Capabilities.
+
+### 2026-06-10 — Live playground test results (qwen/qwen3.5-9b)
+
+- **End-to-end success:** a "create coin.py" task given through the web UI
+  reached `done` in ~1 min and produced a correct, runnable file; an earlier
+  rps.py task produced a working game + README via Lead → Documenter
+  delegation, visibly animated and logged. The capability summary works as
+  intended — the lead's thinking showed *"write_file isn't available"* and it
+  planned around its limits instead of failing blindly.
+- **Slow ≠ stuck:** the rps lead spent ~10 min on its final turn (qwen3.5 is
+  a thinking model on a weak laptop). Patience first; the new finite read
+  timeout (default 600s) catches genuinely dead connections.
+- **Known gap (existing backlog):** the Agent tab transcript only shows live
+  SSE events — page reload empties it even though history is persisted in
+  `agent_state`. That's the "persisted work-log UI" Phase 9.4 item.

@@ -45,7 +45,7 @@ cd frontend && npm run build
 # visual UI verification (both servers up, fresh DB) — REQUIRED for UI changes
 ./.venv/bin/python scripts/verify_ui.py   # screenshots → /tmp/ag_shots/, then Read them
 ```
-A real local model is available at `http://127.0.0.1:1234` (LM Studio, OpenAI-compatible; best tool-caller `qwen2.5-coder-7b-instruct-mlx`). **Use it sparingly** (weak laptop). The env-gated live tier is `tests/test_live_smoke.py` (`AGENT_GRAPHS_LIVE=1`).
+A real local model is available at `http://127.0.0.1:1234` (LM Studio, OpenAI-compatible). **Only models with LM Studio's `tool_use` capability work** — others emit tool calls as text that silently does nothing. Good choices: `qwen/qwen3.5-9b` (default) or `google/gemma-4-12b-qat`; `qwen2.5-coder-*` does NOT tool-call. Load/unload via the API (`specs/lmstudio-api.md`), ONE model at a time. **Use it sparingly** (weak laptop). The env-gated live tier is `tests/test_live_smoke.py` (`AGENT_GRAPHS_LIVE=1`).
 
 ## What's left to do
 The 10 build phases are complete (see `plan.md`). The remaining backlog (Phase 9.4, ongoing): cost estimates, persisted work-log UI, per-command bash allowlist, optional Docker sandbox executor. The path-check sandbox is **not** escape-proof (accepted for v1, local single-user).
