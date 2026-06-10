@@ -9,7 +9,14 @@ export interface BusEvent {
   session_id: string;
   type: string;
   data: Record<string, unknown>;
+  /** Monotonic client-side arrival number. Survives the events array being
+   * reset (session switch, hook remount), so "events after X" comparisons
+   * must use seq, never array indices. */
+  seq?: number;
 }
+
+// Module-scoped so it keeps counting across remounts and session switches.
+let seqCounter = 0;
 
 const EVENT_TYPES = [
   "user_message",
@@ -47,6 +54,7 @@ export function useEvents(sessionId: string | null) {
     const handler = (e: MessageEvent) => {
       try {
         const parsed = JSON.parse(e.data) as BusEvent;
+        parsed.seq = ++seqCounter;
         setEvents((prev) => [...prev, parsed]);
         const agentId = parsed.data?.agent_id as string | undefined;
         if (parsed.type === "agent_lifecycle" && agentId) {

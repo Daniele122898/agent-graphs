@@ -43,14 +43,18 @@ export default function AgentTab({
   // Loaded once per agent; live SSE events are appended after the load point
   // (everything older is already inside the stored history).
   const [history, setHistory] = useState<{ instructions: string[]; rows: HistoryRow[] } | null>(null);
-  const [baseline, setBaseline] = useState(0);
+  // Live-tail cutoff by event *seq*, never array index — the events array can
+  // reset (session switch, hook remount) while seq keeps counting, so an index
+  // would point past everything and silently hide all new events.
+  const [baselineSeq, setBaselineSeq] = useState(0);
   const [working, setWorking] = useState<"clear" | "summarize" | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const eventsRef = useRef(events);
   eventsRef.current = events;
 
   const loadHistory = useCallback(() => {
-    setBaseline(eventsRef.current.length);
+    const evs = eventsRef.current;
+    setBaselineSeq(evs.length ? (evs[evs.length - 1].seq ?? 0) : 0);
     api.agentHistory(agentId)
       .then((h) => setHistory({ instructions: h.instructions, rows: h.rows }))
       .catch(() => setHistory(null));
@@ -64,8 +68,8 @@ export default function AgentTab({
 
   const mine = useMemo(() => events.filter((e) => e.data?.agent_id === agentId), [events, agentId]);
   const live = useMemo(
-    () => events.slice(baseline).filter((e) => e.data?.agent_id === agentId),
-    [events, baseline, agentId]
+    () => events.filter((e) => (e.seq ?? 0) > baselineSeq && e.data?.agent_id === agentId),
+    [events, baselineSeq, agentId]
   );
   const todos = useMemo(() => {
     const last = [...mine].reverse().find((e) => e.type === "todos");

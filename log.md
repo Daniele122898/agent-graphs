@@ -535,3 +535,29 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   transcript. Verified live on the playground session: the lead's full
   4-task history renders end-to-end.
 - **Reversibility:** additive endpoints + one tab rework; renderer shared.
+
+### 2026-06-11 — Live chat tail went blind after the events array reset (user report)
+
+- **What:** the Agent tab's live tail used an array *index* (`events.length`
+  at history-fetch time) as its cutoff. `useEvents` resets the events array on
+  remount/session switch, so the index pointed past everything and every new
+  event — including the user's own message — was silently hidden until a full
+  reload. Fix: each event gets a module-scoped monotonic `seq` at arrival;
+  the cutoff is "seq > baselineSeq", which survives array resets.
+- **Lesson recorded:** never anchor "events after X" logic to array indices
+  when the array can be replaced; anchor to a monotonic id.
+
+### 2026-06-11 — Delegation failures were a generic "exceeded max retries"
+
+- **What:** the user's retried task failed with `Tool 'ask_agent' exceeded
+  max retries count of 1` and nothing visible anywhere. Root cause was
+  environmental — the team had been switched to
+  `deepseek-coder-v2-lite-instruct-mlx`, which lacks LM Studio's `tool_use`
+  capability — but the product hid it. Two fixes: (1) `Delegator.ask` now
+  publishes the failure as the a2a *reply* (`[consultation failed: …]`), so
+  the canvas animation + message log + Links history show the real cause;
+  (2) the Capabilities model picker explicitly labels non-tool_use models
+  ("⚠ no tool calls") and shows an amber warning box when one is selected,
+  instead of a subtle missing-🛠.
+- **Reversibility:** one publish line + picker UI; no behavior change for
+  successful delegations.

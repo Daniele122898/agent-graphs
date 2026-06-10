@@ -38,10 +38,22 @@ export default function CapabilitiesTab({
           {models.map((m) => (
             <option key={m.id} value={`lmstudio:${m.id}`}>
               {m.id}
-              {m.capabilities?.includes("tool_use") ? "  🛠" : ""}
+              {m.capabilities?.includes("tool_use") ? "  🛠" : "  ⚠ no tool calls"}
             </option>
           ))}
         </Select>
+        {(() => {
+          // A model without LM Studio's tool_use capability cannot function-call:
+          // tool invocations come out as plain text and silently do nothing.
+          const sel = models.find((m) => `lmstudio:${m.id}` === spec.model);
+          return sel && !sel.capabilities?.includes("tool_use") ? (
+            <div style={{ marginTop: 6, fontSize: 12, color: "#92400e", background: "#fef3c7", borderRadius: "var(--r-sm)", padding: "7px 10px" }}>
+              ⚠ <strong>{sel.id}</strong> has no <code className="mono">tool_use</code> capability in LM Studio — it
+              cannot call tools, so this agent won't be able to read/write files, run bash, or consult teammates.
+              Pick a model marked 🛠 (e.g. <code className="mono">qwen/qwen3.5-9b</code>).
+            </div>
+          ) : null;
+        })()}
       </Field>
 
       <Field label="Filesystem access">

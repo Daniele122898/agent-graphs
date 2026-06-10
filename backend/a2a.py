@@ -165,6 +165,7 @@ class Delegator:
                 lock_timeout=self._busy_timeout,
             )
         except asyncio.TimeoutError:
+            self._publish(target_id, asker_id, "reply", f"[no reply: busy for over {int(self._busy_timeout)}s]")
             raise ModelRetry(
                 f"'{target_id}' has been busy for over {int(self._busy_timeout)}s; "
                 "proceed without them or try again later."
@@ -172,6 +173,9 @@ class Delegator:
         except ModelRetry:
             raise
         except Exception as e:  # noqa: BLE001 — surfaced on the target as agent_error too
+            # Record the failure as the reply so the canvas + message log show
+            # WHY the consultation died, not just a generic retries-exceeded.
+            self._publish(target_id, asker_id, "reply", f"[consultation failed: {e}]")
             raise ModelRetry(f"consulting '{target_id}' failed ({e}); handle it without them.") from e
         finally:
             self._set_lifecycle(asker_id, "running")
