@@ -16,7 +16,7 @@ from .a2a import ask_agent, neighbor_instructions
 from .capabilities import make_dev_toolset
 from .history import compaction_capability
 from .models_domain import AgentSpec
-from .persona import build_instructions
+from .persona import build_instructions, environment_instructions
 from .todos import AgentDeps, write_todos
 from .tools import DevTools
 
@@ -44,5 +44,11 @@ def build_agent(spec: AgentSpec, *, model: Model, dev_tools: DevTools) -> Agent[
         if delegator is None:
             return ""
         return neighbor_instructions(delegator.session.graph, ctx.deps.agent_id)
+
+    # Registered last so the freshest, most run-specific facts (cwd, OS, date)
+    # sit at the end of the instructions — see specs/pi-harness-learnings.md.
+    @agent.instructions
+    def _environment(ctx: RunContext[AgentDeps]) -> str:
+        return environment_instructions(spec, dev_tools.root)
 
     return agent

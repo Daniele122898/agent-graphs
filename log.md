@@ -411,3 +411,21 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   delegation would otherwise deadlock. Timeout → `ModelRetry` ("busy") so the
   asker proceeds without the consult.
 - **Reversibility:** the worker-provider seam is injected; tests script it.
+
+### 2026-06-10 — Sectioned system prompt with capabilities + environment (pi-inspired)
+
+- **What:** instructions are now ordered sections (persona → team context →
+  tool guidance → capability summary), plus per-run `@agent.instructions`
+  fragments: the named neighbor list and an environment block (agent id/name,
+  repo root, OS, today's date) registered last so the freshest facts sit at
+  the end — the pattern documented in `specs/pi-harness-learnings.md`.
+- **Why (user report):** agents weren't told their persona context, links,
+  cwd, OS — and notably not their *capabilities*: a read-only agent had no
+  write tool but was never told, so it discovered limits via failed calls.
+  `capability_summary()` states filesystem level, non-default globs, and bash
+  availability up front.
+- **Verified:** instructions delivery itself was never broken — Pydantic AI
+  re-inserts `instructions` on every model request, including runs resumed
+  with `message_history` (confirmed in the installed package + a request-
+  capture test). The gap was content, not mechanism.
+- **Reversibility:** all additive prompt sections; pure functions of spec/env.
