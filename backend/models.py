@@ -18,9 +18,15 @@ from __future__ import annotations
 
 import os
 
+import httpx
 from pydantic_ai.models import Model, infer_model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
+
+# A local model that stops responding (e.g. it was swapped/unloaded mid-call)
+# must fail the run, not hang it forever. Generation on a weak laptop is slow,
+# so the read timeout is generous — but finite.
+LOCAL_READ_TIMEOUT = float(os.environ.get("AGENT_GRAPHS_LOCAL_READ_TIMEOUT", "600"))
 
 
 def lmstudio_base_url() -> str:
@@ -34,7 +40,10 @@ def resolve_model(model_str: str) -> Model:
 
     prefix, name = model_str.split(":", 1)
     if prefix in ("lmstudio", "local"):
-        provider = OpenAIProvider(base_url=lmstudio_base_url(), api_key="lm-studio")
+        http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10, read=LOCAL_READ_TIMEOUT, write=60, pool=60)
+        )
+        provider = OpenAIProvider(base_url=lmstudio_base_url(), api_key="lm-studio", http_client=http_client)
         return OpenAIChatModel(name, provider=provider)
     if prefix == "openai":
         return OpenAIChatModel(name)
