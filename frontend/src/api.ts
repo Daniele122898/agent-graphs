@@ -96,8 +96,11 @@ export interface TaskRow {
   assigned_agent_id: string;
   status: string;
   completion_signal: string;
+  todos: { content: string; status: "pending" | "in_progress" | "completed" }[];
   parent_task_id: string | null;
   result: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface TeamRow {
