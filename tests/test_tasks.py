@@ -164,3 +164,27 @@ async def test_agent_error_parks_task_in_blocked(conn, fake_clock):
     runner = TaskRunner(store, run_agent=agent, run_reviewer=_noop_reviewer, run_check=lambda c: (0, ""))
     assert await runner.run(task.id) == "blocked"
     assert "turn cap hit" in store.get(task.id).result
+
+
+async def test_cancellation_mid_run_parks_the_task_blocked(conn, fake_clock):
+    """Stop on the assigned agent cancels the run; the task must land in
+    blocked (where Retry revives it), never stay 'running' forever."""
+    import asyncio
+
+    store, task = _store_with_task(conn, fake_clock, "self_reported")
+    started = asyncio.Event()
+
+    async def agent(_id, _prompt):
+        started.set()
+        await asyncio.Event().wait()  # a run that never finishes on its own
+
+    runner = TaskRunner(store, run_agent=agent, run_reviewer=_noop_reviewer, run_check=lambda c: (0, ""))
+    t = asyncio.create_task(runner.run(task.id))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    t.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t
+
+    got = store.get(task.id)
+    assert got.status == "blocked"
+    assert "Retry" in got.result

@@ -68,6 +68,9 @@ class RunningAgent:
         # full prior context rather than a blank slate.
         self._messages: list = list(initial_messages or [])
         self._task: asyncio.Task | None = None
+        # The in-flight run_once (task/delegation path) — tracked so stop()
+        # can cancel it; the inbox-loop path is covered by cancelling _task.
+        self._current_run: asyncio.Future | None = None
         self._stopped = False
         self._bash_runner = bash_runner
         self._model_resolver = model_resolver
@@ -145,38 +148,47 @@ class RunningAgent:
         deps = self._deps if delegation_chain is None else replace(self._deps, delegation_chain=list(delegation_chain))
         history_out: list = []
         try:
-            output = await run_agent_streamed(
-                bus=self.session.bus,
-                registry=self.session.registry,
-                agent_id=self.agent_id,
-                agent=self.agent,
-                prompt=prompt,
-                deps=deps,
-                usage_tally=self.session.usage,
-                message_history=self._messages or None,
-                history_out=history_out,
-                usage=usage,
-                usage_limits=usage_limits,
+            self._current_run = asyncio.ensure_future(
+                run_agent_streamed(
+                    bus=self.session.bus,
+                    registry=self.session.registry,
+                    agent_id=self.agent_id,
+                    agent=self.agent,
+                    prompt=prompt,
+                    deps=deps,
+                    usage_tally=self.session.usage,
+                    message_history=self._messages or None,
+                    history_out=history_out,
+                    usage=usage,
+                    usage_limits=usage_limits,
+                )
             )
+            output = await self._current_run
             if history_out:
                 self._messages = history_out
             return output
         finally:
+            self._current_run = None
             self._run_lock.release()
             self._persist()
             if self._inbox.empty():
                 self._set_lifecycle("idle")
 
     async def stop(self) -> None:
-        """Cancel any in-flight run and end the loop. Idempotent."""
+        """Cancel any in-flight run — both the inbox-loop path and a run_once
+        driven by a task or delegation — and end the loop. Idempotent."""
         self._stopped = True
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        for fut in (self._current_run, self._task):
+            if fut is not None:
+                fut.cancel()
+                try:
+                    await fut
+                except asyncio.CancelledError:
+                    pass
+                except Exception:  # noqa: BLE001 — already surfaced as agent_error
+                    pass
+        self._current_run = None
+        self._task = None
         self._set_lifecycle("idle")
 
     @property

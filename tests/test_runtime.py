@@ -104,3 +104,26 @@ async def test_state_persisted_after_run(conn, fake_clock, repo):
     msgs = store.load_messages(session.id, "a")
     assert len(msgs) >= 2
     await ra.stop()
+
+
+async def test_stop_cancels_an_inflight_run_once(conn, fake_clock, repo):
+    """Stop must cancel a task/delegation-driven run (run_once), not only the
+    inbox loop — otherwise the model call keeps running invisibly."""
+    import pytest
+
+    session, spec = _session(conn, fake_clock, repo)
+    started = asyncio.Event()
+
+    async def hang(messages, info):
+        started.set()
+        await asyncio.Event().wait()  # a model call that never returns
+
+    ra = RunningAgent(session=session, spec=spec, model=FunctionModel(hang))
+    session.registry.attach_running("a", ra)
+    run = asyncio.create_task(ra.run_once("go"))
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    await ra.stop()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    assert session.registry.lifecycle("a") == "idle"

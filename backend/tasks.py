@@ -20,6 +20,7 @@ deterministically without any model or subprocess.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import subprocess
@@ -225,6 +226,12 @@ class TaskRunner:
             self._to(task_id, "running")
             try:
                 output = await self._run_agent(task.assigned_agent_id, prompt)
+            except asyncio.CancelledError:
+                # the user pressed Stop on the agent mid-run — park the task
+                # where Retry can revive it, then let the cancellation proceed
+                self._store.set_result(task_id, "[stopped by the user — press Retry to run it again]")
+                self._to(task_id, "blocked")
+                raise
             except Exception as e:  # noqa: BLE001 — caps/errors park the task
                 self._store.set_result(task_id, f"error: {e}")
                 self._to(task_id, "blocked")
