@@ -561,3 +561,39 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   instead of a subtle missing-🛠.
 - **Reversibility:** one publish line + picker UI; no behavior change for
   successful delegations.
+
+### 2026-06-11 — Live tail v2: anchor at the last COMPLETED run (user report #2)
+
+- **What:** the seq fix wasn't enough — the user opened the Agent tab while a
+  task run was already streaming, and the cutoff "everything before my fetch
+  is old" hid the in-flight run's events (they're in neither the persisted
+  history, which only updates at run END, nor the future). The tail now cuts
+  at the last `agent_done`/`agent_error` *for that agent*: completed runs
+  come from history, anything after the last completion is live. History is
+  re-fetched ~400ms after each done/error so the transcript converges.
+- **Why 400ms:** run_once persists in its `finally` right after publishing
+  agent_done; the delay covers that ordering without polling.
+
+### 2026-06-11 — ask_user: a structured question channel + anti-stall (user request)
+
+- **What:** agents kept ending their turn by writing questions as plain text
+  (nothing can answer those → the run dies, the work stalls — the wordle task
+  did exactly this). Three-part fix:
+  1. **`ask_user` tool** (`questions.py`): parks the run on an asyncio Future
+     on the session-owned `QuestionBoard`, publishes a `user_question` SSE
+     event, and resumes with the user's answers as the tool result. New
+     lifecycle `waiting-on-user` (purple "needs you" node badge). Endpoints:
+     `GET /api/questions`, `POST /api/questions/{id}/answer` (422 on count
+     mismatch, 404 if the question died). Answer timeout 1h
+     (`AGENT_GRAPHS_ASK_USER_TIMEOUT`) returns a "proceed on your best
+     judgment" note instead of failing the run.
+  2. **Prompt guidance** (persona TOOL_GUIDANCE): never end a turn with
+     plain-text questions; keep working until done or genuinely blocked.
+  3. **Continuation nudge** (`wiring.run_agent`): a task run that ends with
+     open todos is re-prompted to continue (cap 2) — converts "accidentally
+     stopped" into "kept working" without infinite-loop risk.
+- **UI:** amber question card in the Agent tab (option buttons + free-form
+  per question, one submit); verified end-to-end in a real browser via the
+  new `scripts/scripted_backend.py` (FunctionModel-backed backend).
+- **Reversibility:** tool + board are additive; the nudge is one loop in
+  wiring with a constant cap; lifecycle value is additive.

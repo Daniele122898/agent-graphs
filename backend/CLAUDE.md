@@ -12,6 +12,7 @@ run/test commands.
 - `models.py` — per-agent **model resolution** (string → Pydantic AI model). Different concern from `models_domain`.
 - `db.py` — SQLite schema (teams/sessions/agent_state/tasks/messages) + connection. Owns schema only; table CRUD lives with the component that owns the table.
 - `teams.py` / `sessions.py` / `tasks.py` / `agent_state.py` / `a2a.py` — the stores + their domain logic.
+- `questions.py` — the `ask_user` tool + per-session `QuestionBoard` (a run parks on an asyncio Future until the human answers via `POST /api/questions/{id}/answer`).
 - `tools.py` — the dev toolset (sandbox + edit). `capabilities.py` — profile→toolset. `agents.py` — build a Pydantic AI agent. `runtime.py` — `RunningAgent`. `gateway.py` — LLM execution gateway. `streaming.py` — SSE bridge. `history.py` — compaction. `persona.py` / `todos.py` / `stats.py` / `bus.py` / `util.py`.
 
 ## Invariants & non-obvious decisions (the *why*)
@@ -27,6 +28,8 @@ run/test commands.
 - **One run at a time per worker** (`RunningAgent._run_lock`): two tasks assigned to the same agent queue up instead of interleaving one history. The delegation path acquires with a 15-min timeout as a deadlock backstop (simultaneous A⇄B mutual delegation); on timeout the asker gets a `ModelRetry` saying the target is busy.
 - **`stop()` must cancel BOTH run paths**: the inbox loop (`_task`) and an in-flight `run_once` (`_current_run`, the task/delegation path). A cancelled task run parks the task `blocked` with a "stopped by the user" note (TaskRunner catches `CancelledError`, then re-raises) so the Retry endpoint can revive it — never leave it `running`.
 - **Local-model prompt hygiene**: every tool needs a docstring (it becomes the OpenAI tool description — an empty one starves small models of guidance), and the LM Studio profile sets `openai_chat_send_back_thinking_parts=False` so a thinking model's `reasoning_content` is never echoed back into later requests.
+- **Anti-stall is two-layered**: prompt guidance (never end a turn with plain-text questions — call `ask_user`; keep working until done/blocked) plus a mechanical check — `wiring.run_agent` re-prompts a task run that ended with open todos, capped at `CONTINUATION_NUDGES`.
+- **ask_user lifecycle**: the board sets `waiting-on-user` while parked and restores `running` after; answers must match the question count (422 otherwise); a restart cancels pending questions with the run (orphan-parking covers the task). The history endpoints (`/history`, `/clear`, `/summarize`) 409 while the agent is mid-run.
 - **Changing an agent's model/persona/caps must take effect on the next run.** `RunningAgent` snapshots its built spec (`spec_changed()`); `main._get_or_create_running` rebuilds the cached worker (carrying history) when it changed. Do not cache the agent without this check.
 - **No auto-create**: the lifespan rehydrates persisted sessions only; `_session()` requires an explicit `session_id`. There are no default-team endpoints — edit graphs via `/api/teams/{id}/graph`. `_apply_team_graph` syncs a running session's pinned graph only when it's bound to the edited team.
 

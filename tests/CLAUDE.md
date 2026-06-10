@@ -19,7 +19,9 @@ needs no model server** — it MUST stay that way and stay green.
 - `test_tools` / `test_capabilities` — sandbox path/glob enforcement, stale-hash edit reject, profile→toolset shape.
 - `test_tasks` — state machine, completion gates, revision→blocked cap (runner driven by injected fakes).
 - `test_e2e_session` — the **spine**: task → todos → ask_agent → write_file → reviewer gate → done, asserting the REAL file + delegation log + final status, all on FunctionModel.
+- `test_questions` — ask_user end-to-end over the HTTP API (run parks, answer resumes it, answers reach the model) + the open-todos continuation nudge.
 - `test_runtime` / `test_a2a` / `test_gateway` / `test_history` / `test_streaming` / `test_resume` / `test_multisession` / `test_model_switch` / `test_teams` / `test_graph` / `test_db` / `test_sessions` / `test_main`.
+- Endpoint tests that need a real (scripted) agent run monkeypatch `backend.wiring.resolve_model` with `make_sequence_model` and poll via `TestClient` (the lifespan portal runs background tasks).
 
 ## Live tier (off by default)
 `test_live_smoke.py` is gated by `AGENT_GRAPHS_LIVE=1` and hits the real local

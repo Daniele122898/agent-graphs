@@ -28,6 +28,7 @@ own `CLAUDE.md` with subsystem detail (loaded when you open files there).
 - **Tasks are first-class** with a status lifecycle and per-task completion gate (self-reported / reviewer agent / `check:` command). Code-level caps (turn/depth/revision) prevent runaway loops.
 - **The LLM execution gateway is separate from the task system**: tasks = *what work exists*; gateway = *how model calls dispatch against compute* (serial on low-spec, else parallel). Don't conflate them.
 - **Models are per-agent, provider-agnostic, and injected** (never constructed in place) so tests use a scripted fake model.
+- **Agents must never stall silently**: an agent needing the human calls the `ask_user` tool (run parks on `waiting-on-user`, the UI renders an answer card, the run resumes with the answers); a task run that ends with open todos gets a capped continuation nudge.
 
 ## Flow (IMPORTANT — changed from the early MVP)
 - The backend does **NOT** auto-create a team or session. Startup only rehydrates persisted sessions. The user **explicitly** creates a team (gets a starter lead agent) and **launches a session** (team + repo) via the onboarding UI. Never reintroduce a hidden default team/session.
