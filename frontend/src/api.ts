@@ -69,6 +69,18 @@ export const api = {
     fetch(withSession(`/api/agent/${agentId}/stop`), { method: "POST" }).then(
       json<{ status: string; agent_id: string }>
     ),
+  agentHistory: (agentId: string) =>
+    fetch(withSession(`/api/agent/${agentId}/history`)).then(
+      json<{ instructions: string[]; rows: HistoryRow[]; message_count: number }>
+    ),
+  clearAgentHistory: (agentId: string) =>
+    fetch(withSession(`/api/agent/${agentId}/history/clear`), { method: "POST" }).then(
+      json<{ status: string }>
+    ),
+  summarizeAgentHistory: (agentId: string) =>
+    fetch(withSession(`/api/agent/${agentId}/history/summarize`), { method: "POST" }).then(
+      json<{ status: string }>
+    ),
   lmstudioModels: () =>
     fetch("/api/stats/models").then(json<{ models: LMStudioModel[]; error: string | null }>),
   usage: (agentId: string) =>
@@ -92,6 +104,15 @@ export const api = {
       json<{ status: string; task_id: string }>
     ),
 };
+
+// One rendered row of an agent's stored conversation — same shapes as the
+// live SSE events so the Agent tab renders past and live work identically.
+export interface HistoryRow {
+  kind: "user" | "thinking" | "text" | "tool_call" | "tool_result" | "retry" | "system";
+  text?: string;
+  tool?: string;
+  args?: Record<string, unknown>;
+}
 
 export interface TaskRow {
   id: string;

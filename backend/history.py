@@ -53,3 +53,46 @@ def compaction_capability(
         return compact_history(messages, max_messages=max_messages, keep_last=keep_last)
 
     return ProcessHistory(processor)
+
+
+# --- rendering (for the control room) ----------------------------------------
+
+def render_messages(messages: list[ModelMessage]) -> list[dict]:
+    """Flatten stored messages into renderable rows for the UI — the same
+    shapes the live SSE events use, so the Agent tab renders past and live
+    work identically. This is *exactly* the conversation a run resumes with
+    (instructions are separate: sticky, rebuilt every request)."""
+    from pydantic_ai.messages import (
+        ModelResponse,
+        RetryPromptPart,
+        SystemPromptPart,
+        TextPart,
+        ThinkingPart,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    rows: list[dict] = []
+    for m in messages:
+        if isinstance(m, ModelRequest):
+            for p in m.parts:
+                if isinstance(p, UserPromptPart):
+                    text = p.content if isinstance(p.content, str) else str(p.content)
+                    rows.append({"kind": "user", "text": text})
+                elif isinstance(p, ToolReturnPart):
+                    rows.append({"kind": "tool_result", "tool": p.tool_name, "text": str(p.content)})
+                elif isinstance(p, RetryPromptPart):
+                    rows.append({"kind": "retry", "text": str(p.content)})
+                elif isinstance(p, SystemPromptPart):
+                    rows.append({"kind": "system", "text": p.content})
+        elif isinstance(m, ModelResponse):
+            for p in m.parts:
+                if isinstance(p, ThinkingPart):
+                    if p.content:
+                        rows.append({"kind": "thinking", "text": p.content})
+                elif isinstance(p, TextPart):
+                    if p.content:
+                        rows.append({"kind": "text", "text": p.content})
+                elif isinstance(p, ToolCallPart):
+                    rows.append({"kind": "tool_call", "tool": p.tool_name, "args": p.args_as_dict()})
+    return rows

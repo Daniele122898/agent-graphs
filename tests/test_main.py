@@ -100,3 +100,70 @@ def test_session_required_for_scoped_endpoints(tmp_path):
     with TestClient(app) as client:
         # no session_id → 400 (no implicit default)
         assert client.get("/api/session").status_code == 422  # missing required query param
+
+
+def _seed_history(app, session_id: str, agent_id: str = "lead"):
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart as TP, ToolCallPart, ToolReturnPart, UserPromptPart
+
+    msgs = [
+        ModelRequest(parts=[UserPromptPart(content="make a game")]),
+        ModelResponse(parts=[ToolCallPart("write_file", {"path": "g.py", "content": "x"})]),
+        ModelRequest(parts=[ToolReturnPart(tool_name="write_file", content="wrote g.py", tool_call_id="1")]),
+        ModelResponse(parts=[TP(content="made it")]),
+    ]
+    app.state.agent_state.save(session_id, agent_id, messages=msgs)
+    return msgs
+
+
+def test_agent_history_shows_the_real_model_context(tmp_path):
+    """The history endpoint returns what the model actually sees: the system
+    sections (persona/capabilities, environment) and the stored conversation
+    rendered as transcript rows."""
+    app = create_app(db_path=tmp_path / "app.sqlite")
+    with TestClient(app) as client:
+        _team, session = bootstrap_session(client, tmp_path / "repo")
+        _seed_history(app, session["id"])
+
+        body = client.get(f"/api/agent/lead/history?session_id={session['id']}").json()
+        joined = "\n".join(body["instructions"])
+        assert "lead engineer" in joined  # persona
+        assert "Today's date" in joined  # environment, sent last
+        assert [r["kind"] for r in body["rows"]] == ["user", "tool_call", "tool_result", "text"]
+        assert body["rows"][0]["text"] == "make a game"
+        assert body["rows"][1]["tool"] == "write_file"
+        assert body["message_count"] == 4
+
+
+def test_clear_history_resets_the_conversation(tmp_path):
+    app = create_app(db_path=tmp_path / "app.sqlite")
+    with TestClient(app) as client:
+        _team, session = bootstrap_session(client, tmp_path / "repo")
+        _seed_history(app, session["id"])
+        sid = session["id"]
+
+        assert client.post(f"/api/agent/lead/history/clear?session_id={sid}").status_code == 200
+        body = client.get(f"/api/agent/lead/history?session_id={sid}").json()
+        assert body["rows"] == []
+        assert body["instructions"]  # identity survives — instructions are rebuilt per request
+
+
+def test_summarize_history_compacts_to_summary_plus_ack(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        wiring, "resolve_model", lambda s: make_sequence_model([[TextPart("SUMMARY: built g.py")]])
+    )
+    app = create_app(db_path=tmp_path / "app.sqlite")
+    with TestClient(app) as client:
+        _team, session = bootstrap_session(client, tmp_path / "repo")
+        _seed_history(app, session["id"])
+        sid = session["id"]
+
+        r = client.post(f"/api/agent/lead/history/summarize?session_id={sid}")
+        assert r.status_code == 200
+        rows = client.get(f"/api/agent/lead/history?session_id={sid}").json()["rows"]
+        assert len(rows) == 2
+        assert rows[0]["kind"] == "user" and "SUMMARY: built g.py" in rows[0]["text"]
+
+        # nothing left to summarize twice... except the summary itself — but an
+        # empty history is a clean 409
+        client.post(f"/api/agent/lead/history/clear?session_id={sid}")
+        assert client.post(f"/api/agent/lead/history/summarize?session_id={sid}").status_code == 409

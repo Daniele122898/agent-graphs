@@ -11,11 +11,14 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 from pydantic_ai import Agent
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
 
+from .a2a import neighbor_instructions
 from .gateway import GatedModel
 from .graph import validate_structure
 from .models import resolve_model
 from .models_domain import AgentSpec, Capabilities, GraphNode, TeamGraph
+from .persona import build_instructions, environment_instructions
 from .runtime import RunningAgent, obtain_worker
 from .sessions import Session
 from .tasks import ReviewVerdict, TaskRunner, run_check
@@ -116,6 +119,72 @@ def make_task_runner(app: FastAPI, session: Session) -> TaskRunner:
         run_check=lambda cmd: run_check(cmd, session.repo_root),
         publish=session.bus.publish,
     )
+
+
+def agent_context_sections(session: Session, spec: AgentSpec) -> list[str]:
+    """The system context an agent's model request carries — static persona/
+    capability instructions plus the dynamic fragments (named neighbors, then
+    environment last), in the order they are sent. For the control room's
+    "what does the model actually see" view."""
+    sections = [
+        build_instructions(spec),
+        neighbor_instructions(session.graph, spec.id),
+        environment_instructions(spec, session.repo_root),
+    ]
+    return [s for s in sections if s]
+
+
+def agent_messages(app: FastAPI, session: Session, agent_id: str) -> list[ModelMessage]:
+    """The agent's current conversation: the live worker's in-memory history if
+    one exists, else the persisted snapshot."""
+    ra = session.registry.running(agent_id)
+    if ra is not None:
+        return list(ra.messages)
+    return app.state.agent_state.load_messages(session.id, agent_id)
+
+
+def set_agent_history(app: FastAPI, session: Session, agent_id: str, messages: list[ModelMessage]) -> None:
+    """Replace the agent's conversation (clear / summarize-compact), keeping the
+    live worker and the persisted snapshot in agreement."""
+    ra = session.registry.running(agent_id)
+    if ra is not None:
+        ra.replace_history(messages)  # persists via the worker
+    else:
+        app.state.agent_state.save(
+            session.id,
+            agent_id,
+            messages=messages,
+            lifecycle=session.registry.lifecycle(agent_id) or "idle",
+            usage=session.usage.get(agent_id),
+        )
+
+
+SUMMARIZE_PROMPT = (
+    "Summarize this entire conversation into a compact briefing for yourself: "
+    "what was asked, what you did (files created or changed, key decisions, "
+    "results), and any open follow-ups. Write it so you could continue the "
+    "work from the summary alone. Reply with ONLY the summary."
+)
+
+
+async def summarize_agent_history(
+    session: Session, spec: AgentSpec, messages: list[ModelMessage]
+) -> list[ModelMessage]:
+    """Compress an agent's conversation: one model call to summarize it, then a
+    fresh two-message history carrying just the summary. Instructions are sticky
+    (rebuilt every request), so the persona/capability context is unaffected."""
+    summarizer = Agent(
+        model=GatedModel(resolve_model(spec.model), session.gateway),
+        instructions=spec.persona or f"You are {spec.name}.",
+    )
+    r = await summarizer.run(SUMMARIZE_PROMPT, message_history=messages)
+    summary = str(r.output).strip()
+    return [
+        ModelRequest(parts=[UserPromptPart(content=(
+            "[Conversation compacted — summary of all prior work]\n\n" + summary
+        ))]),
+        ModelResponse(parts=[TextPart(content="Understood — I'll continue from this summary.")]),
+    ]
 
 
 async def get_or_create_running(app: FastAPI, session: Session, agent_id: str) -> RunningAgent:

@@ -50,7 +50,7 @@ cd frontend && npm run build
 A real local model is available at `http://127.0.0.1:1234` (LM Studio, OpenAI-compatible). **Only models with LM Studio's `tool_use` capability work** — others emit tool calls as text that silently does nothing. Good choices: `qwen/qwen3.5-9b` (default) or `google/gemma-4-12b-qat`; `qwen2.5-coder-*` does NOT tool-call. Load/unload via the API (`specs/lmstudio-api.md`), ONE model at a time. **Use it sparingly** (weak laptop). The env-gated live tier is `tests/test_live_smoke.py` (`AGENT_GRAPHS_LIVE=1`).
 
 ## What's left to do
-The 10 build phases are complete (see `plan.md`). The remaining backlog (Phase 9.4, ongoing): cost estimates, persisted work-log UI, per-command bash allowlist, optional Docker sandbox executor. The path-check sandbox is **not** escape-proof (accepted for v1, local single-user).
+The 10 build phases are complete (see `plan.md`). The remaining backlog (Phase 9.4, ongoing): cost estimates, per-command bash allowlist, optional Docker sandbox executor. (The persisted work-log UI shipped 2026-06-10: the Agent tab renders the stored history + system context, with Clear/Summarize.) The path-check sandbox is **not** escape-proof (accepted for v1, local single-user).
 
 ## Keeping CLAUDE.md files current
 After any change to the codebase, update the relevant CLAUDE.md (this file, a

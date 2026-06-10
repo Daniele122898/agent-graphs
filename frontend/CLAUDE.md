@@ -31,6 +31,7 @@ confirmed here. Extend the script when you add UI worth checking.
 - **`graphMapping.ts` is the single backend⇄React Flow conversion point.** The full `AgentSpec` lives in `node.data.spec`; `position` is the only UI-owned field. Don't convert formats anywhere else.
 - TS types in `src/types.ts` mirror the backend by hand; the backend graph round-trip test guards the wire format.
 - The Agent tab transcript is **chat bubbles** (user right/blue, agent left); the user's own prompt shows because the backend emits a `user_message` SSE event at run start. SSE event types are registered in `useEvents.ts` — add new ones there.
+- **The transcript = persisted history + live tail.** On open, the Agent tab fetches `GET /api/agent/{id}/history` (the stored conversation rendered as the same row shapes, plus the system-context sections) and then appends only SSE events that arrive *after* the fetch (`baseline` index) — older events are already inside the stored history; rendering both would duplicate. Clear/Summarize re-fetch and reset the baseline.
 
 ## Layout
 `src/` — `App.tsx` (shell + flow), `Canvas.tsx` + `AgentNode.tsx` (graph),

@@ -195,6 +195,17 @@ class RunningAgent:
     def messages(self) -> list:
         return self._messages
 
+    @property
+    def busy(self) -> bool:
+        """True while a run is in flight (inbox-loop or run_once path)."""
+        return self._run_lock.locked()
+
+    def replace_history(self, messages: list) -> None:
+        """Swap the conversation wholesale (clear / summarize-compact). The
+        caller must ensure no run is in flight — see ``busy``."""
+        self._messages = list(messages)
+        self._persist()
+
     def spec_changed(self, current_spec) -> bool:
         """True if the agent's config changed since this worker was built — the
         signal to rebuild it so a model/persona/capability edit takes effect."""

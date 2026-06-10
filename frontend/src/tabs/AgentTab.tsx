@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { api } from "../api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, type HistoryRow } from "../api";
 import { Button, Chip, TextArea } from "../ui";
 import type React from "react";
 import type { BusEvent } from "../useEvents";
@@ -39,14 +39,68 @@ export default function AgentTab({
 }) {
   const [prompt, setPrompt] = useState("");
   const [posting, setPosting] = useState(false);
+  // The persisted conversation — the context the model actually resumes with.
+  // Loaded once per agent; live SSE events are appended after the load point
+  // (everything older is already inside the stored history).
+  const [history, setHistory] = useState<{ instructions: string[]; rows: HistoryRow[] } | null>(null);
+  const [baseline, setBaseline] = useState(0);
+  const [working, setWorking] = useState<"clear" | "summarize" | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
+
+  const loadHistory = useCallback(() => {
+    setBaseline(eventsRef.current.length);
+    api.agentHistory(agentId)
+      .then((h) => setHistory({ instructions: h.instructions, rows: h.rows }))
+      .catch(() => setHistory(null));
+  }, [agentId]);
+
+  useEffect(() => {
+    setHistory(null);
+    setHistoryError(null);
+    loadHistory();
+  }, [loadHistory]);
 
   const mine = useMemo(() => events.filter((e) => e.data?.agent_id === agentId), [events, agentId]);
+  const live = useMemo(
+    () => events.slice(baseline).filter((e) => e.data?.agent_id === agentId),
+    [events, baseline, agentId]
+  );
   const todos = useMemo(() => {
     const last = [...mine].reverse().find((e) => e.type === "todos");
     return (last?.data?.todos as TodoItem[] | undefined) ?? [];
   }, [mine]);
 
   const busy = lifecycle === "running" || lifecycle === "waiting-on-agent";
+  const hasConversation = (history?.rows.length ?? 0) > 0 || live.length > 0;
+
+  const clearHistory = async () => {
+    if (!window.confirm("Clear this agent's entire conversation? Its persona, capabilities and environment are rebuilt on every request, so only the conversation is forgotten.")) return;
+    setWorking("clear");
+    setHistoryError(null);
+    try {
+      await api.clearAgentHistory(agentId);
+      loadHistory();
+    } catch (e) {
+      setHistoryError(String(e));
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const summarize = async () => {
+    setWorking("summarize");
+    setHistoryError(null);
+    try {
+      await api.summarizeAgentHistory(agentId);
+      loadHistory();
+    } catch (e) {
+      setHistoryError(String(e));
+    } finally {
+      setWorking(null);
+    }
+  };
 
   const run = async () => {
     if (!prompt.trim()) return;
@@ -68,7 +122,19 @@ export default function AgentTab({
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span className="field-label" style={{ margin: 0 }}>STATUS</span>
         <Chip tone={LIFECYCLE_TONE[lifecycle]}>{lifecycle}</Chip>
+        <span style={{ flex: 1 }} />
+        <Button size="sm" onClick={clearHistory} disabled={busy || working !== null || !hasConversation} title="Forget the whole conversation; keep the agent's identity">
+          {working === "clear" ? "Clearing…" : "Clear"}
+        </Button>
+        <Button size="sm" onClick={summarize} disabled={busy || working !== null || !hasConversation} title="Compress the conversation into a model-written summary">
+          {working === "summarize" ? "Summarizing…" : "Summarize"}
+        </Button>
       </div>
+      {historyError && (
+        <div style={{ fontSize: 12, color: "#991b1b", background: "#fee2e2", borderRadius: "var(--r-sm)", padding: "6px 10px" }}>
+          {historyError}
+        </div>
+      )}
 
       <TextArea
         value={prompt}
@@ -99,12 +165,58 @@ export default function AgentTab({
       )}
 
       <div style={{ flex: 1, overflowY: "auto", fontSize: 13, display: "flex", flexDirection: "column", gap: 8, paddingTop: 4 }}>
-        {mine.map((e, i) => (
+        {history && history.instructions.length > 0 && (
+          <ExpandableRow
+            icon="⚙️"
+            summary={
+              <span>
+                <strong>System context</strong>{" "}
+                <span style={{ color: "var(--text-muted)" }}>
+                  — {history.instructions.length} sections, rebuilt and sent with every model request
+                </span>
+              </span>
+            }
+            detail={history.instructions.join("\n\n──────────\n\n")}
+            tone="result"
+          />
+        )}
+        {history?.rows.map((r, i) => (
+          <EventRow key={`h${i}`} event={historyRowToEvent(r)} />
+        ))}
+        {history && history.rows.length > 0 && live.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--text-faint)", fontSize: 11 }}>
+            <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+            live
+            <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+          </div>
+        )}
+        {live.map((e, i) => (
           <EventRow key={i} event={e} />
         ))}
       </div>
     </div>
   );
+}
+
+// Stored history rows reuse the live-event renderer so the transcript reads
+// the same whether it streamed in or was reloaded from persistence.
+function historyRowToEvent(r: HistoryRow): BusEvent {
+  const TYPE: Record<HistoryRow["kind"], string> = {
+    user: "user_message",
+    thinking: "thinking",
+    text: "text",
+    tool_call: "tool_call",
+    tool_result: "tool_result",
+    retry: "retry",
+    system: "thinking",
+  };
+  const data: Record<string, unknown> =
+    r.kind === "tool_call"
+      ? { tool: r.tool, args: r.args }
+      : r.kind === "tool_result"
+        ? { tool: r.tool, result: r.text }
+        : { text: r.text };
+  return { session_id: "", type: TYPE[r.kind], data };
 }
 
 // A chat bubble. `side` controls alignment (user right, agent left).
@@ -317,6 +429,13 @@ function EventRow({ event }: { event: BusEvent }) {
       return (
         <Bubble side="left" bg="#fee2e2" color="#991b1b">
           ✗ {String(d.error)}
+        </Bubble>
+      );
+    case "retry":
+      // a harness nudge stored in history (tool error / validation feedback)
+      return (
+        <Bubble side="right" bg="#fef3c7" color="#92400e">
+          ⟲ {String(d.text)}
         </Bubble>
       );
     default:

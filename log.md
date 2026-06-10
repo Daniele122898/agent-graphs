@@ -512,3 +512,26 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   LM Studio model profile sets `openai_chat_send_back_thinking_parts=False`.
 - **Reversibility:** docstrings are additive; the profile is one dataclass
   field in `models.py`.
+
+### 2026-06-10 — Persisted work-log UI + Clear/Summarize (user request)
+
+- **What:** the Agent tab now shows the agent's *real* model context, not just
+  live SSE: `GET /api/agent/{id}/history` renders the stored conversation
+  (same row shapes as the live events → one renderer) plus the system-context
+  sections (persona/capabilities, neighbors, environment) in send order,
+  collapsed at the top. Live events append after a `baseline` index recorded
+  at fetch time — older events are already inside the stored history, so
+  rendering both would duplicate. Two new actions, both 409 while the agent
+  is mid-run: **Clear** (history → `[]`; identity survives because
+  instructions are sticky and rebuilt every request) and **Summarize** (one
+  model call summarizes the conversation; history becomes a synthetic
+  user-summary + assistant-ack pair — the "summarize-oldest" variant
+  history.py's docstring anticipated, but user-triggered).
+- **Why a synthetic two-message pair:** pydantic-ai history must stay a
+  well-formed request/response sequence; a user-role summary + short ack is
+  the minimal valid shape a next run can resume from.
+- **Known edge (pre-existing):** a run that *errors* persists no history
+  (history_out only fills from run.result), so failed runs leave no stored
+  transcript. Verified live on the playground session: the lead's full
+  4-task history renders end-to-end.
+- **Reversibility:** additive endpoints + one tab rework; renderer shared.

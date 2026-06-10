@@ -137,6 +137,29 @@ def main() -> int:
         except Exception:
             print("retry: task never reached blocked (model reachable?) — check skipped")
 
+        # agent history view: reload the app, reopen the agent — the system
+        # context (what every model request carries) must render from the
+        # backend, with the Clear/Summarize controls present
+        page.goto(URL, wait_until="load")
+        page.locator("button.fab").wait_for(state="visible", timeout=10000)
+        page.get_by_text("Lead", exact=True).first.click()
+        page.wait_for_timeout(300)
+        page.get_by_role("button", name="Agent").click()
+        page.wait_for_timeout(600)
+        try:
+            ctx = page.get_by_text("System context", exact=False).first
+            ctx.wait_for(timeout=5000)
+            ctx.click()
+            page.wait_for_timeout(300)
+            if not page.get_by_text("Today's date", exact=False).first.is_visible():
+                failures.append("system context detail does not show the environment section")
+        except Exception:
+            failures.append("System context section missing in Agent tab")
+        for name in ("Clear", "Summarize"):
+            if not page.get_by_role("button", name=name).first.is_visible():
+                failures.append(f"{name} button missing in Agent tab")
+        page.screenshot(path=str(SHOTS / "09_agent_context.png"))
+
         browser.close()
 
     if failures:
