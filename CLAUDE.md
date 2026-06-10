@@ -35,7 +35,9 @@ own `CLAUDE.md` with subsystem detail (loaded when you open files there).
 ## Run & test
 ```bash
 # backend (FastAPI :8000) — starts empty; create team + launch session in the UI
-./.venv/bin/python -m uvicorn backend.main:app --reload --port 8000
+# (the graceful-shutdown cap matters: open SSE /events streams never finish, so
+#  without it --reload wedges at "Waiting for connections to close" forever)
+./.venv/bin/python -m uvicorn backend.main:app --reload --port 8000 --timeout-graceful-shutdown 3
 # frontend (Vite :5173, proxies /api /health /events)
 cd frontend && npm run dev
 # backend tests — deterministic, token-free (FunctionModel); MUST be green

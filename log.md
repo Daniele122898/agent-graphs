@@ -471,3 +471,17 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   state runner errors, revision caps, and restart-orphans land in) — a 409
   otherwise prevents double-running an active task.
 - **Reversibility:** one endpoint + one button; trivially removable.
+
+### 2026-06-10 — uvicorn --reload wedging at "Waiting for connections to close"
+
+- **What:** the user's recurring observation (reload starts, "Shutting down",
+  then nothing) is uvicorn's *graceful* shutdown waiting for in-flight
+  responses to finish — and the SSE `/events` stream never finishes by design
+  (`EventBus.subscribe()` blocks on `q.get()` until the client disconnects).
+  Any open control-room tab therefore blocks every code reload indefinitely.
+  Closing the bus from the lifespan can't fix it: uvicorn runs lifespan
+  shutdown *after* connections close, which is exactly the wait that's stuck.
+- **Fix:** run with `--timeout-graceful-shutdown 3` (documented in CLAUDE.md).
+  After 3s the SSE connections are force-closed; the browser's EventSource
+  auto-reconnects to the new process, so the UI heals itself.
+- **Reversibility:** a CLI flag; no code change.
