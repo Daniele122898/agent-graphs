@@ -40,13 +40,21 @@ def neighbor_list(graph: TeamGraph, agent_id: str) -> list[tuple[str, str]]:
 
 def neighbor_instructions(graph: TeamGraph, agent_id: str) -> str:
     """The instructions fragment naming who an agent may consult and why. Empty
-    if it has no neighbors. Re-evaluated each run so it tracks graph edits."""
+    if it has no neighbors. Re-evaluated each run so it tracks graph edits.
+
+    Each teammate is listed by human-readable name with the id to pass to
+    ``ask_agent`` — the name carries the semantic role (\"Python Expert\"), the
+    id is the routing key."""
     pairs = neighbor_list(graph, agent_id)
     if not pairs:
         return ""
-    lines = "\n".join(f"- `{t}`{f' — {why}' if why else ''}" for t, why in pairs)
+    names = {n.spec.id: n.spec.name for n in graph.nodes}
+    lines = "\n".join(
+        f"- {names.get(t, t)} (`{t}`){f' — {why}' if why else ''}" for t, why in pairs
+    )
     return (
-        "You can consult these teammates with `ask_agent(target_id, question)`. "
+        "You can consult these teammates with `ask_agent(target_id, question)`, "
+        "passing the id in backticks as target_id. "
         "They answer from their own expertise; use them instead of guessing:\n" + lines
     )
 

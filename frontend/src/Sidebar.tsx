@@ -26,6 +26,7 @@ export default function Sidebar({
   events,
   lifecycles,
   edges,
+  agentNames,
   onUpdateEdgeLabel,
 }: {
   selected: AgentSpec | null;
@@ -33,6 +34,7 @@ export default function Sidebar({
   events: BusEvent[];
   lifecycles: Record<string, AgentLifecycle>;
   edges: Edge[];
+  agentNames: Record<string, string>;
   onUpdateEdgeLabel: (edgeId: string, label: string) => void;
 }) {
   const [tab, setTab] = useState<TabKey>("persona");
@@ -73,7 +75,7 @@ export default function Sidebar({
         ) : tab === "stats" ? (
           <StatsTab spec={selected} />
         ) : (
-          <LinksTab agentId={selected.id} edges={edges} onUpdateLabel={onUpdateEdgeLabel} />
+          <LinksTab agentId={selected.id} edges={edges} agentNames={agentNames} onUpdateLabel={onUpdateEdgeLabel} />
         )}
       </div>
     </div>

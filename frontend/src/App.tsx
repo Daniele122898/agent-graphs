@@ -81,6 +81,7 @@ export default function App() {
     name: n.data.spec.name,
     is_entry_point: n.data.spec.is_entry_point,
   }));
+  const agentNames = Object.fromEntries(agents.map((a) => [a.id, a.name]));
 
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "var(--bg)" }}>
@@ -176,6 +177,7 @@ export default function App() {
             events={events}
             lifecycles={lifecycles}
             edges={graph.edges}
+            agentNames={agentNames}
             onUpdateEdgeLabel={graph.updateEdgeLabel}
           />
         </div>

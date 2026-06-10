@@ -46,7 +46,8 @@ def test_neighbor_list_from_edges():
 
 def test_neighbor_instructions_names_targets_and_why():
     instr = neighbor_instructions(_graph(), "lead")
-    assert "react" in instr and "React/JSX questions" in instr
+    assert "`react`" in instr and "React/JSX questions" in instr
+    assert "React" in instr  # the human-readable name, not just the id
     assert "ask_agent" in instr
     assert neighbor_instructions(_graph(), "react") == ""  # no neighbors → empty
 
