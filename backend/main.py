@@ -69,6 +69,19 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
             if team is not None:
                 sessions.resume_session(row["id"], team.graph)
 
+        # Tasks that were mid-flight when the previous process died have no
+        # runner anymore — they'd show "running" forever. Park them in blocked
+        # so the user sees they need a nudge (re-create or cancel).
+        orphaned = conn.execute(
+            "SELECT id FROM tasks WHERE status IN ('running', 'needs_review', 'needs_revision')"
+        ).fetchall()
+        note = "[orphaned by a server restart — re-create the task to retry]"
+        for row in orphaned:
+            task = app.state.tasks.get(row["id"])
+            prior = task.result.strip() if task else ""
+            app.state.tasks.set_result(row["id"], f"{prior}\n\n{note}".strip())
+            app.state.tasks.set_status(row["id"], "blocked")
+
         try:
             yield
         finally:
