@@ -22,7 +22,7 @@ from backend.todos import AgentDeps
 from backend.tools import DevTools
 
 LIVE = os.environ.get("AGENT_GRAPHS_LIVE") == "1"
-MODEL = os.environ.get("AGENT_GRAPHS_LIVE_MODEL", "lmstudio:qwen2.5-coder-7b-instruct-mlx")
+MODEL = os.environ.get("AGENT_GRAPHS_LIVE_MODEL", "lmstudio:qwen/qwen3.5-9b")
 
 pytestmark = pytest.mark.skipif(not LIVE, reason="set AGENT_GRAPHS_LIVE=1 to run live-model smoke tests")
 

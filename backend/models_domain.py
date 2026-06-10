@@ -94,7 +94,10 @@ class AgentSpec(BaseModel):
     id: str
     name: str
     persona: str = ""
-    model: str = "lmstudio:qwen2.5-coder-7b-instruct-mlx"
+    # Default must be a model with LM Studio `tool_use` capability — without it
+    # tool calls come back as text and silently do nothing (qwen2.5-coder-*
+    # lacks tool_use; see specs/lmstudio-api.md).
+    model: str = "lmstudio:qwen/qwen3.5-9b"
     is_entry_point: bool = False
     capabilities: Capabilities = Field(default_factory=Capabilities)
 

@@ -32,6 +32,12 @@ your own expertise. You may likewise consult the teammates listed under
 TOOL_GUIDANCE = """\
 You work inside a single repository and may only touch what your capabilities allow.
 
+Tool calls:
+- Invoke tools ONLY through the function-calling interface. Never write a tool
+  call as text, pseudo-code, or inside a code fence — text like
+  `write_file(...)` does nothing and the work will NOT happen.
+- After calling a tool, read its result before claiming success.
+
 Editing files:
 - `read_file(path, start_line, end_line)` returns numbered lines and ends with an
   `[edit-token <start>-<end> <hash>]`. To change those exact lines, call

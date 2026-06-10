@@ -20,7 +20,8 @@ function newAgentSpec(id: string): AgentSpec {
     id,
     name: "New Agent",
     persona: "",
-    model: "lmstudio:qwen2.5-coder-7b-instruct-mlx",
+    // must be a tool_use-capable model (see specs/lmstudio-api.md)
+    model: "lmstudio:qwen/qwen3.5-9b",
     is_entry_point: false,
     capabilities: defaultCapabilities(),
   };

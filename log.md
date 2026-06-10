@@ -429,3 +429,16 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   with `message_history` (confirmed in the installed package + a request-
   capture test). The gap was content, not mechanism.
 - **Reversibility:** all additive prompt sections; pure functions of spec/env.
+
+### 2026-06-10 — Default model must have LM Studio tool_use capability
+
+- **What:** live verification showed `qwen2.5-coder-7b-instruct-mlx` (the old
+  default) emitting tool calls as TEXT in a code fence (`write_file(...)
+  [END_TOOL_REQUEST]`) — LM Studio lists it without the `tool_use` capability,
+  so nothing executes and the run "succeeds" having done nothing. Default
+  switched to `lmstudio:qwen/qwen3.5-9b` (tool_use-capable, per the user's
+  preference; `google/gemma-4-12b-qat` is the alternative). Tool guidance now
+  explicitly forbids text/pseudo-code tool calls. LM Studio API notes saved in
+  `specs/lmstudio-api.md` (v1 endpoints can load/unload models — one at a time
+  on this laptop).
+- **Reversibility:** model strings are per-agent config; edit in Capabilities.
