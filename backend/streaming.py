@@ -68,6 +68,9 @@ async def run_agent_streamed(
     On error, the agent lands in ``blocked`` (the user's attention) and an
     ``agent_error`` event is published — never a silent failure.
     """
+    # Echo the prompt so it appears in the Agent tab transcript (the UI renders
+    # this as the user's own chat bubble).
+    bus.publish("user_message", {"agent_id": agent_id, "text": prompt})
     registry.set_lifecycle(agent_id, "running")
     bus.publish("agent_lifecycle", {"agent_id": agent_id, "lifecycle": "running"})
     try:

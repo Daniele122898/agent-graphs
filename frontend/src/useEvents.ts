@@ -12,6 +12,7 @@ export interface BusEvent {
 }
 
 const EVENT_TYPES = [
+  "user_message",
   "agent_lifecycle",
   "model_request",
   "thinking",

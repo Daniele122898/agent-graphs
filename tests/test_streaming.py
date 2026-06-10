@@ -58,7 +58,10 @@ async def test_run_publishes_events_and_does_real_work(repo):
     task.cancel()
 
     types = [e["type"] for e in events]
-    assert types[0] == "agent_lifecycle"
+    # the user's prompt is echoed first, then the lifecycle transition
+    assert types[0] == "user_message"
+    assert events[0]["data"]["text"] == "go"
+    assert types[1] == "agent_lifecycle"
     assert types[-1] == "agent_done"
     assert any(e["type"] == "tool_call" and e["data"]["tool"] == "write_file" for e in events)
     assert any(e["type"] == "tool_result" for e in events)

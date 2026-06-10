@@ -88,7 +88,7 @@ export default function AgentTab({
         </div>
       )}
 
-      <div style={{ flex: 1, overflowY: "auto", fontSize: 13, display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ flex: 1, overflowY: "auto", fontSize: 13, display: "flex", flexDirection: "column", gap: 8, paddingTop: 4 }}>
         {mine.map((e, i) => (
           <EventRow key={i} event={e} />
         ))}
@@ -97,29 +97,88 @@ export default function AgentTab({
   );
 }
 
+// A chat bubble. `side` controls alignment (user right, agent left).
+function Bubble({
+  side,
+  bg,
+  color = "#111827",
+  children,
+  mono = false,
+}: {
+  side: "left" | "right";
+  bg: string;
+  color?: string;
+  children: React.ReactNode;
+  mono?: boolean;
+}) {
+  return (
+    <div style={{ display: "flex", justifyContent: side === "right" ? "flex-end" : "flex-start" }}>
+      <div
+        style={{
+          maxWidth: "85%",
+          background: bg,
+          color,
+          borderRadius: 12,
+          borderBottomRightRadius: side === "right" ? 2 : 12,
+          borderBottomLeftRadius: side === "left" ? 2 : 12,
+          padding: "7px 11px",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          fontFamily: mono ? "ui-monospace, monospace" : "inherit",
+          fontSize: mono ? 12 : 13,
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function EventRow({ event }: { event: BusEvent }) {
   const d = event.data;
   switch (event.type) {
+    case "user_message":
+      return (
+        <Bubble side="right" bg="#2563eb" color="white">
+          {String(d.text)}
+        </Bubble>
+      );
     case "thinking":
-      return <div style={{ fontStyle: "italic", color: "#9ca3af" }}>💭 {String(d.text)}</div>;
+      return (
+        <Bubble side="left" bg="transparent" color="#9ca3af">
+          <span style={{ fontStyle: "italic" }}>💭 {String(d.text)}</span>
+        </Bubble>
+      );
     case "text":
-      return <div style={{ whiteSpace: "pre-wrap" }}>{String(d.text)}</div>;
+      return (
+        <Bubble side="left" bg="#f3f4f6">
+          {String(d.text)}
+        </Bubble>
+      );
     case "tool_call":
       return (
-        <div style={{ background: "#f3f4f6", borderRadius: 6, padding: "4px 8px", fontFamily: "monospace", fontSize: 12 }}>
+        <Bubble side="left" bg="#eef2ff" mono>
           🛠 {String(d.tool)}({JSON.stringify(d.args)})
-        </div>
+        </Bubble>
       );
     case "tool_result":
       return (
-        <div style={{ color: "#6b7280", fontFamily: "monospace", fontSize: 11, paddingLeft: 12 }}>
+        <Bubble side="left" bg="transparent" color="#6b7280" mono>
           ↳ {truncate(String(d.result), 200)}
-        </div>
+        </Bubble>
       );
     case "agent_done":
-      return <div style={{ color: "#16a34a", fontWeight: 600 }}>✓ {String(d.output)}</div>;
+      return (
+        <Bubble side="left" bg="#dcfce7" color="#166534">
+          ✓ {String(d.output)}
+        </Bubble>
+      );
     case "agent_error":
-      return <div style={{ color: "crimson" }}>✗ {String(d.error)}</div>;
+      return (
+        <Bubble side="left" bg="#fee2e2" color="#991b1b">
+          ✗ {String(d.error)}
+        </Bubble>
+      );
     default:
       return null;
   }

@@ -56,7 +56,9 @@ export default function Canvas(props: {
         fitView
       >
         <Background />
-        <Controls />
+        {/* Zoom controls moved to top-left so they don't collide with the
+            bottom-left "add agent" button. */}
+        <Controls position="top-left" />
       </ReactFlow>
 
       <button
@@ -64,7 +66,7 @@ export default function Canvas(props: {
         title="Add agent"
         style={{
           position: "absolute",
-          top: 12,
+          bottom: 12,
           left: 12,
           width: 40,
           height: 40,
@@ -83,7 +85,7 @@ export default function Canvas(props: {
       <span
         style={{
           position: "absolute",
-          top: 18,
+          bottom: 20,
           left: 64,
           fontSize: 12,
           color: statusColor,
