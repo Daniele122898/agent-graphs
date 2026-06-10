@@ -49,18 +49,19 @@ source .venv/bin/activate
 uvicorn backend.main:app --reload --port 8000
 ```
 
-The backend auto-creates one team + one session on startup. By default the
-session's agents work in a gitignored `workspace/` folder; override with the
-`AGENT_GRAPHS_REPO` environment variable to point at a real repo.
+The backend starts empty — nothing is auto-created. Persisted sessions are
+rehydrated on startup so your work survives restarts.
 
-**Frontend** (Vite dev server on :5173, proxies `/api` and `/health` to :8000):
+**Frontend** (Vite dev server on :5173, proxies `/api`, `/health`, `/events`):
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-Open http://localhost:5173.
+Open http://localhost:5173. On first run you'll be guided to **create a team**
+(an agent graph) and **launch a session** that binds it to a repo folder on
+disk. The team then works in that folder.
 
 ## Tests
 
@@ -70,6 +71,16 @@ The suite is deterministic and token-free (Pydantic AI `FunctionModel` /
 ```bash
 source .venv/bin/activate
 pytest
+```
+
+### Visual / browser verification
+
+UI changes are verified by driving the real app with Playwright (screenshots in
+`/tmp/ag_shots/`). One-time browser install, then run with both servers up:
+
+```bash
+playwright install chromium
+python scripts/verify_ui.py
 ```
 
 ## Layout

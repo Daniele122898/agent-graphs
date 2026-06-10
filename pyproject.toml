@@ -16,6 +16,8 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "playwright>=1.40",        # browser-driven UI verification (scripts/verify_ui.py)
+    "pytest-playwright>=0.4",
 ]
 
 [build-system]
