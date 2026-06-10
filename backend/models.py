@@ -16,11 +16,13 @@ Supported prefixes:
 
 from __future__ import annotations
 
+import dataclasses
 import os
 
 import httpx
 from pydantic_ai.models import Model, infer_model
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles.openai import OpenAIModelProfile, openai_model_profile
 from pydantic_ai.providers.openai import OpenAIProvider
 
 # A local model that stops responding (e.g. it was swapped/unloaded mid-call)
@@ -44,7 +46,16 @@ def resolve_model(model_str: str) -> Model:
             timeout=httpx.Timeout(connect=10, read=LOCAL_READ_TIMEOUT, write=60, pool=60)
         )
         provider = OpenAIProvider(base_url=lmstudio_base_url(), api_key="lm-studio", http_client=http_client)
-        return OpenAIChatModel(name, provider=provider)
+        # Local thinking models (qwen3.5, ...) return reasoning in a
+        # `reasoning_content` field; pydantic-ai's default ('auto') echoes it
+        # back into every subsequent request, re-feeding the whole reasoning
+        # trace to a small model on a weak machine. Qwen's own guidance is to
+        # drop prior-turn thinking, so never send it back.
+        profile = dataclasses.replace(
+            OpenAIModelProfile.from_profile(openai_model_profile(name)),
+            openai_chat_send_back_thinking_parts=False,
+        )
+        return OpenAIChatModel(name, provider=provider, profile=profile)
     if prefix == "openai":
         return OpenAIChatModel(name)
     # Defer to Pydantic AI for any other provider (anthropic:, google:, ...).

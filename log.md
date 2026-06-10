@@ -485,3 +485,30 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   After 3s the SSE connections are force-closed; the browser's EventSource
   auto-reconnects to the new process, so the UI heals itself.
 - **Reversibility:** a CLI flag; no code change.
+
+### 2026-06-10 — Stop didn't stop task-driven runs (user report)
+
+- **What:** `RunningAgent.stop()` only cancelled the inbox-loop task — but
+  task and delegation runs go through `run_once`, awaited by the TaskRunner's
+  own asyncio task. So Stop on an agent working a *task* cancelled nothing:
+  the model kept generating and the task sat in `running` with no way back.
+  Fix: track the in-flight `run_once` future (`_current_run`) and cancel it in
+  `stop()` too; `TaskRunner` catches the `CancelledError`, parks the task
+  `blocked` with "stopped by the user — press Retry", and re-raises.
+- **Caveat:** cancelling closes our HTTP connection, but LM Studio may finish
+  the in-flight generation server-side anyway (non-streamed request; nothing
+  consumes the result). Streamed model requests would make disconnects bite
+  sooner — noted as a future option.
+- **Reversibility:** localized to runtime.stop/run_once + one except clause.
+
+### 2026-06-10 — Local-model prompt hygiene (from a real LM Studio request dump)
+
+- **What:** the user captured a full /v1/chat/completions body. Two problems:
+  (1) `list_dir`/`grep`/`run_bash`/`write_file` had no docstrings → empty
+  tool descriptions in the schema (small models pick tools by description);
+  (2) pydantic-ai's default `'auto'` echoed `reasoning_content` (the
+  thinking trace) back into every later request — pure context bloat; Qwen
+  guidance says drop prior-turn thinking. Fixed: docstrings added, and the
+  LM Studio model profile sets `openai_chat_send_back_thinking_parts=False`.
+- **Reversibility:** docstrings are additive; the profile is one dataclass
+  field in `models.py`.

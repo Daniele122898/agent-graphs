@@ -170,6 +170,7 @@ class DevTools:
         return f"{body}\n[edit-token {start}-{end} {token}]"
 
     def list_dir(self, path: str = ".") -> str:
+        """List a directory's entries (subdirectories end with ``/``)."""
         full = resolve_in_root(self.root, path)
         if not full.is_dir():
             raise ValueError(f"not a directory: '{path}'")
@@ -177,6 +178,8 @@ class DevTools:
         return "\n".join(f"{e.name}/" if e.is_dir() else e.name for e in entries) or "(empty)"
 
     def grep(self, pattern: str, path: str = ".") -> str:
+        """Search file contents under ``path`` with a regular expression.
+        Returns matching lines as ``file:line_number:line``."""
         regex = re.compile(pattern)
         base = resolve_in_root(self.root, path)
         results: list[str] = []
@@ -202,6 +205,9 @@ class DevTools:
     # writes (hold the per-session lock) --------------------------------
 
     async def write_file(self, path: str, content: str) -> str:
+        """Create or fully overwrite a file with ``content`` (parent directories
+        are created as needed). For small changes to an existing file, prefer
+        ``read_file`` + ``edit_file``."""
         if not path_matches(path, self.caps.write_paths):
             raise ValueError(f"no write access to '{path}'")
         full = resolve_in_root(self.root, path)
@@ -236,6 +242,8 @@ class DevTools:
     # bash --------------------------------------------------------------
 
     def run_bash(self, command: str) -> str:
+        """Run a shell command in the repository root. Returns ``exit=<code>``
+        followed by the command's combined stdout/stderr."""
         code, out, err = self._bash(command, self.root)
         body = f"exit={code}\n{out}{err}"
         if len(body) > BASH_OUTPUT_CAP:
