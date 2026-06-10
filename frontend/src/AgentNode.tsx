@@ -6,6 +6,7 @@ const LIFECYCLE: Record<AgentLifecycle, { color: string; label: string }> = {
   idle: { color: "#9aa4b2", label: "idle" },
   running: { color: "#15803d", label: "running" },
   "waiting-on-agent": { color: "#b45309", label: "waiting" },
+  "waiting-on-user": { color: "#7c3aed", label: "needs you" },
   blocked: { color: "#c2341d", label: "blocked" },
   done: { color: "#2563eb", label: "done" },
 };

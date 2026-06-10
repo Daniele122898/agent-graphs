@@ -8,6 +8,7 @@ export type AgentLifecycle =
   | "idle"
   | "running"
   | "waiting-on-agent"
+  | "waiting-on-user"
   | "blocked"
   | "done";
 

@@ -91,6 +91,12 @@ def apply_team_graph(app: FastAPI, team_id: str, graph: TeamGraph) -> dict:
     return team.graph.model_dump()
 
 
+CONTINUATION_NUDGES = 2
+"""How many times a task run that stops with unfinished todos gets re-prompted.
+Small local models drift into ending their turn mid-plan; the nudge converts
+"accidentally stopped" into "kept working" without risking an infinite loop."""
+
+
 def make_task_runner(app: FastAPI, session: Session) -> TaskRunner:
     """Build a TaskRunner whose effectful steps run real agents/checks against
     the session: the assigned agent via its RunningAgent, a reviewer agent with
@@ -98,7 +104,23 @@ def make_task_runner(app: FastAPI, session: Session) -> TaskRunner:
 
     async def run_agent(agent_id: str, prompt: str) -> str:
         ra = await get_or_create_running(app, session, agent_id)
-        return await ra.run_once(prompt)
+        output = await ra.run_once(prompt)
+        # Anti-stall: a run that ends while its own checklist has open items
+        # either forgot to finish or forgot to update the list — both deserve
+        # a nudge rather than silently calling the task complete.
+        for _ in range(CONTINUATION_NUDGES):
+            open_items = [t for t in ra.todos if t.status != "completed"]
+            if not open_items:
+                break
+            bullet = "\n".join(f"- [{t.status}] {t.content}" for t in open_items)
+            output = await ra.run_once(
+                "Your run ended but your todo list still has open items:\n"
+                f"{bullet}\n\n"
+                "Continue working through them now. If an item is genuinely done, "
+                "mark it completed via write_todos. If you need the user, call "
+                "ask_user. If something blocks you, state exactly what."
+            )
+        return output
 
     async def run_reviewer(reviewer_id: str, task_prompt: str, result: str) -> ReviewVerdict:
         spec = find_spec(session, reviewer_id)

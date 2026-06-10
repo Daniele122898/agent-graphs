@@ -39,3 +39,9 @@ class LaunchSessionRequest(BaseModel):
 
 class RunRequest(BaseModel):
     prompt: str
+
+
+class AnswerRequest(BaseModel):
+    """Answers for a pending ask_user call, aligned with its questions order."""
+
+    answers: list[str]

@@ -88,7 +88,12 @@ class RunningAgent:
         # the session registry (created on demand), so delegated work is fully
         # visible: lifecycle, streamed events, and persisted history.
         delegator = Delegator(session, self._obtain_target, message_log=message_log)
-        self._deps = AgentDeps(session_id=session.id, agent_id=spec.id, delegator=delegator)
+        self._deps = AgentDeps(
+            session_id=session.id,
+            agent_id=spec.id,
+            delegator=delegator,
+            question_board=session.questions,
+        )
 
     def _dev_tools(self, spec: AgentSpec) -> DevTools:
         kwargs = {"write_lock": self.session.write_lock}
@@ -199,6 +204,11 @@ class RunningAgent:
     def busy(self) -> bool:
         """True while a run is in flight (inbox-loop or run_once path)."""
         return self._run_lock.locked()
+
+    @property
+    def todos(self) -> list:
+        """The agent's current checklist (shared AgentDeps survive across runs)."""
+        return list(self._deps.todos)
 
     def replace_history(self, messages: list) -> None:
         """Swap the conversation wholesale (clear / summarize-compact). The

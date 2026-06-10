@@ -25,8 +25,9 @@ SessionMode = Literal["parallel", "serial"]
 
 SessionStatus = Literal["active", "paused", "stopped"]
 
-AgentLifecycle = Literal["idle", "running", "waiting-on-agent", "blocked", "done"]
-"""The five lifecycle states used throughout the system."""
+AgentLifecycle = Literal["idle", "running", "waiting-on-agent", "waiting-on-user", "blocked", "done"]
+"""The lifecycle states used throughout the system. ``waiting-on-user`` means
+an ask_user call is parked on the human's answer."""
 
 TaskStatus = Literal[
     "queued",

@@ -17,6 +17,7 @@ from .capabilities import make_dev_toolset
 from .history import compaction_capability
 from .models_domain import AgentSpec
 from .persona import build_instructions, environment_instructions
+from .questions import ask_user
 from .todos import AgentDeps, write_todos
 from .tools import DevTools
 
@@ -34,7 +35,7 @@ def build_agent(spec: AgentSpec, *, model: Model, dev_tools: DevTools) -> Agent[
         deps_type=AgentDeps,
         instructions=build_instructions(spec),
         toolsets=[make_dev_toolset(dev_tools)],
-        tools=[write_todos, ask_agent],
+        tools=[write_todos, ask_agent, ask_user],
         capabilities=[compaction_capability()],
     )
 

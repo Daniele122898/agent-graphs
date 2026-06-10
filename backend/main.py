@@ -33,6 +33,7 @@ from .graph import validate_structure
 from .history import render_messages
 from .models_domain import TeamGraph
 from .schemas import (
+    AnswerRequest,
     LaunchSessionRequest,
     ModeRequest,
     NewTaskRequest,
@@ -296,6 +297,28 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
             await ra.stop()
             session.registry.detach_running(agent_id)  # allow a fresh start
         return {"status": "stopped", "agent_id": agent_id}
+
+    # --- ask_user questions --------------------------------------------------
+
+    @app.get("/api/questions")
+    def open_questions(session_id: str | None = None) -> dict:
+        """All unanswered ask_user questions in this session (for page loads;
+        live arrivals come over SSE as `user_question` events)."""
+        session = wiring.resolve_session(app, session_id)
+        return {"questions": session.questions.list_open()}
+
+    @app.post("/api/questions/{question_id}/answer")
+    def answer_question(question_id: str, body: AnswerRequest, session_id: str | None = None) -> dict:
+        """Resolve a pending ask_user call; the parked run resumes with these
+        answers as the tool result."""
+        session = wiring.resolve_session(app, session_id)
+        try:
+            ok = session.questions.answer(question_id, body.answers)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        if not ok:
+            raise HTTPException(404, "no such pending question (already answered, timed out, or the run ended)")
+        return {"status": "answered", "id": question_id}
 
     # --- stats + messages --------------------------------------------------------
 

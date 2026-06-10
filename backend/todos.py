@@ -30,6 +30,9 @@ class AgentDeps:
     # visited in this delegation path, for cycle/depth guards.
     delegator: Any = None
     delegation_chain: list[str] = field(default_factory=list)
+    # questions.QuestionBoard (untyped to avoid a circular import): the
+    # session-owned registry the ask_user tool parks runs on.
+    question_board: Any = None
 
 
 def write_todos(ctx: RunContext[AgentDeps], todos: list[Todo]) -> str:

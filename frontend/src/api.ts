@@ -81,6 +81,14 @@ export const api = {
     fetch(withSession(`/api/agent/${agentId}/history/summarize`), { method: "POST" }).then(
       json<{ status: string }>
     ),
+  openQuestions: () =>
+    fetch(withSession("/api/questions")).then(json<{ questions: OpenQuestion[] }>),
+  answerQuestion: (questionId: string, answers: string[]) =>
+    fetch(withSession(`/api/questions/${questionId}/answer`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answers }),
+    }).then(json<{ status: string }>),
   lmstudioModels: () =>
     fetch("/api/stats/models").then(json<{ models: LMStudioModel[]; error: string | null }>),
   usage: (agentId: string) =>
@@ -112,6 +120,14 @@ export interface HistoryRow {
   text?: string;
   tool?: string;
   args?: Record<string, unknown>;
+}
+
+// A pending ask_user call: the agent's run is parked until these are answered.
+export interface OpenQuestion {
+  id: string;
+  agent_id: string;
+  questions: { question: string; options: string[] }[];
+  created_at: string;
 }
 
 export interface TaskRow {

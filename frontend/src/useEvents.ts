@@ -31,6 +31,8 @@ const EVENT_TYPES = [
   "agent_error",
   "a2a_message",
   "task_status",
+  "user_question",
+  "user_question_done",
 ];
 
 export function useEvents(sessionId: string | null) {

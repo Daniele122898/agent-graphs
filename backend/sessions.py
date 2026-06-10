@@ -107,6 +107,11 @@ class Session:
         )
         self.registry = AgentRegistry()
         self.usage = UsageTally()
+        # Unanswered ask_user calls (questions.QuestionBoard) — per-session,
+        # in-memory; a restart cancels them with the runs that asked.
+        from .questions import QuestionBoard  # local import: avoids a module cycle
+
+        self.questions = QuestionBoard(self)
 
         # Seed the registry from the team graph so every agent has a lifecycle.
         for node in graph.nodes:

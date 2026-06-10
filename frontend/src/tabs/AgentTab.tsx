@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type HistoryRow } from "../api";
-import { Button, Chip, TextArea } from "../ui";
+import { api, type HistoryRow, type OpenQuestion } from "../api";
+import { Button, Chip, TextArea, TextInput } from "../ui";
 import type React from "react";
 import type { BusEvent } from "../useEvents";
 import type { AgentLifecycle } from "../types";
@@ -9,6 +9,7 @@ const LIFECYCLE_TONE: Record<AgentLifecycle, "default" | "primary" | "success" |
   idle: "default",
   running: "success",
   "waiting-on-agent": "warning",
+  "waiting-on-user": "warning",
   blocked: "danger",
   done: "primary",
 };
@@ -53,8 +54,19 @@ export default function AgentTab({
   eventsRef.current = events;
 
   const loadHistory = useCallback(() => {
+    // Cut the live tail at the last COMPLETED run (its events are inside the
+    // fetched history) — not at "now": an in-flight run's already-streamed
+    // events are in neither history nor the future, and must stay visible.
     const evs = eventsRef.current;
-    setBaselineSeq(evs.length ? (evs[evs.length - 1].seq ?? 0) : 0);
+    let cut = 0;
+    for (let i = evs.length - 1; i >= 0; i--) {
+      const e = evs[i];
+      if ((e.type === "agent_done" || e.type === "agent_error") && e.data?.agent_id === agentId) {
+        cut = e.seq ?? 0;
+        break;
+      }
+    }
+    setBaselineSeq(cut);
     api.agentHistory(agentId)
       .then((h) => setHistory({ instructions: h.instructions, rows: h.rows }))
       .catch(() => setHistory(null));
@@ -66,6 +78,32 @@ export default function AgentTab({
     loadHistory();
   }, [loadHistory]);
 
+  // When a run finishes it gets persisted into history — re-fetch shortly
+  // after (the delay covers the persist) so the transcript converges and the
+  // live tail resets past the completed run.
+  const doneCount = useMemo(
+    () => events.filter((e) => (e.type === "agent_done" || e.type === "agent_error") && e.data?.agent_id === agentId).length,
+    [events, agentId]
+  );
+  useEffect(() => {
+    if (doneCount === 0) return;
+    const t = setTimeout(loadHistory, 400);
+    return () => clearTimeout(t);
+  }, [doneCount, loadHistory]);
+
+  // Pending ask_user questions for this agent: fetched on open (page reload
+  // case) and re-fetched whenever a question event arrives or resolves.
+  const [questions, setQuestions] = useState<OpenQuestion[]>([]);
+  const questionEventCount = useMemo(
+    () => events.filter((e) => (e.type === "user_question" || e.type === "user_question_done") && e.data?.agent_id === agentId).length,
+    [events, agentId]
+  );
+  useEffect(() => {
+    api.openQuestions()
+      .then((r) => setQuestions(r.questions.filter((q) => q.agent_id === agentId)))
+      .catch(() => setQuestions([]));
+  }, [questionEventCount, agentId]);
+
   const mine = useMemo(() => events.filter((e) => e.data?.agent_id === agentId), [events, agentId]);
   const live = useMemo(
     () => events.filter((e) => (e.seq ?? 0) > baselineSeq && e.data?.agent_id === agentId),
@@ -76,7 +114,7 @@ export default function AgentTab({
     return (last?.data?.todos as TodoItem[] | undefined) ?? [];
   }, [mine]);
 
-  const busy = lifecycle === "running" || lifecycle === "waiting-on-agent";
+  const busy = lifecycle === "running" || lifecycle === "waiting-on-agent" || lifecycle === "waiting-on-user";
   const hasConversation = (history?.rows.length ?? 0) > 0 || live.length > 0;
 
   const clearHistory = async () => {
@@ -157,6 +195,14 @@ export default function AgentTab({
         )}
       </div>
 
+      {questions.map((q) => (
+        <QuestionCard
+          key={q.id}
+          q={q}
+          onAnswered={() => setQuestions((prev) => prev.filter((x) => x.id !== q.id))}
+        />
+      ))}
+
       {todos.length > 0 && (
         <div className="card" style={{ padding: 10 }}>
           <div className="field-label">TODOS</div>
@@ -221,6 +267,65 @@ function historyRowToEvent(r: HistoryRow): BusEvent {
         ? { tool: r.tool, result: r.text }
         : { text: r.text };
   return { session_id: "", type: TYPE[r.kind], data };
+}
+
+// An interactive card for a pending ask_user call: pick an option or type a
+// free-form answer per question, then submit them all — the agent's parked
+// run resumes with the answers as the tool result.
+function QuestionCard({ q, onAnswered }: { q: OpenQuestion; onAnswered: () => void }) {
+  const [answers, setAnswers] = useState<string[]>(q.questions.map(() => ""));
+  const [posting, setPosting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const setAnswer = (i: number, v: string) => setAnswers((a) => a.map((x, j) => (j === i ? v : x)));
+  const ready = answers.every((a) => a.trim().length > 0);
+
+  const submit = async () => {
+    setPosting(true);
+    setError(null);
+    try {
+      await api.answerQuestion(q.id, answers.map((a) => a.trim()));
+      onAnswered();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ padding: 12, border: "1.5px solid #f59e0b", background: "#fffbeb" }}>
+      <div className="field-label" style={{ color: "#92400e" }}>❓ THE AGENT NEEDS YOUR INPUT</div>
+      {q.questions.map((uq, i) => (
+        <div key={i} style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>{uq.question}</div>
+          {uq.options.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 }}>
+              {uq.options.map((opt) => (
+                <Button
+                  key={opt}
+                  size="sm"
+                  variant={answers[i] === opt ? "primary" : "secondary"}
+                  onClick={() => setAnswer(i, opt)}
+                >
+                  {opt}
+                </Button>
+              ))}
+            </div>
+          )}
+          <TextInput
+            placeholder={uq.options.length > 0 ? "…or answer in your own words" : "Your answer…"}
+            value={uq.options.includes(answers[i]) ? "" : answers[i]}
+            onChange={(e) => setAnswer(i, e.target.value)}
+            style={{ marginTop: 7, background: "white" }}
+          />
+        </div>
+      ))}
+      {error && <div style={{ marginTop: 8, fontSize: 12, color: "#991b1b" }}>{error}</div>}
+      <Button variant="primary" size="sm" onClick={submit} disabled={!ready || posting} style={{ marginTop: 10 }}>
+        {posting ? "Sending…" : "Send answers"}
+      </Button>
+    </div>
+  );
 }
 
 // A chat bubble. `side` controls alignment (user right, agent left).

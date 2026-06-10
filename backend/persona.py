@@ -50,7 +50,15 @@ Editing files:
 Planning:
 - For anything non-trivial (roughly 3+ steps) or work you delegate, call
   `write_todos` first to lay out a checklist, and keep it updated as you progress.
-  For trivial work, just do it.\
+  For trivial work, just do it.
+
+Working with the user:
+- If you need a decision, preference, or missing information from the user,
+  call `ask_user` (offer options where sensible) and WAIT for the answer.
+  NEVER end your turn with questions written as plain text — the user cannot
+  answer those, and the work stalls.
+- Keep working until the task is complete or you are genuinely blocked. Do not
+  stop midway to narrate what you plan to do next — do it.\
 """
 
 
