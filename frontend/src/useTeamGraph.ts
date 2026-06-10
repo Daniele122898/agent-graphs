@@ -3,7 +3,7 @@
 // edits. Lifting this into a hook lets both the Canvas (presentational) and the
 // Sidebar (spec editor) share one source of truth.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { addEdge, useEdgesState, useNodesState, type Connection, type Edge } from "@xyflow/react";
 import { api } from "./api";
 import { fromReactFlow, toReactFlow, type RFNode } from "./graphMapping";
@@ -105,7 +105,10 @@ export function useTeamGraph(teamId: string | null) {
     []
   );
 
-  const selectedSpec = nodes.find((n) => n.id === selectedId)?.data.spec ?? null;
+  const selectedSpec = useMemo(
+    () => nodes.find((n) => n.id === selectedId)?.data.spec ?? null,
+    [nodes, selectedId]
+  );
 
   return {
     nodes,

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type LMStudioModel } from "../api";
-import type { AgentSpec } from "../types";
+import { bareModelId, type AgentSpec } from "../types";
 
 // Stats tab: HOW is it doing — observe-only. LM Studio model stats for the
 // agent's model + token usage from completed runs. Flags the documented quirk
@@ -13,7 +13,7 @@ export default function StatsTab({ spec }: { spec: AgentSpec }) {
   useEffect(() => {
     api.lmstudioModels().then((r) => {
       setError(r.error);
-      const id = spec.model.replace(/^lmstudio:|^local:/, "");
+      const id = bareModelId(spec.model);
       setModel(r.models.find((m) => m.id === id) ?? null);
     });
     api.usage(spec.id).then(setUsage).catch(() => setUsage(null));

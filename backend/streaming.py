@@ -15,18 +15,23 @@ real runs, a ``FunctionModel`` in tests) — this module never constructs one.
 from __future__ import annotations
 
 import json
-from typing import AsyncIterator
+from typing import TYPE_CHECKING, AsyncIterator
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    ModelMessage,
     TextPart,
     ThinkingPart,
 )
 
 from .bus import EventBus
 from .todos import AgentDeps
+
+if TYPE_CHECKING:
+    from .sessions import AgentRegistry
+    from .stats import UsageTally
 
 
 def format_sse(event: dict) -> str:
@@ -42,20 +47,20 @@ async def sse_stream(bus: EventBus) -> AsyncIterator[str]:
 
 
 def _todos_payload(deps: AgentDeps) -> list[dict]:
-    return [t.model_dump() if hasattr(t, "model_dump") else dict(t) for t in deps.todos]
+    return [t.model_dump() for t in deps.todos]
 
 
 async def run_agent_streamed(
     *,
     bus: EventBus,
-    registry,
+    registry: "AgentRegistry",
     agent_id: str,
     agent: Agent[AgentDeps],
     prompt: str,
     deps: AgentDeps,
-    usage_tally=None,
-    message_history: list | None = None,
-    history_out: list | None = None,
+    usage_tally: "UsageTally | None" = None,
+    message_history: list[ModelMessage] | None = None,
+    history_out: list[ModelMessage] | None = None,
 ) -> str:
     """Run an agent to completion, publishing its work to the bus and driving the
     agent's lifecycle. Returns the final output text.
@@ -128,7 +133,7 @@ async def run_agent_streamed(
         raise
 
 
-def _jsonable(args) -> object:
+def _jsonable(args: str | dict | None) -> object:
     """Tool-call args may be a dict or a JSON string; normalize for the wire."""
     if isinstance(args, str):
         try:

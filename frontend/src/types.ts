@@ -55,3 +55,10 @@ export interface SessionInfo {
 export function defaultCapabilities(): Capabilities {
   return { filesystem: "read-write", read_paths: ["**"], write_paths: ["**"], bash: true };
 }
+
+// Strip the provider prefix ("lmstudio:", "local:", "openai:") from a model
+// string, leaving the bare model id used by LM Studio lookups.
+export function bareModelId(model: string): string {
+  const i = model.indexOf(":");
+  return i === -1 ? model : model.slice(i + 1);
+}

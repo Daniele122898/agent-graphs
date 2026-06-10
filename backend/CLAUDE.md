@@ -5,7 +5,9 @@ Python 3.13, FastAPI, Pydantic AI (`pydantic-ai-slim[openai]` 1.x), SQLite
 run/test commands.
 
 ## Module map (roles, not contents)
-- `main.py` — app factory + lifespan + all HTTP/SSE endpoints + the wiring that turns injected-callable abstractions into real agent/reviewer/check runs.
+- `main.py` — app factory + lifespan + the HTTP/SSE endpoints (thin; delegates glue to `wiring.py`).
+- `wiring.py` — the wiring that turns injected-callable abstractions into real agent/reviewer/check runs: `get_or_create_running`, `make_task_runner`, `apply_team_graph`, `resolve_session`, `starter_team_graph`.
+- `schemas.py` — HTTP request bodies (wire shapes only), separate from the domain shapes in `models_domain.py`.
 - `models_domain.py` — pure Pydantic data shapes (Team/Session/AgentSpec/Capabilities/Task/...). *Data only, no behavior, no I/O.* Named `models_domain` to avoid colliding with `models.py`.
 - `models.py` — per-agent **model resolution** (string → Pydantic AI model). Different concern from `models_domain`.
 - `db.py` — SQLite schema (teams/sessions/agent_state/tasks/messages) + connection. Owns schema only; table CRUD lives with the component that owns the table.

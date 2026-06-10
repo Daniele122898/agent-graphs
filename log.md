@@ -354,3 +354,36 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   ownership of lock/gateway/bus/registry is asserted by
   `test_infrastructure_is_per_session_not_global` — the "nothing is a global
   singleton" invariant is now test-enforced, not just intended.
+
+---
+
+## Maintenance round — audit + bug fixes (2026-06-10)
+
+### 2026-06-10 — Parallel audit before touching anything
+
+- **Ran a 7-agent parallel audit** (backend quality, frontend quality, one
+  investigator per reported bug, plus a study of the `~/code/pi` harness)
+  before implementing. Findings cross-checked against the source by hand; the
+  pi study is written up in `specs/pi-harness-learnings.md`.
+
+### 2026-06-10 — main.py split into main/wiring/schemas
+
+- **What:** `main.py` (431 lines) split: endpoints stay in `main.py`; the glue
+  (`get_or_create_running`, `make_task_runner`, `apply_team_graph`,
+  `resolve_session`, `starter_team_graph`) moved to `wiring.py`; request DTOs
+  to `schemas.py`. Wiring helpers are now public names (no leading `_`) since
+  they're a module API; `tests/test_model_switch.py` patches
+  `backend.wiring.resolve_model` accordingly.
+- **Why:** ~300-line soft ceiling; the wiring is the most intricate logic in
+  the HTTP layer and deserves to be reviewable/testable on its own.
+- **Reversibility:** trivial (move functions back).
+
+### 2026-06-10 — resume endpoint hardening + small cleanups
+
+- **Resume with a deleted team is now 409**, not a silent empty-graph resume —
+  an empty graph masked the data problem and broke the pin-at-launch
+  expectation. Dead `latest_session_id_for_team` removed. `AgentRegistry` is
+  properly typed via `TYPE_CHECKING` (no more `object`/type-ignores).
+  Frontend: SSE edge-animation timers are cleared on unmount (no setState after
+  unmount), session-launch failures now surface in the launch popover, model-id
+  parsing centralized in `bareModelId()`.

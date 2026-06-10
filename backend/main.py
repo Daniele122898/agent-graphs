@@ -1,4 +1,4 @@
-"""FastAPI application entry point.
+"""FastAPI application entry point — the HTTP/SSE surface.
 
 Boots the persistence stores + ``SessionManager`` and **rehydrates any
 previously-persisted sessions** into memory so they survive restarts. It does
@@ -7,8 +7,10 @@ the user creates explicitly: define a team (graph + agents), then launch a
 session that binds that team to a repo. On a fresh database the app starts
 empty and the UI guides you through creating a team and launching a session.
 
-``create_app`` is a factory taking an injected ``db_path`` so tests spin up an
-isolated app against a temp DB. Run for real with::
+The non-trivial glue (building/rebuilding RunningAgents, the TaskRunner's real
+effect callables, graph sync) lives in ``wiring.py``; request bodies in
+``schemas.py``. ``create_app`` is a factory taking an injected ``db_path`` so
+tests spin up an isolated app against a temp DB. Run for real with::
 
     uvicorn backend.main:app --reload
 """
@@ -22,42 +24,26 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from pydantic_ai import Agent
 
 from . import db as db_module
+from . import wiring
 from .a2a import MessageLog
 from .agent_state import AgentStateStore
-from .gateway import GatedModel
 from .graph import validate_structure
-from .models import resolve_model
-from .models_domain import AgentSpec, Capabilities, GraphNode, SessionMode, TeamGraph
-from .runtime import RunningAgent
-from .sessions import Session, SessionManager
+from .models_domain import TeamGraph
+from .schemas import (
+    LaunchSessionRequest,
+    ModeRequest,
+    NewTaskRequest,
+    NewTeamRequest,
+    RenameRequest,
+    RunRequest,
+)
+from .sessions import SessionManager
 from .stats import lmstudio_models
 from .streaming import sse_stream
-from .tasks import ReviewVerdict, TaskRunner, TaskStore, run_check
+from .tasks import TaskStore
 from .teams import TeamStore
-
-REVIEW_GUIDANCE = (
-    "\n\nYou are acting as a reviewer. Decide whether the result fully satisfies "
-    "the task. Approve only if it does; otherwise reject with a concrete, "
-    "actionable critique of what is missing or wrong."
-)
-
-
-def starter_team_graph() -> TeamGraph:
-    """A minimal starter team for a brand-new team: one entry-point 'lead'
-    agent, so the team is immediately launchable (a team needs >=1 entry point).
-    The user grows it in the editor."""
-    lead = AgentSpec(
-        id="lead",
-        name="Lead",
-        persona="You are the lead engineer. You decompose tasks and coordinate the team.",
-        is_entry_point=True,
-        capabilities=Capabilities.from_level("read-write"),
-    )
-    return TeamGraph(nodes=[GraphNode(spec=lead, position={"x": 120, "y": 120})], edges=[])
 
 
 def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
@@ -88,7 +74,7 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
         finally:
             for s in sessions.list():
                 for ra in s.registry.all_running():
-                    await ra.stop()  # type: ignore[attr-defined]
+                    await ra.stop()
             conn.close()
 
     app = FastAPI(title="Agent Graphs", lifespan=lifespan)
@@ -110,9 +96,11 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
             "sessions": len(app.state.sessions.list()),
         }
 
+    # --- sessions ------------------------------------------------------------
+
     @app.get("/api/session")
     def current_session(session_id: str) -> dict:
-        return _session(app, session_id).info().model_dump()
+        return wiring.resolve_session(app, session_id).info().model_dump()
 
     @app.get("/api/sessions")
     def list_sessions() -> dict:
@@ -143,16 +131,18 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
         """Rehydrate a persisted session into memory (snapshot/resume). The team
         graph is reloaded from its definition; per-agent history reloads lazily
         when each agent next runs."""
-        if app.state.sessions.get(session_id) is not None:
-            return app.state.sessions.get(session_id).info().model_dump()
+        live = app.state.sessions.get(session_id)
+        if live is not None:
+            return live.info().model_dump()
         row = app.state.conn.execute(
             "SELECT team_id FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()
         if row is None:
             raise HTTPException(404, "no such session")
         team = app.state.teams.get(row["team_id"])
-        graph = team.graph if team else TeamGraph()
-        session = app.state.sessions.resume_session(session_id, graph)
+        if team is None:
+            raise HTTPException(409, f"team '{row['team_id']}' no longer exists; session cannot be resumed")
+        session = app.state.sessions.resume_session(session_id, team.graph)
         if session is None:
             raise HTTPException(404, "no such session")
         return session.info().model_dump()
@@ -161,11 +151,11 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
     def set_mode(body: ModeRequest, session_id: str) -> dict:
         """Toggle the LLM execution gateway mode for this session: parallel
         (default) or serial (low-spec, one model call at a time)."""
-        session = _session(app, session_id)
+        session = wiring.resolve_session(app, session_id)
         session.gateway.set_mode(body.mode)
         return session.info().model_dump()
 
-    # --- team library ------------------------------------------------------
+    # --- team library ----------------------------------------------------------
 
     @app.get("/api/teams")
     def list_teams() -> dict:
@@ -175,7 +165,7 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
     def create_team(body: NewTeamRequest) -> dict:
         # A brand-new team gets a starter lead agent (so it's launchable) unless
         # an explicit graph was supplied (e.g. "save as" from the editor).
-        graph = body.graph if body.graph is not None else starter_team_graph()
+        graph = body.graph if body.graph is not None else wiring.starter_team_graph()
         errors = validate_structure(graph)
         if errors:
             raise HTTPException(422, {"errors": errors})
@@ -197,7 +187,7 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
 
     @app.put("/api/teams/{team_id}/graph")
     def put_team_graph(team_id: str, graph: TeamGraph) -> dict:
-        return _apply_team_graph(app, team_id, graph)
+        return wiring.apply_team_graph(app, team_id, graph)
 
     @app.post("/api/teams/{team_id}/rename")
     def rename_team(team_id: str, body: RenameRequest) -> dict:
@@ -206,16 +196,19 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
             raise HTTPException(404, "no such team")
         return team.model_dump()
 
+    # --- agents + events -------------------------------------------------------
+
     @app.get("/events")
     async def events(session_id: str | None = None) -> StreamingResponse:
-        session = _session(app, session_id)
+        session = wiring.resolve_session(app, session_id)
         return StreamingResponse(sse_stream(session.bus), media_type="text/event-stream")
 
     @app.post("/api/agent/{agent_id}/run")
     async def run_agent(agent_id: str, body: RunRequest, session_id: str | None = None) -> dict:
         """Give a long-lived agent a prompt. Creates+starts the RunningAgent on
         first use; thereafter the same worker handles follow-ups with history."""
-        ra = await _get_or_create_running(app, _session(app, session_id), agent_id)
+        session = wiring.resolve_session(app, session_id)
+        ra = await wiring.get_or_create_running(app, session, agent_id)
         ra.submit(body.prompt)
         return {"status": "started", "agent_id": agent_id}
 
@@ -223,18 +216,21 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
     async def interject_agent(agent_id: str, body: RunRequest, session_id: str | None = None) -> dict:
         """Inject a message. If the agent is running, it's processed right after
         the current run (with full history); if idle, it runs now."""
-        ra = await _get_or_create_running(app, _session(app, session_id), agent_id)
+        session = wiring.resolve_session(app, session_id)
+        ra = await wiring.get_or_create_running(app, session, agent_id)
         ra.submit(body.prompt)
         return {"status": "queued", "agent_id": agent_id}
 
     @app.post("/api/agent/{agent_id}/stop")
     async def stop_agent(agent_id: str, session_id: str | None = None) -> dict:
-        session = _session(app, session_id)
+        session = wiring.resolve_session(app, session_id)
         ra = session.registry.running(agent_id)
         if ra is not None:
-            await ra.stop()  # type: ignore[attr-defined]
+            await ra.stop()
             session.registry.detach_running(agent_id)  # allow a fresh start
         return {"status": "stopped", "agent_id": agent_id}
+
+    # --- stats + messages --------------------------------------------------------
 
     @app.get("/api/stats/models")
     async def stats_models() -> dict:
@@ -248,23 +244,25 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
 
     @app.get("/api/stats/usage/{agent_id}")
     def stats_usage(agent_id: str, session_id: str | None = None) -> dict:
-        return _session(app, session_id).usage.get(agent_id)
+        return wiring.resolve_session(app, session_id).usage.get(agent_id)
 
     @app.get("/api/messages")
     def messages(session_id: str | None = None) -> dict:
-        session = _session(app, session_id)
+        session = wiring.resolve_session(app, session_id)
         return {"messages": app.state.messages.for_session(session.id)}
+
+    # --- tasks -------------------------------------------------------------------
 
     @app.get("/api/tasks")
     def list_tasks(session_id: str | None = None) -> dict:
-        session = _session(app, session_id)
+        session = wiring.resolve_session(app, session_id)
         return {"tasks": [t.model_dump() for t in app.state.tasks.list_for_session(session.id)]}
 
     @app.post("/api/tasks")
     async def create_task(body: NewTaskRequest, session_id: str | None = None) -> dict:
-        session = _session(app, session_id)
-        agent_id = body.assigned_agent_id or _default_entry_point(session)
-        if _find_spec(session, agent_id) is None:
+        session = wiring.resolve_session(app, session_id)
+        agent_id = body.assigned_agent_id or wiring.default_entry_point(session)
+        if wiring.find_spec(session, agent_id) is None:
             raise HTTPException(404, f"no agent '{agent_id}' to assign the task to")
         task = app.state.tasks.create(
             session_id=session.id,
@@ -273,7 +271,7 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
             assigned_agent_id=agent_id,
             completion_signal=body.completion_signal,
         )
-        runner = _make_task_runner(app, session)
+        runner = wiring.make_task_runner(app, session)
         t = asyncio.create_task(runner.run(task.id))
         app.state.task_runs.add(t)
         t.add_done_callback(app.state.task_runs.discard)
@@ -287,145 +285,6 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
         return task.model_dump()
 
     return app
-
-
-class NewTaskRequest(BaseModel):
-    prompt: str
-    title: str = ""
-    assigned_agent_id: str | None = None
-    completion_signal: str = "self_reported"
-
-
-class NewTeamRequest(BaseModel):
-    name: str
-    graph: TeamGraph | None = None
-
-
-class RenameRequest(BaseModel):
-    name: str
-
-
-def _apply_team_graph(app: FastAPI, team_id: str, graph: TeamGraph) -> dict:
-    """Validate + persist a team's graph. If the team is the one a running
-    session is currently bound to, also sync the session's *pinned* graph so the
-    editor doubles as the live control room for that session. Editing any *other*
-    team (a template in the library) never mutates a running session — that's the
-    pin-at-launch guarantee.
-    """
-    errors = validate_structure(graph)
-    if errors:
-        raise HTTPException(422, {"errors": errors})
-    team = app.state.teams.update_graph(team_id, graph)
-    if team is None:
-        raise HTTPException(404, "no such team")
-    for session in app.state.sessions.list():
-        if session.team_id == team_id:
-            session.graph = team.graph
-            for node in team.graph.nodes:
-                if session.registry.lifecycle(node.spec.id) is None:
-                    session.registry.register(node.spec.id, "idle")
-    return team.graph.model_dump()
-
-
-class ModeRequest(BaseModel):
-    mode: SessionMode
-
-
-class LaunchSessionRequest(BaseModel):
-    team_id: str
-    repo_path: str
-    mode: SessionMode = "parallel"
-
-
-class RunRequest(BaseModel):
-    prompt: str
-
-
-def _session(app: FastAPI, session_id: str | None) -> Session:
-    """Resolve a session by id. A session_id is required — there is no implicit
-    default; the client always operates on an explicit, launched session."""
-    if not session_id:
-        raise HTTPException(400, "session_id is required")
-    session = app.state.sessions.get(session_id)
-    if session is None:
-        raise HTTPException(404, f"no session '{session_id}'")
-    return session
-
-
-def _find_spec(session: Session, agent_id: str) -> AgentSpec | None:
-    for node in session.graph.nodes:
-        if node.spec.id == agent_id:
-            return node.spec
-    return None
-
-
-def _default_entry_point(session: Session) -> str:
-    entry = session.graph.entry_points()
-    if not entry:
-        raise HTTPException(422, "team has no entry-point agent to receive the task")
-    return entry[0]
-
-
-def _make_task_runner(app: FastAPI, session: Session) -> TaskRunner:
-    """Build a TaskRunner whose effectful steps run real agents/checks against
-    the session: the assigned agent via its RunningAgent, a reviewer agent with
-    structured ReviewVerdict output, and a shell check in the repo root."""
-
-    async def run_agent(agent_id: str, prompt: str) -> str:
-        ra = await _get_or_create_running(app, session, agent_id)
-        return await ra.run_once(prompt)
-
-    async def run_reviewer(reviewer_id: str, task_prompt: str, result: str) -> ReviewVerdict:
-        spec = _find_spec(session, reviewer_id)
-        if spec is None:
-            return ReviewVerdict(approved=True, critique=f"(no reviewer '{reviewer_id}'; auto-approved)")
-        reviewer = Agent(
-            model=GatedModel(resolve_model(spec.model), session.gateway),
-            output_type=ReviewVerdict,
-            instructions=(spec.persona or f"You are {spec.name}.") + REVIEW_GUIDANCE,
-        )
-        r = await reviewer.run(f"Task:\n{task_prompt}\n\nResult to review:\n{result}")
-        return r.output
-
-    return TaskRunner(
-        app.state.tasks,
-        run_agent=run_agent,
-        run_reviewer=run_reviewer,
-        run_check=lambda cmd: run_check(cmd, session.repo_root),
-        publish=session.bus.publish,
-    )
-
-
-async def _get_or_create_running(app: FastAPI, session: Session, agent_id: str) -> RunningAgent:
-    spec = _find_spec(session, agent_id)
-    if spec is None:
-        raise HTTPException(404, f"no agent '{agent_id}' in this session")
-
-    existing = session.registry.running(agent_id)
-    if existing is not None:
-        # Reuse the live worker only if its config is unchanged. If the user
-        # edited the spec (e.g. switched the model in Capabilities, or changed
-        # persona/capabilities), rebuild so the change takes effect on the next
-        # run — carrying the conversation history forward.
-        if not existing.spec_changed(spec):  # type: ignore[attr-defined]
-            return existing  # type: ignore[return-value]
-        prior_messages = list(existing.messages)  # type: ignore[attr-defined]
-        await existing.stop()  # type: ignore[attr-defined]
-        session.registry.detach_running(agent_id)
-    else:
-        prior_messages = app.state.agent_state.load_messages(session.id, agent_id)
-
-    ra = RunningAgent(
-        session=session,
-        spec=spec,
-        model=resolve_model(spec.model),
-        state_store=app.state.agent_state,
-        message_log=app.state.messages,
-        initial_messages=prior_messages,
-    )
-    session.registry.attach_running(agent_id, ra)
-    ra.start()
-    return ra
 
 
 app = create_app()

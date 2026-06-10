@@ -21,13 +21,16 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from .bus import EventBus
 from .gateway import Gateway
-from .models_domain import AgentLifecycle, SessionInfo, SessionMode, TeamGraph
+from .models_domain import AgentLifecycle, SessionInfo, SessionMode, SessionStatus, TeamGraph
 from .stats import UsageTally
 from .util import iso_now, new_id
+
+if TYPE_CHECKING:  # runtime.py imports sessions.py; this avoids the cycle
+    from .runtime import RunningAgent
 
 
 class AgentRegistry:
@@ -41,23 +44,22 @@ class AgentRegistry:
 
     def __init__(self) -> None:
         self._lifecycle: dict[str, AgentLifecycle] = {}
-        # RunningAgent objects, kept untyped here to avoid a circular import with
-        # runtime.py. Populated lazily when an agent is first run.
-        self._running: dict[str, object] = {}
+        # Live workers, populated lazily when an agent is first run.
+        self._running: dict[str, "RunningAgent"] = {}
 
     def register(self, agent_id: str, lifecycle: AgentLifecycle = "idle") -> None:
         self._lifecycle[agent_id] = lifecycle
 
-    def attach_running(self, agent_id: str, running: object) -> None:
+    def attach_running(self, agent_id: str, running: "RunningAgent") -> None:
         self._running[agent_id] = running
 
     def detach_running(self, agent_id: str) -> None:
         self._running.pop(agent_id, None)
 
-    def running(self, agent_id: str) -> object | None:
+    def running(self, agent_id: str) -> "RunningAgent | None":
         return self._running.get(agent_id)
 
-    def all_running(self) -> list[object]:
+    def all_running(self) -> list["RunningAgent"]:
         return list(self._running.values())
 
     def lifecycle(self, agent_id: str) -> AgentLifecycle | None:
@@ -84,7 +86,7 @@ class Session:
         repo_root: Path,
         graph: TeamGraph,
         mode: SessionMode = "parallel",
-        status: str = "active",
+        status: SessionStatus = "active",
         created_at: str = "",
     ):
         self.id = session_id
@@ -120,7 +122,7 @@ class Session:
             team_id=self.team_id,
             repo_path=str(self.repo_root),
             mode=self.mode,
-            status=self.status,  # type: ignore[arg-type]
+            status=self.status,
             created_at=self.created_at,
         )
 
@@ -166,6 +168,17 @@ class SessionManager:
         self._sessions[session_id] = session
         return session
 
+    def _row_to_session(self, row: sqlite3.Row, graph: TeamGraph) -> Session:
+        return Session(
+            session_id=row["id"],
+            team_id=row["team_id"],
+            repo_root=Path(row["repo_path"]),
+            graph=graph,
+            mode=row["mode"],
+            status=row["status"],
+            created_at=row["created_at"],
+        )
+
     def resume_session(self, session_id: str, graph: TeamGraph) -> Session | None:
         """Rehydrate a persisted session into memory (pause repo today, resume
         tomorrow). Reconstructs the live ``Session`` from its DB row + the team
@@ -179,26 +192,9 @@ class SessionManager:
         ).fetchone()
         if row is None:
             return None
-        session = Session(
-            session_id=row["id"],
-            team_id=row["team_id"],
-            repo_root=Path(row["repo_path"]),
-            graph=graph,
-            mode=row["mode"],
-            status=row["status"],
-            created_at=row["created_at"],
-        )
+        session = self._row_to_session(row, graph)
         self._sessions[session_id] = session
         return session
-
-    def latest_session_id_for_team(self, team_id: str) -> str | None:
-        """The most recent persisted session bound to a team (for reuse on
-        startup so edits persist across restarts instead of accumulating)."""
-        row = self._conn.execute(
-            "SELECT id FROM sessions WHERE team_id = ? ORDER BY created_at DESC LIMIT 1",
-            (team_id,),
-        ).fetchone()
-        return row["id"] if row else None
 
     def get(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)

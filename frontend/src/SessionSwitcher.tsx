@@ -22,6 +22,8 @@ export default function SessionSwitcher({
   const [teamId, setTeamId] = useState("");
   const [repo, setRepo] = useState("");
   const [mode, setMode] = useState<"parallel" | "serial">("parallel");
+  const [error, setError] = useState<string | null>(null);
+  const [launching, setLaunching] = useState(false);
 
   useEffect(() => {
     if (teams.length && !teams.some((t) => t.id === teamId)) setTeamId(teams[0].id);
@@ -31,11 +33,19 @@ export default function SessionSwitcher({
 
   const launch = async () => {
     if (!teamId || !repo.trim()) return;
-    const s = await api.launchSession(teamId, repo.trim(), mode);
-    if (s.warning) window.alert(s.warning);
-    setOpen(false);
-    setRepo("");
-    onLaunched(s.id);
+    setLaunching(true);
+    setError(null);
+    try {
+      const s = await api.launchSession(teamId, repo.trim(), mode);
+      if (s.warning) window.alert(s.warning);
+      setOpen(false);
+      setRepo("");
+      onLaunched(s.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLaunching(false);
+    }
   };
 
   return (
@@ -77,9 +87,14 @@ export default function SessionSwitcher({
               <option value="serial">serial</option>
             </Select>
           </Field>
+          {error && (
+            <div style={{ fontSize: 12, color: "var(--danger, #c2341d)" }}>Launch failed: {error}</div>
+          )}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
             <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button variant="primary" size="sm" onClick={launch} disabled={!repo.trim()}>Launch</Button>
+            <Button variant="primary" size="sm" onClick={launch} disabled={!repo.trim() || launching}>
+              {launching ? "Launching…" : "Launch"}
+            </Button>
           </div>
         </div>
       )}

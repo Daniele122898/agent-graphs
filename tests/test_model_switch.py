@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from pydantic_ai.messages import TextPart
 
-import backend.main as main_mod
+import backend.wiring as wiring
 from backend.agent_state import AgentStateStore
 from backend.a2a import MessageLog
 from backend.models_domain import AgentSpec, Capabilities, GraphNode, TeamGraph
@@ -25,7 +25,7 @@ def _fake_app(conn):
 
 async def test_changing_model_rebuilds_worker(conn, fake_clock, repo, monkeypatch):
     # every resolve_model call returns a fresh scripted model (id irrelevant here)
-    monkeypatch.setattr(main_mod, "resolve_model", lambda s: make_sequence_model([[TextPart("ok")]]))
+    monkeypatch.setattr(wiring, "resolve_model", lambda s: make_sequence_model([[TextPart("ok")]]))
 
     graph = TeamGraph(nodes=[GraphNode(spec=AgentSpec(
         id="lead", name="Lead", is_entry_point=True, model="lmstudio:model-a",
@@ -35,11 +35,11 @@ async def test_changing_model_rebuilds_worker(conn, fake_clock, repo, monkeypatc
         team_id=team.id, repo_path=repo, graph=graph)
     app = _fake_app(conn)
 
-    ra1 = await main_mod._get_or_create_running(app, session, "lead")
+    ra1 = await wiring.get_or_create_running(app, session, "lead")
     assert ra1.spec.model == "lmstudio:model-a"
 
     # unchanged spec → same worker reused
-    ra_same = await main_mod._get_or_create_running(app, session, "lead")
+    ra_same = await wiring.get_or_create_running(app, session, "lead")
     assert ra_same is ra1
 
     # the user switches the model (mimic _apply_team_graph swapping the graph)
@@ -48,7 +48,7 @@ async def test_changing_model_rebuilds_worker(conn, fake_clock, repo, monkeypatc
         capabilities=Capabilities.from_level("read")))])
     session.graph = new_graph
 
-    ra2 = await main_mod._get_or_create_running(app, session, "lead")
+    ra2 = await wiring.get_or_create_running(app, session, "lead")
     assert ra2 is not ra1, "worker was not rebuilt after model change"
     assert ra2.spec.model == "lmstudio:model-b"
 

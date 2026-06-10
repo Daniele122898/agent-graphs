@@ -32,6 +32,9 @@ export function useEvents(sessionId: string | null) {
   // Edges with a recent delegation message, keyed `from->to`, for canvas animation.
   const [activeEdges, setActiveEdges] = useState<Set<string>>(new Set());
   const esRef = useRef<EventSource | null>(null);
+  // Pending edge-deactivation timers, cleared on unmount/session switch so a
+  // late timer never updates state for a connection that's gone.
+  const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   useEffect(() => {
     // Reset accumulated state when switching sessions.
@@ -55,15 +58,15 @@ export function useEvents(sessionId: string | null) {
         } else if (parsed.type === "a2a_message") {
           const key = `${parsed.data.from}->${parsed.data.to}`;
           setActiveEdges((p) => new Set(p).add(key));
-          setTimeout(
-            () =>
-              setActiveEdges((p) => {
-                const next = new Set(p);
-                next.delete(key);
-                return next;
-              }),
-            2500
-          );
+          const timer = setTimeout(() => {
+            timersRef.current.delete(timer);
+            setActiveEdges((p) => {
+              const next = new Set(p);
+              next.delete(key);
+              return next;
+            });
+          }, 2500);
+          timersRef.current.add(timer);
         }
       } catch {
         /* ignore malformed frame */
@@ -73,7 +76,12 @@ export function useEvents(sessionId: string | null) {
     es.onerror = () => {
       /* EventSource auto-reconnects */
     };
-    return () => es.close();
+    return () => {
+      EVENT_TYPES.forEach((t) => es.removeEventListener(t, handler as EventListener));
+      es.close();
+      timersRef.current.forEach((t) => clearTimeout(t));
+      timersRef.current.clear();
+    };
   }, [sessionId]);
 
   return { events, lifecycles, activeEdges };

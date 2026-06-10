@@ -28,7 +28,7 @@ from .a2a import Delegator, MessageLog
 from .agents import build_agent
 from .gateway import GatedModel
 from .models import resolve_model
-from .models_domain import AgentSpec
+from .models_domain import AgentLifecycle, AgentSpec
 from .streaming import run_agent_streamed
 from .todos import AgentDeps
 from .tools import DevTools
@@ -153,8 +153,8 @@ class RunningAgent:
 
     # internals ---------------------------------------------------------
 
-    def _set_lifecycle(self, lifecycle: str) -> None:
-        self.session.registry.set_lifecycle(self.agent_id, lifecycle)  # type: ignore[arg-type]
+    def _set_lifecycle(self, lifecycle: AgentLifecycle) -> None:
+        self.session.registry.set_lifecycle(self.agent_id, lifecycle)
         self.session.bus.publish("agent_lifecycle", {"agent_id": self.agent_id, "lifecycle": lifecycle})
         if self._state_store is not None:
             self._state_store.set_lifecycle(self.session.id, self.agent_id, lifecycle)
