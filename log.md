@@ -457,3 +457,17 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
 - **Known gap (existing backlog):** the Agent tab transcript only shows live
   SSE events — page reload empties it even though history is persisted in
   `agent_state`. That's the "persisted work-log UI" Phase 9.4 item.
+
+### 2026-06-10 — Blocked tasks get an in-place Retry (user request)
+
+- **What:** `POST /api/tasks/{id}/retry` re-runs a *blocked* task as the same
+  row — clears the stale result and hands the id back to a fresh `TaskRunner`
+  (its first move is blocked → running, already a legal lifecycle transition).
+  The task-detail drawer shows a `↻ Retry` button when status is blocked. The
+  orphaned-task note now says "press Retry" instead of "re-create the task".
+- **Why in-place, not clone-and-cancel:** keeps the task's identity, timeline
+  and sub-task links; the lifecycle already allowed blocked → running so no
+  state-machine change was needed. Retry is restricted to `blocked` (the only
+  state runner errors, revision caps, and restart-orphans land in) — a 409
+  otherwise prevents double-running an active task.
+- **Reversibility:** one endpoint + one button; trivially removable.

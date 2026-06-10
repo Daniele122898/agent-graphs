@@ -119,6 +119,24 @@ def main() -> int:
         page.wait_for_timeout(300)
         page.screenshot(path=str(SHOTS / "06_task_detail.png"))
 
+        # retry button on a blocked task — only reachable when the model is
+        # down (run the isolated stack with AGENT_GRAPHS_LMSTUDIO_URL at a dead
+        # port so the task blocks fast); skipped when the task keeps running.
+        retry = page.get_by_role("button", name="Retry task")
+        try:
+            retry.wait_for(state="visible", timeout=15000)
+            page.screenshot(path=str(SHOTS / "07_task_blocked.png"))
+            with page.expect_response(lambda r: r.url.endswith("/retry")) as resp:
+                retry.click()
+            if resp.value.status != 200:
+                failures.append(f"retry endpoint returned {resp.value.status}")
+            else:
+                print("retry: button clicked, endpoint returned 200")
+            page.wait_for_timeout(600)
+            page.screenshot(path=str(SHOTS / "08_task_retry.png"))
+        except Exception:
+            print("retry: task never reached blocked (model reachable?) — check skipped")
+
         browser.close()
 
     if failures:

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type TaskRow } from "./api";
 import NewTaskDialog from "./NewTaskDialog";
-import { Chip, IconButton } from "./ui";
+import { Button, Chip, IconButton } from "./ui";
 import type { BusEvent } from "./useEvents";
 
 // Session-level Kanban board of tasks. Columns follow the status lifecycle;
@@ -91,6 +91,7 @@ export default function TaskBoard({ agents, events }: { agents: AgentLite[]; eve
           agentName={agentName}
           subtasks={tasks.filter((s) => s.parent_task_id === selected.id)}
           onSelectTask={setSelectedId}
+          onRetry={() => api.retryTask(selected.id).then(refresh).catch(() => {})}
           onClose={() => setSelectedId(null)}
         />
       )}
@@ -166,12 +167,14 @@ function TaskDetail({
   subtasks,
   agentName,
   onSelectTask,
+  onRetry,
   onClose,
 }: {
   task: TaskRow;
   subtasks: TaskRow[];
   agentName: (id: string) => string;
   onSelectTask: (id: string) => void;
+  onRetry: () => void;
   onClose: () => void;
 }) {
   const failed = task.status === "blocked" || task.status === "failed" || task.result.startsWith("error:");
@@ -193,6 +196,11 @@ function TaskDetail({
           {task.title}
         </strong>
         <Chip>{task.status}</Chip>
+        {task.status === "blocked" && (
+          <Button variant="primary" size="sm" onClick={onRetry} aria-label="Retry task">
+            ↻ Retry
+          </Button>
+        )}
         <IconButton aria-label="Close task details" onClick={onClose}>✕</IconButton>
       </div>
 

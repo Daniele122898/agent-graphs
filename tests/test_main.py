@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+import time
 
+from fastapi.testclient import TestClient
+from pydantic_ai.messages import TextPart
+
+import backend.wiring as wiring
 from backend.main import create_app
-from tests.conftest import bootstrap_session
+from tests.conftest import bootstrap_session, make_sequence_model
 
 
 def test_health_starts_empty_then_reflects_a_launched_session(tmp_path):
@@ -59,6 +63,36 @@ def test_orphaned_inflight_tasks_blocked_on_restart(tmp_path):
         got = client.get(f"/api/tasks/{task.id}").json()
         assert got["status"] == "blocked"
         assert "orphaned" in got["result"]
+
+
+def test_retry_reruns_a_blocked_task_in_place(tmp_path, monkeypatch):
+    """The Retry button's contract: a blocked task re-runs as the same row (no
+    copy/re-create), the stale error result is cleared, and it can reach done."""
+    monkeypatch.setattr(wiring, "resolve_model", lambda s: make_sequence_model([[TextPart("fixed it")]]))
+    app = create_app(db_path=tmp_path / "app.sqlite")
+    with TestClient(app) as client:
+        _team, session = bootstrap_session(client, tmp_path / "repo")
+        task = app.state.tasks.create(
+            session_id=session["id"], title="T", prompt="p", assigned_agent_id="lead"
+        )
+        app.state.tasks.set_result(task.id, "error: model exploded")
+        app.state.tasks.set_status(task.id, "blocked")
+
+        assert client.post(f"/api/tasks/{task.id}/retry").status_code == 200
+
+        deadline = time.time() + 5
+        got = {}
+        while time.time() < deadline:
+            got = client.get(f"/api/tasks/{task.id}").json()
+            if got["status"] == "done":
+                break
+            time.sleep(0.05)
+        assert got["status"] == "done"
+        assert got["result"] == "fixed it"
+
+        # only blocked tasks are retryable
+        assert client.post(f"/api/tasks/{task.id}/retry").status_code == 409
+        assert client.post("/api/tasks/nope/retry").status_code == 404
 
 
 def test_session_required_for_scoped_endpoints(tmp_path):

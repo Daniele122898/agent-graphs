@@ -87,6 +87,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then(json<TaskRow>),
+  retryTask: (taskId: string) =>
+    fetch(`/api/tasks/${taskId}/retry`, { method: "POST" }).then(
+      json<{ status: string; task_id: string }>
+    ),
 };
 
 export interface TaskRow {

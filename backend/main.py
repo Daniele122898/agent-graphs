@@ -75,7 +75,7 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
         orphaned = conn.execute(
             "SELECT id FROM tasks WHERE status IN ('running', 'needs_review', 'needs_revision')"
         ).fetchall()
-        note = "[orphaned by a server restart — re-create the task to retry]"
+        note = "[orphaned by a server restart — press Retry to run it again]"
         for row in orphaned:
             task = app.state.tasks.get(row["id"])
             prior = task.result.strip() if task else ""
@@ -296,6 +296,28 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
         if task is None:
             raise HTTPException(404, "no such task")
         return task.model_dump()
+
+    @app.post("/api/tasks/{task_id}/retry")
+    async def retry_task(task_id: str) -> dict:
+        """Re-run a blocked task in place: clear the stale result and hand the
+        same row back to a fresh TaskRunner (whose first move is blocked →
+        running, a legal lifecycle transition). No copy/re-create needed."""
+        task = app.state.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(404, "no such task")
+        if task.status != "blocked":
+            raise HTTPException(409, f"only blocked tasks can be retried (status is '{task.status}')")
+        session = app.state.sessions.get(task.session_id)
+        if session is None:
+            raise HTTPException(409, "the task's session is not live; resume it first")
+        if wiring.find_spec(session, task.assigned_agent_id) is None:
+            raise HTTPException(409, f"assigned agent '{task.assigned_agent_id}' is no longer in the team")
+        app.state.tasks.set_result(task_id, "")
+        runner = wiring.make_task_runner(app, session)
+        t = asyncio.create_task(runner.run(task_id))
+        app.state.task_runs.add(t)
+        t.add_done_callback(app.state.task_runs.discard)
+        return {"status": "retrying", "task_id": task_id}
 
     return app
 
