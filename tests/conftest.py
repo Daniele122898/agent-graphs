@@ -31,6 +31,20 @@ def make_sequence_model(turns: list[list[ModelResponsePart]]) -> FunctionModel:
     return FunctionModel(fn)
 
 
+def bootstrap_session(client, repo_path, *, graph=None, mode="parallel", name="T"):
+    """Explicit team+session setup for API tests (the app no longer auto-creates
+    anything). Returns (team_dict, session_dict)."""
+    body = {"name": name}
+    if graph is not None:
+        body["graph"] = graph
+    team = client.post("/api/teams", json=body).json()
+    session = client.post(
+        "/api/sessions",
+        json={"team_id": team["id"], "repo_path": str(repo_path), "mode": mode},
+    ).json()
+    return team, session
+
+
 @pytest.fixture
 def fake_clock():
     """A monotonically-incrementing fake clock returning ISO-ish strings, so

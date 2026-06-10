@@ -1,7 +1,16 @@
 import { useMemo, useState } from "react";
 import { api } from "../api";
+import { Button, Chip, TextArea } from "../ui";
 import type { BusEvent } from "../useEvents";
 import type { AgentLifecycle } from "../types";
+
+const LIFECYCLE_TONE: Record<AgentLifecycle, "default" | "primary" | "success" | "warning" | "danger"> = {
+  idle: "default",
+  running: "success",
+  "waiting-on-agent": "warning",
+  blocked: "danger",
+  done: "primary",
+};
 
 // Agent tab: the live work. Give the agent a prompt, then watch it stream
 // thinking / text / tool calls / results, with a live todo checklist. This is
@@ -54,34 +63,34 @@ export default function AgentTab({
   };
 
   return (
-    <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10, height: "100%" }}>
-      <div style={{ fontSize: 12 }}>
-        lifecycle: <strong>{lifecycle}</strong>
+    <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, height: "100%" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="field-label" style={{ margin: 0 }}>STATUS</span>
+        <Chip tone={LIFECYCLE_TONE[lifecycle]}>{lifecycle}</Chip>
       </div>
 
-      <textarea
+      <TextArea
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
         rows={3}
         placeholder={busy ? "Interject a message (runs after the current step)…" : "Give this agent a task…"}
-        style={{ width: "100%", padding: 6, fontFamily: "inherit", resize: "vertical" }}
       />
       <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={run} disabled={posting || !prompt.trim()} style={{ padding: "6px 14px", cursor: "pointer" }}>
-          {posting ? "starting…" : busy ? "Interject" : "Run"}
-        </button>
+        <Button variant="primary" onClick={run} disabled={posting || !prompt.trim()}>
+          {posting ? "Starting…" : busy ? "Interject" : "Run"}
+        </Button>
         {busy && (
-          <button onClick={stop} style={{ padding: "6px 14px", cursor: "pointer", color: "crimson" }}>
+          <Button variant="danger" onClick={stop}>
             Stop
-          </button>
+          </Button>
         )}
       </div>
 
       {todos.length > 0 && (
-        <div style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: 8, background: "white" }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: "#6b7280", marginBottom: 4 }}>TODOS</div>
+        <div className="card" style={{ padding: 10 }}>
+          <div className="field-label">TODOS</div>
           {todos.map((t, i) => (
-            <div key={i} style={{ fontSize: 13, textDecoration: t.status === "completed" ? "line-through" : "none" }}>
+            <div key={i} style={{ fontSize: 13, color: t.status === "completed" ? "var(--text-faint)" : "var(--text)", textDecoration: t.status === "completed" ? "line-through" : "none" }}>
               {TODO_MARK[t.status]} {t.content}
             </div>
           ))}

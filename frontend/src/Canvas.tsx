@@ -41,7 +41,6 @@ export default function Canvas(props: {
       ? { ...e, animated: true, style: { ...e.style, stroke: "#2563eb", strokeWidth: 2 } }
       : e;
   });
-  const statusColor = props.status.includes("error") ? "crimson" : "#6b7280";
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
@@ -62,35 +61,16 @@ export default function Canvas(props: {
       </ReactFlow>
 
       <button
+        className="fab"
         onClick={props.addNode}
         title="Add agent"
-        style={{
-          position: "absolute",
-          bottom: 12,
-          left: 12,
-          width: 40,
-          height: 40,
-          borderRadius: "50%",
-          border: "none",
-          background: "#2563eb",
-          color: "white",
-          fontSize: 22,
-          cursor: "pointer",
-          boxShadow: "0 2px 6px rgba(0,0,0,0.2)",
-          zIndex: 5,
-        }}
+        style={{ position: "absolute", bottom: 16, left: 16, zIndex: 5 }}
       >
         +
       </button>
       <span
-        style={{
-          position: "absolute",
-          bottom: 20,
-          left: 64,
-          fontSize: 12,
-          color: statusColor,
-          fontFamily: "system-ui, sans-serif",
-        }}
+        className={props.status.includes("error") ? "chip chip-danger" : "chip"}
+        style={{ position: "absolute", bottom: 24, left: 72, zIndex: 5 }}
       >
         {props.status}
       </span>

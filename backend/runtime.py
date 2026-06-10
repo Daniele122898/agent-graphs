@@ -55,6 +55,10 @@ class RunningAgent:
     ):
         self.session = session
         self.spec = spec
+        # A deep snapshot of the spec this worker was built from, so a later
+        # edit (model/persona/capabilities) is detected even if the graph node
+        # is mutated in place — the caller rebuilds the worker on the next run.
+        self._built_spec = spec.model_copy(deep=True)
         self.agent_id = spec.id
         self._state_store = state_store
         self._inbox: asyncio.Queue = asyncio.Queue()
@@ -141,6 +145,11 @@ class RunningAgent:
     @property
     def messages(self) -> list:
         return self._messages
+
+    def spec_changed(self, current_spec) -> bool:
+        """True if the agent's config changed since this worker was built — the
+        signal to rebuild it so a model/persona/capability edit takes effect."""
+        return self._built_spec != current_spec
 
     # internals ---------------------------------------------------------
 

@@ -61,8 +61,9 @@ def test_runnable_requires_entry_point():
 
 
 def test_graph_round_trips_through_api(tmp_path):
-    app = create_app(db_path=tmp_path / "g.sqlite", repo_path=tmp_path / "repo")
+    app = create_app(db_path=tmp_path / "g.sqlite")
     with TestClient(app) as client:
+        team = client.post("/api/teams", json={"name": "T"}).json()
         new_graph = TeamGraph(
             nodes=[
                 _node("lead", entry=True),
@@ -70,10 +71,10 @@ def test_graph_round_trips_through_api(tmp_path):
             ],
             edges=[GraphEdge(id="e1", source="lead", target="react", label="React/JSX questions")],
         )
-        put = client.put("/api/team/graph", json=new_graph.model_dump())
+        put = client.put(f"/api/teams/{team['id']}/graph", json=new_graph.model_dump())
         assert put.status_code == 200
 
-        got = client.get("/api/team/graph").json()
+        got = client.get(f"/api/teams/{team['id']}/graph").json()
         assert {n["spec"]["id"] for n in got["nodes"]} == {"lead", "react"}
         assert got["edges"][0]["label"] == "React/JSX questions"
         # position survives the round-trip
@@ -82,11 +83,12 @@ def test_graph_round_trips_through_api(tmp_path):
 
 
 def test_api_rejects_malformed_graph(tmp_path):
-    app = create_app(db_path=tmp_path / "g.sqlite", repo_path=tmp_path / "repo")
+    app = create_app(db_path=tmp_path / "g.sqlite")
     with TestClient(app) as client:
+        team = client.post("/api/teams", json={"name": "T"}).json()
         bad = TeamGraph(
             nodes=[_node("a")],
             edges=[GraphEdge(id="e1", source="a", target="missing")],
         )
-        r = client.put("/api/team/graph", json=bad.model_dump())
+        r = client.put(f"/api/teams/{team['id']}/graph", json=bad.model_dump())
         assert r.status_code == 422

@@ -82,6 +82,52 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   (add node, drag-connect) are standard React Flow and will be exercised
   for real once an agent is wired up (Phase 2).
 
+## Post-MVP — proper team/session flow + UI redesign (user-driven)
+
+### 2026-06-10 — No more auto-create; explicit flow
+
+- **Removed the "auto-create one hidden default team+session on startup" MVP
+  behavior** (user: "i dont want it to constantly create a default team").
+  Startup now only *rehydrates* persisted sessions; teams and sessions are
+  created explicitly. The frontend shows an **Onboarding** card when there are
+  no sessions: create a team (gets a starter lead agent) → launch a session
+  (team + repo + mode). This also fixes the DB pollution where every restart
+  piled up another "Default Team" (the user had seen 4).
+- **`create_app` no longer takes `repo_path`** and there is no implicit default
+  session — `_session()` requires a `session_id`. Removed `/api/team` and
+  `/api/team/graph` (default-team endpoints); the team-scoped
+  `/api/teams/{id}/graph` is the only graph editor path. Frontend persists the
+  active session id in `localStorage` and reconciles it against the live list.
+
+### 2026-06-10 — Model-switch bug fixed (cached worker)
+
+- **Changing an agent's model (or persona/caps) now takes effect on the next
+  run.** Root cause: `_get_or_create_running` cached the `RunningAgent`, whose
+  pydantic Agent was built with the model resolved at creation — so a later edit
+  was ignored (user hit a stale `gemma` error after switching). Fix:
+  `RunningAgent` snapshots its built spec (`spec_changed()`), and
+  `_get_or_create_running` rebuilds the worker (carrying history forward) when
+  the spec changed. Regression test: `test_model_switch.py`.
+
+### 2026-06-10 — UI redesign (design system)
+
+- **Introduced a coherent design system** (`src/index.css` tokens + `src/ui.tsx`
+  primitives: Button/IconButton/Select/TextInput/TextArea/Field/Chip) and
+  restyled every surface. Light theme, blue (#2563eb) accent, role-based tokens,
+  CSS-variable driven, WCAG-aware contrast — grounded in current palette
+  guidance (IxDF / Figma / WebOsmotic). No more raw HTML buttons; consistent
+  focus rings, radii, shadows. Agent transcript is now chat bubbles (user right
+  blue, agent left) and echoes the user's own prompt (a `user_message` SSE
+  event). The "+" add-agent control is a bottom-left FAB.
+
+### 2026-06-10 — Browser-driven verification
+
+- **Playwright is now the visual-verification path** (`scripts/verify_ui.py`):
+  launches chromium, drives the real app (onboarding → create team → launch →
+  control room → agent chat → task board), asserts structure, and screenshots to
+  `/tmp/ag_shots/`. The screenshots are reviewed visually each UI change. The
+  app is verified working end-to-end with the real local qwen-7b model.
+
 ## Phase 9 — Snapshot/resume + polish
 
 ### 2026-06-09 — Resume is the rehydrate half; snapshot already existed

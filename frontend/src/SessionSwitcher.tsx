@@ -1,75 +1,88 @@
 import { useEffect, useState } from "react";
 import { api, type TeamRow } from "./api";
+import { Button, Field, Select, TextInput } from "./ui";
 import type { SessionInfo } from "./types";
 
-// Switch between running sessions and launch new ones (a team bound to a repo).
-// The runtime already supports N concurrent sessions; this is the launch flow.
+// Switch between running sessions and launch new ones. Sessions/teams are owned
+// by App and passed in; this just drives selection + the launch popover.
 export default function SessionSwitcher({
   activeSessionId,
+  sessions,
   teams,
   onSwitch,
   onLaunched,
 }: {
   activeSessionId: string | null;
+  sessions: SessionInfo[];
   teams: TeamRow[];
   onSwitch: (id: string) => void;
   onLaunched: (id: string) => void;
 }) {
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [launching, setLaunching] = useState(false);
+  const [open, setOpen] = useState(false);
   const [teamId, setTeamId] = useState("");
   const [repo, setRepo] = useState("");
   const [mode, setMode] = useState<"parallel" | "serial">("parallel");
 
-  const refresh = () => api.listSessions().then((r) => setSessions(r.sessions)).catch(() => {});
   useEffect(() => {
-    refresh();
-  }, [activeSessionId]);
-  useEffect(() => {
-    if (teams.length && !teamId) setTeamId(teams[0].id);
+    if (teams.length && !teams.some((t) => t.id === teamId)) setTeamId(teams[0].id);
   }, [teams, teamId]);
+
+  const repoName = (p: string) => p.split("/").filter(Boolean).pop() || p;
 
   const launch = async () => {
     if (!teamId || !repo.trim()) return;
-    const s = await api.launchSession(teamId, repo, mode);
+    const s = await api.launchSession(teamId, repo.trim(), mode);
     if (s.warning) window.alert(s.warning);
-    setLaunching(false);
+    setOpen(false);
     setRepo("");
-    await refresh();
     onLaunched(s.id);
   };
 
   return (
-    <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
-      <select value={activeSessionId ?? ""} onChange={(e) => onSwitch(e.target.value)} title="Active session">
+    <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 8 }}>
+      <Select
+        value={activeSessionId ?? ""}
+        onChange={(e) => onSwitch(e.target.value)}
+        style={{ width: "auto", minWidth: 180 }}
+      >
         {sessions.map((s) => (
           <option key={s.id} value={s.id}>
-            {s.id.slice(0, 10)} · {s.repo_path.split("/").pop()} · {s.mode}
+            {repoName(s.repo_path)} · {s.mode}
           </option>
         ))}
-      </select>
-      <button onClick={() => setLaunching((v) => !v)} style={{ fontSize: 11, padding: "2px 8px", cursor: "pointer" }}>
-        + session
-      </button>
-      {launching && (
-        <span style={{ display: "flex", gap: 4, alignItems: "center" }}>
-          <select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
-            {teams.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-          <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="/path/to/repo" style={{ width: 160, padding: 3 }} />
-          <select value={mode} onChange={(e) => setMode(e.target.value as "parallel" | "serial")}>
-            <option value="parallel">parallel</option>
-            <option value="serial">serial</option>
-          </select>
-          <button onClick={launch} disabled={!repo.trim()} style={{ padding: "2px 8px", cursor: "pointer" }}>
-            launch
-          </button>
-        </span>
+      </Select>
+      <Button variant="ghost" size="sm" onClick={() => setOpen((v) => !v)}>
+        + Session
+      </Button>
+
+      {open && (
+        <div
+          className="card"
+          style={{ position: "absolute", top: 42, left: 0, width: 320, padding: 16, zIndex: 20, display: "flex", flexDirection: "column", gap: 12 }}
+        >
+          <strong style={{ fontSize: 13 }}>Launch a session</strong>
+          <Field label="Team">
+            <Select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Repository path">
+            <TextInput value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="/path/to/repo" />
+          </Field>
+          <Field label="Mode">
+            <Select value={mode} onChange={(e) => setMode(e.target.value as "parallel" | "serial")}>
+              <option value="parallel">parallel</option>
+              <option value="serial">serial</option>
+            </Select>
+          </Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button variant="primary" size="sm" onClick={launch} disabled={!repo.trim()}>Launch</Button>
+          </div>
+        </div>
       )}
-    </span>
+    </div>
   );
 }

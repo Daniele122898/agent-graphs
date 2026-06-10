@@ -45,11 +45,12 @@ export const api = {
       body: JSON.stringify({ mode }),
     }).then(json<SessionInfo>),
   listTeams: () => fetch("/api/teams").then(json<{ teams: TeamRow[] }>),
-  createTeam: (name: string, graph: TeamGraph) =>
+  // Omit graph to get the backend's starter team (one lead agent).
+  createTeam: (name: string, graph?: TeamGraph) =>
     fetch("/api/teams", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, graph }),
+      body: JSON.stringify(graph ? { name, graph } : { name }),
     }).then(json<TeamRow>),
   getTeamGraph: (teamId: string) => fetch(`/api/teams/${teamId}/graph`).then(json<TeamGraph>),
   putTeamGraph: (teamId: string, graph: TeamGraph) =>

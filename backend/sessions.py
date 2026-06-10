@@ -191,6 +191,15 @@ class SessionManager:
         self._sessions[session_id] = session
         return session
 
+    def latest_session_id_for_team(self, team_id: str) -> str | None:
+        """The most recent persisted session bound to a team (for reuse on
+        startup so edits persist across restarts instead of accumulating)."""
+        row = self._conn.execute(
+            "SELECT id FROM sessions WHERE team_id = ? ORDER BY created_at DESC LIMIT 1",
+            (team_id,),
+        ).fetchone()
+        return row["id"] if row else None
+
     def get(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)
 

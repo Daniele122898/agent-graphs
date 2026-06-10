@@ -40,31 +40,21 @@ export default function Sidebar({
   return (
     <div
       style={{
-        width: 340,
-        borderLeft: "1px solid #e5e7eb",
+        width: 360,
+        borderLeft: "1px solid var(--border)",
         display: "flex",
         flexDirection: "column",
-        fontFamily: "system-ui, sans-serif",
-        background: "#fafafa",
+        fontFamily: "var(--font)",
+        background: "var(--surface)",
         minHeight: 0,
       }}
     >
-      <div style={{ display: "flex", borderBottom: "1px solid #e5e7eb" }}>
+      <div className="tabs">
         {TABS.map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
-            style={{
-              flex: 1,
-              padding: "10px 4px",
-              border: "none",
-              borderBottom: tab === t.key ? "2px solid #2563eb" : "2px solid transparent",
-              background: "transparent",
-              cursor: "pointer",
-              fontSize: 12,
-              fontWeight: tab === t.key ? 600 : 400,
-              color: tab === t.key ? "#2563eb" : "#374151",
-            }}
+            className={tab === t.key ? "tab tab-active" : "tab"}
           >
             {t.label}
           </button>
@@ -73,7 +63,7 @@ export default function Sidebar({
 
       <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
         {!selected ? (
-          <p style={{ padding: 16, color: "#9ca3af" }}>Select an agent on the canvas.</p>
+          <p className="muted" style={{ padding: 18, fontSize: 13 }}>Select an agent on the canvas to configure it.</p>
         ) : tab === "persona" ? (
           <PersonaTab spec={selected} onUpdate={onUpdate} />
         ) : tab === "capabilities" ? (

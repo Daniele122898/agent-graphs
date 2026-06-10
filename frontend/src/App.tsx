@@ -1,48 +1,79 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Canvas from "./Canvas";
+import Onboarding from "./Onboarding";
 import Sidebar from "./Sidebar";
 import SessionSwitcher from "./SessionSwitcher";
 import TaskBoard from "./TaskBoard";
 import { api, setActiveSession, type TeamRow } from "./api";
+import { Button } from "./ui";
 import { useEvents } from "./useEvents";
 import { useTeamGraph } from "./useTeamGraph";
 import type { SessionInfo } from "./types";
 
-// The control room. Canvas (team graph editor) + five-tab sidebar, with a live
-// SSE event stream powering lifecycle badges and the Agent tab.
+const LS_KEY = "ag.activeSessionId";
+
+// The control room. Session-centric: you launch a session (a team bound to a
+// repo) and operate it. Nothing is auto-created — when there are no sessions,
+// the onboarding flow guides you through creating a team and launching one.
 export default function App() {
-  const [activeTeamId, setActiveTeamId] = useState<string | null>(null);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [teams, setTeams] = useState<TeamRow[]>([]);
-  const graph = useTeamGraph(activeTeamId);
-  const { events, lifecycles, activeEdges } = useEvents(activeSessionId);
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [activeSessionId, setActiveId] = useState<string | null>(localStorage.getItem(LS_KEY));
   const [session, setSession] = useState<SessionInfo | null>(null);
+  const [activeTeamId, setActiveTeamId] = useState<string | null>(null);
   const [view, setView] = useState<"canvas" | "board">("canvas");
 
-  const refreshTeams = () => api.listTeams().then((r) => setTeams(r.teams)).catch(() => {});
+  const graph = useTeamGraph(activeTeamId);
+  const { events, lifecycles, activeEdges } = useEvents(activeSessionId);
 
-  // Load the (newly) active session's info, and point its editor at that
-  // session's team. setActiveSession() makes module-level api calls target it.
-  const loadSession = (id: string | null) => {
+  const selectSession = useCallback((id: string | null) => {
     setActiveSession(id);
-    api.session().then((s) => {
-      setSession(s);
-      setActiveSessionId(s.id);
-      setActiveTeamId(s.team_id);
-    }).catch(() => setSession(null));
-  };
-
-  useEffect(() => {
-    loadSession(null);
-    refreshTeams();
+    setActiveId(id);
+    if (id) localStorage.setItem(LS_KEY, id);
+    else localStorage.removeItem(LS_KEY);
   }, []);
 
+  const refresh = useCallback(async () => {
+    const [t, s] = await Promise.all([api.listTeams(), api.listSessions()]);
+    setTeams(t.teams);
+    setSessions(s.sessions);
+    // Reconcile the active session against what actually exists.
+    setActiveId((cur) => {
+      const valid = cur && s.sessions.some((x) => x.id === cur);
+      const next = valid ? cur : s.sessions.length ? s.sessions[s.sessions.length - 1].id : null;
+      setActiveSession(next);
+      if (next) localStorage.setItem(LS_KEY, next);
+      else localStorage.removeItem(LS_KEY);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    refresh().catch(() => {});
+  }, [refresh]);
+
+  // Load the active session's info + point the editor at its team.
+  useEffect(() => {
+    if (!activeSessionId) {
+      setSession(null);
+      setActiveTeamId(null);
+      return;
+    }
+    setActiveSession(activeSessionId);
+    api
+      .session()
+      .then((s) => {
+        setSession(s);
+        setActiveTeamId(s.team_id);
+      })
+      .catch(() => setSession(null));
+  }, [activeSessionId]);
+
   const saveAs = async () => {
-    const name = window.prompt("Save current graph as team:");
+    const name = window.prompt("Save current graph as a new team:");
     if (!name) return;
-    const team = await api.createTeam(name, graph.snapshot());
-    await refreshTeams();
-    setActiveTeamId(team.id);
+    await api.createTeam(name, graph.snapshot());
+    await refresh();
   };
 
   const agents = graph.nodes.map((n) => ({
@@ -52,105 +83,103 @@ export default function App() {
   }));
 
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "var(--bg)" }}>
       <header
         style={{
-          padding: "8px 16px",
-          borderBottom: "1px solid #e5e7eb",
+          padding: "0 16px",
+          height: 52,
+          flexShrink: 0,
+          borderBottom: "1px solid var(--border)",
+          background: "var(--surface)",
           display: "flex",
-          alignItems: "baseline",
-          gap: 16,
-          fontFamily: "system-ui, sans-serif",
+          alignItems: "center",
+          gap: 14,
         }}
       >
-        <strong>Agent Graphs</strong>
-        <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
-          <select
-            value={activeTeamId ?? ""}
-            onChange={(e) => setActiveTeamId(e.target.value)}
-            title="Load a team definition into the editor"
-          >
-            {teams.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-                {session && t.id === session.team_id ? " (session)" : ""}
-              </option>
-            ))}
-          </select>
-          <button onClick={saveAs} style={{ fontSize: 11, padding: "2px 8px", cursor: "pointer" }}>
-            Save as…
-          </button>
-        </span>
-        <SessionSwitcher
-          activeSessionId={activeSessionId}
-          teams={teams}
-          onSwitch={(id) => loadSession(id)}
-          onLaunched={(id) => loadSession(id)}
-        />
+        <strong style={{ fontSize: 15, letterSpacing: "-0.02em" }}>
+          Agent<span style={{ color: "var(--primary)" }}>Graphs</span>
+        </strong>
+
         {session && (
-          <span style={{ fontSize: 12, color: "#6b7280", display: "flex", alignItems: "center", gap: 8 }}>
-            session {session.id.slice(0, 12)} · repo {session.repo_path}
-            <button
-              title="LLM execution gateway: serial = one model call at a time (low-spec)"
-              onClick={() => {
-                const next = session.mode === "serial" ? "parallel" : "serial";
-                api.setMode(next).then(setSession);
+          <>
+            <div style={{ width: 1, height: 22, background: "var(--border)" }} />
+            <SessionSwitcher
+              activeSessionId={activeSessionId}
+              sessions={sessions}
+              teams={teams}
+              onSwitch={selectSession}
+              onLaunched={async (id) => {
+                await refresh();
+                selectSession(id);
               }}
-              style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #d1d5db", borderRadius: 6, cursor: "pointer", background: "white" }}
-            >
-              {session.mode}
-            </button>
-          </span>
+            />
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+              <Button variant="ghost" size="sm" onClick={saveAs}>
+                Save as team…
+              </Button>
+              <button
+                className="chip"
+                title="LLM execution gateway — serial runs one model call at a time (low-spec)"
+                onClick={() => {
+                  const next = session.mode === "serial" ? "parallel" : "serial";
+                  api.setMode(next).then(setSession);
+                }}
+                style={{ cursor: "pointer" }}
+              >
+                {session.mode}
+              </button>
+              <div style={{ display: "flex", background: "var(--surface-2)", borderRadius: "var(--r-sm)", padding: 2 }}>
+                {(["canvas", "board"] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setView(v)}
+                    className={view === v ? "btn btn-sm btn-primary" : "btn btn-sm btn-ghost"}
+                    style={{ boxShadow: "none" }}
+                  >
+                    {v === "canvas" ? "Canvas" : "Tasks"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
         )}
-        <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-          {(["canvas", "board"] as const).map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              style={{
-                padding: "4px 12px",
-                border: "1px solid #d1d5db",
-                borderRadius: 6,
-                background: view === v ? "#2563eb" : "white",
-                color: view === v ? "white" : "#374151",
-                cursor: "pointer",
-                fontSize: 12,
-              }}
-            >
-              {v === "canvas" ? "Canvas" : "Task board"}
-            </button>
-          ))}
-        </div>
       </header>
 
-      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          {view === "canvas" ? (
-            <Canvas
-              nodes={graph.nodes}
-              edges={graph.edges}
-              lifecycles={lifecycles}
-              onNodesChange={graph.onNodesChange}
-              onEdgesChange={graph.onEdgesChange}
-              onConnect={graph.onConnect}
-              onSelectionChange={graph.onSelectionChange}
-              addNode={graph.addNode}
-              status={graph.status}
-              activeEdges={activeEdges}
-            />
-          ) : (
-            <TaskBoard agents={agents} events={events} />
-          )}
+      {!activeSessionId ? (
+        <Onboarding teams={teams} onChanged={refresh} onLaunched={async (id) => {
+          await refresh();
+          selectSession(id);
+        }} />
+      ) : (
+        <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {view === "canvas" ? (
+              <Canvas
+                nodes={graph.nodes}
+                edges={graph.edges}
+                lifecycles={lifecycles}
+                onNodesChange={graph.onNodesChange}
+                onEdgesChange={graph.onEdgesChange}
+                onConnect={graph.onConnect}
+                onSelectionChange={graph.onSelectionChange}
+                addNode={graph.addNode}
+                status={graph.status}
+                activeEdges={activeEdges}
+              />
+            ) : (
+              <TaskBoard agents={agents} events={events} />
+            )}
+          </div>
+          <Sidebar
+            selected={graph.selectedSpec}
+            onUpdate={graph.updateSpec}
+            events={events}
+            lifecycles={lifecycles}
+            edges={graph.edges}
+            onUpdateEdgeLabel={graph.updateEdgeLabel}
+          />
         </div>
-        <Sidebar
-          selected={graph.selectedSpec}
-          onUpdate={graph.updateSpec}
-          events={events}
-          lifecycles={lifecycles}
-          edges={graph.edges}
-          onUpdateEdgeLabel={graph.updateEdgeLabel}
-        />
-      </div>
+      )}
     </div>
   );
 }

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from backend.main import create_app
 from backend.models_domain import AgentSpec, GraphNode, TeamGraph
+from tests.conftest import bootstrap_session
 
 
 def _graph(lead_name: str = "Lead") -> dict:
@@ -16,30 +17,27 @@ def _graph(lead_name: str = "Lead") -> dict:
 
 
 def test_team_crud_round_trip(tmp_path):
-    app = create_app(db_path=tmp_path / "t.sqlite", repo_path=tmp_path / "repo")
+    app = create_app(db_path=tmp_path / "t.sqlite")
     with TestClient(app) as client:
-        # the auto-created default team is listed
-        teams = client.get("/api/teams").json()["teams"]
-        assert len(teams) == 1
+        assert client.get("/api/teams").json()["teams"] == []  # nothing auto-created
 
         created = client.post("/api/teams", json={"name": "Web Squad", "graph": _graph()}).json()
         assert created["name"] == "Web Squad"
 
         teams = client.get("/api/teams").json()["teams"]
-        assert {t["name"] for t in teams} == {"Default Team", "Web Squad"}
+        assert {t["name"] for t in teams} == {"Web Squad"}
 
         renamed = client.post(f"/api/teams/{created['id']}/rename", json={"name": "Renamed"}).json()
         assert renamed["name"] == "Renamed"
 
 
 def test_editing_a_template_does_not_mutate_a_running_session(tmp_path):
-    """The session is bound to the default team. Editing a *different* saved team
-    must not change what the running session sees (pin-at-launch)."""
-    app = create_app(db_path=tmp_path / "t.sqlite", repo_path=tmp_path / "repo")
+    """A session is launched from team A. Editing a *different* template (B) must
+    not change what the running session sees (pin-at-launch)."""
+    app = create_app(db_path=tmp_path / "t.sqlite")
     with TestClient(app) as client:
-        # a separate template
+        team_a, session = bootstrap_session(client, tmp_path / "repo", graph=_graph())
         other = client.post("/api/teams", json={"name": "Other", "graph": _graph()}).json()
-        # edit the other template heavily
         big = TeamGraph(
             nodes=[
                 GraphNode(spec=AgentSpec(id="lead", name="Lead", is_entry_point=True)),
@@ -48,34 +46,31 @@ def test_editing_a_template_does_not_mutate_a_running_session(tmp_path):
         ).model_dump()
         client.put(f"/api/teams/{other['id']}/graph", json=big)
 
-        # the running session still sees only its own pinned graph (lead only)
-        session = app.state.sessions.get(app.state.default_session_id)
-        assert session.registry.agent_ids() == ["lead"]
+        live = app.state.sessions.get(session["id"])
+        assert live.registry.agent_ids() == ["lead"]  # untouched
 
 
 def test_editing_the_sessions_own_team_syncs_the_session(tmp_path):
-    """Editing the team the session is bound to DOES sync (the MVP convenience —
-    the canvas is the live control room for that session)."""
-    app = create_app(db_path=tmp_path / "t.sqlite", repo_path=tmp_path / "repo")
+    """Editing the team a session is bound to DOES sync it (the editor doubles as
+    the live control room for that session)."""
+    app = create_app(db_path=tmp_path / "t.sqlite")
     with TestClient(app) as client:
-        default_id = app.state.default_team_id
+        team, session = bootstrap_session(client, tmp_path / "repo", graph=_graph())
         big = TeamGraph(
             nodes=[
                 GraphNode(spec=AgentSpec(id="lead", name="Lead", is_entry_point=True)),
                 GraphNode(spec=AgentSpec(id="react", name="React")),
             ]
         ).model_dump()
-        client.put(f"/api/teams/{default_id}/graph", json=big)
-        session = app.state.sessions.get(app.state.default_session_id)
-        assert set(session.registry.agent_ids()) == {"lead", "react"}
+        client.put(f"/api/teams/{team['id']}/graph", json=big)
+        live = app.state.sessions.get(session["id"])
+        assert set(live.registry.agent_ids()) == {"lead", "react"}
 
 
 def test_create_team_rejects_malformed_graph(tmp_path):
-    app = create_app(db_path=tmp_path / "t.sqlite", repo_path=tmp_path / "repo")
+    app = create_app(db_path=tmp_path / "t.sqlite")
     with TestClient(app) as client:
-        bad = TeamGraph(
-            nodes=[GraphNode(spec=AgentSpec(id="a", name="A"))],
-        ).model_dump()
+        bad = TeamGraph(nodes=[GraphNode(spec=AgentSpec(id="a", name="A"))]).model_dump()
         bad["edges"] = [{"id": "e1", "source": "a", "target": "ghost", "label": ""}]
         r = client.post("/api/teams", json={"name": "Bad", "graph": bad})
         assert r.status_code == 422
