@@ -20,6 +20,7 @@ in-flight run. This keeps behavior robust rather than fighting the framework.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import TYPE_CHECKING, Callable
 
 from pydantic_ai.models import Model
@@ -61,6 +62,7 @@ class RunningAgent:
         self._built_spec = spec.model_copy(deep=True)
         self.agent_id = spec.id
         self._state_store = state_store
+        self._message_log = message_log
         self._inbox: asyncio.Queue = asyncio.Queue()
         # Seed from persisted history on resume, so the agent continues with
         # full prior context rather than a blank slate.
@@ -69,15 +71,20 @@ class RunningAgent:
         self._stopped = False
         self._bash_runner = bash_runner
         self._model_resolver = model_resolver
+        # One run at a time per worker: an agent is one "person". Concurrent
+        # work (a second task, a delegated question) queues here rather than
+        # interleaving into the same conversation history.
+        self._run_lock = asyncio.Lock()
 
         # Route this agent's model calls through the session gateway (serial on
         # low-spec machines, pass-through otherwise).
         self.agent = build_agent(spec, model=GatedModel(model, session.gateway), dev_tools=self._dev_tools(spec))
 
         # A delegator lets this agent (and its delegation targets) consult
-        # neighbors via ask_agent. Targets are built on demand with their own
-        # model + capabilities (resolved via the injected resolver).
-        delegator = Delegator(session, self._build_target, message_log=message_log)
+        # neighbors via ask_agent. Targets are real RunningAgents obtained from
+        # the session registry (created on demand), so delegated work is fully
+        # visible: lifecycle, streamed events, and persisted history.
+        delegator = Delegator(session, self._obtain_target, message_log=message_log)
         self._deps = AgentDeps(session_id=session.id, agent_id=spec.id, delegator=delegator)
 
     def _dev_tools(self, spec: AgentSpec) -> DevTools:
@@ -86,9 +93,17 @@ class RunningAgent:
             kwargs["bash_runner"] = self._bash_runner
         return DevTools(self.session.repo_root, spec.capabilities, **kwargs)
 
-    def _build_target(self, spec: AgentSpec):
-        model = GatedModel(self._model_resolver(spec.model), self.session.gateway)
-        return build_agent(spec, model=model, dev_tools=self._dev_tools(spec))
+    async def _obtain_target(self, spec: AgentSpec) -> "RunningAgent":
+        """Delegation targets get (or become) real registered workers, built
+        with the same injected services as this one."""
+        return await obtain_worker(
+            self.session,
+            spec,
+            state_store=self._state_store,
+            message_log=self._message_log,
+            model_resolver=self._model_resolver,
+            bash_runner=self._bash_runner,
+        )
 
     # lifecycle ---------------------------------------------------------
 
@@ -99,16 +114,35 @@ class RunningAgent:
     def submit(self, prompt: str) -> None:
         """Queue a prompt. If idle it runs now; if running it's an interjection
         processed right after the current run (with history)."""
+        self.start()  # lazy: workers created for delegation have no loop yet
         self._inbox.put_nowait(prompt)
 
-    async def run_once(self, prompt: str) -> str:
+    async def run_once(
+        self,
+        prompt: str,
+        *,
+        usage=None,
+        usage_limits=None,
+        delegation_chain: list[str] | None = None,
+        lock_timeout: float | None = None,
+    ) -> str:
         """Run a single prompt to completion and return the output (awaitable).
 
-        Used by the task system, which needs the result back to apply a
-        completion gate — distinct from the interactive ``submit`` inbox path.
-        Shares the agent's history/delegator, so delegated work and continuity
-        behave identically.
+        Used by the task system (which needs the result back to apply a
+        completion gate) and by delegation (``ask_agent`` routes here so the
+        target's work is visible and persisted). Shares the agent's history and
+        delegator, so continuity behaves identically to the inbox path.
+
+        ``usage``/``usage_limits`` thread a parent run's budget through a
+        delegated run; ``delegation_chain`` carries the cycle/depth guard state.
+        ``lock_timeout`` bounds the wait for this worker to become free (the
+        delegation path uses it as a deadlock backstop); ``None`` waits forever.
         """
+        if lock_timeout is None:
+            await self._run_lock.acquire()
+        else:
+            await asyncio.wait_for(self._run_lock.acquire(), timeout=lock_timeout)
+        deps = self._deps if delegation_chain is None else replace(self._deps, delegation_chain=list(delegation_chain))
         history_out: list = []
         try:
             output = await run_agent_streamed(
@@ -117,15 +151,18 @@ class RunningAgent:
                 agent_id=self.agent_id,
                 agent=self.agent,
                 prompt=prompt,
-                deps=self._deps,
+                deps=deps,
                 usage_tally=self.session.usage,
                 message_history=self._messages or None,
                 history_out=history_out,
+                usage=usage,
+                usage_limits=usage_limits,
             )
             if history_out:
                 self._messages = history_out
             return output
         finally:
+            self._run_lock.release()
             self._persist()
             if self._inbox.empty():
                 self._set_lifecycle("idle")
@@ -166,17 +203,18 @@ class RunningAgent:
                 break
             history_out: list = []
             try:
-                await run_agent_streamed(
-                    bus=self.session.bus,
-                    registry=self.session.registry,
-                    agent_id=self.agent_id,
-                    agent=self.agent,
-                    prompt=prompt,
-                    deps=self._deps,
-                    usage_tally=self.session.usage,
-                    message_history=self._messages or None,
-                    history_out=history_out,
-                )
+                async with self._run_lock:
+                    await run_agent_streamed(
+                        bus=self.session.bus,
+                        registry=self.session.registry,
+                        agent_id=self.agent_id,
+                        agent=self.agent,
+                        prompt=prompt,
+                        deps=self._deps,
+                        usage_tally=self.session.usage,
+                        message_history=self._messages or None,
+                        history_out=history_out,
+                    )
                 if history_out:
                     self._messages = history_out
             except asyncio.CancelledError:
@@ -199,3 +237,45 @@ class RunningAgent:
                 lifecycle=self.session.registry.lifecycle(self.agent_id) or "idle",
                 usage=self.session.usage.get(self.agent_id),
             )
+
+
+async def obtain_worker(
+    session: "Session",
+    spec: AgentSpec,
+    *,
+    state_store: "AgentStateStore | None" = None,
+    message_log: "MessageLog | None" = None,
+    model_resolver: Callable[[str], Model] = resolve_model,
+    bash_runner: Callable | None = None,
+) -> RunningAgent:
+    """Get the registered worker for ``spec`` — or (re)build and register one.
+
+    The single get-or-create path shared by the HTTP layer and delegation. If a
+    live worker exists but its spec changed (model/persona/capability edit), it
+    is stopped and rebuilt carrying its conversation history forward; otherwise
+    history is seeded from the persisted state. The inbox loop starts lazily on
+    the first ``submit``, so workers created purely for ``run_once`` (tasks,
+    delegation) don't hold an idle background task.
+    """
+    existing = session.registry.running(spec.id)
+    if existing is not None:
+        if not existing.spec_changed(spec):
+            return existing
+        prior_messages = list(existing.messages)
+        await existing.stop()
+        session.registry.detach_running(spec.id)
+    else:
+        prior_messages = state_store.load_messages(session.id, spec.id) if state_store else []
+
+    ra = RunningAgent(
+        session=session,
+        spec=spec,
+        model=model_resolver(spec.model),
+        state_store=state_store,
+        message_log=message_log,
+        model_resolver=model_resolver,
+        bash_runner=bash_runner,
+        initial_messages=prior_messages,
+    )
+    session.registry.attach_running(spec.id, ra)
+    return ra

@@ -16,18 +16,30 @@ the graph immediately changes who an agent knows to consult.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
-from typing import Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
-from pydantic_ai import Agent, ModelRetry, RunContext
+from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.usage import UsageLimits
 
 from .models_domain import AgentSpec, TeamGraph
 from .todos import AgentDeps
 from .util import iso_now, new_id
 
+if TYPE_CHECKING:  # runtime.py imports this module; avoid the cycle
+    from .runtime import RunningAgent
+
 MAX_DELEGATION_DEPTH = 3
 """Hard cap on delegation chain length — a code-level loop guard."""
+
+DELEGATION_BUSY_TIMEOUT = 15 * 60.0
+"""How long ``ask_agent`` waits for a busy target before giving up (seconds).
+
+A target legitimately busy with another task is *waited for* (one agent = one
+person, runs are serialized per worker); the timeout is a backstop against the
+A⇄B mutual-delegation deadlock two simultaneous runs could otherwise produce.
+"""
 
 
 # --- pure: neighbor list ----------------------------------------------------
@@ -88,21 +100,29 @@ class MessageLog:
 
 
 class Delegator:
-    """Resolves and runs delegations within one session. ``agent_factory`` builds
-    a Pydantic AI agent for a spec (injected so tests control the models)."""
+    """Resolves and runs delegations within one session.
+
+    ``worker_provider`` is an async callable ``(spec) -> RunningAgent`` that
+    returns the target's *registered* worker (creating one on demand) — so a
+    delegated run goes through the same streamed/persisted path as any other
+    run: the target's lifecycle badge, transcript, and history all reflect the
+    work. Injected so tests control the models behind the workers.
+    """
 
     def __init__(
         self,
         session,
-        agent_factory: Callable[[AgentSpec], Agent],
+        worker_provider: Callable[[AgentSpec], Awaitable["RunningAgent"]],
         *,
         message_log: MessageLog | None = None,
         max_depth: int = MAX_DELEGATION_DEPTH,
+        busy_timeout: float = DELEGATION_BUSY_TIMEOUT,
     ):
         self.session = session
-        self._factory = agent_factory
+        self._workers = worker_provider
         self._log = message_log
         self._max_depth = max_depth
+        self._busy_timeout = busy_timeout
 
     def neighbors(self, agent_id: str) -> list[tuple[str, str]]:
         return neighbor_list(self.session.graph, agent_id)
@@ -131,22 +151,36 @@ class Delegator:
             raise ModelRetry(f"no agent '{target_id}' exists.")
 
         self._publish(asker_id, target_id, "question", question)
-        target_agent = self._factory(target_spec)
-        child_deps = AgentDeps(
-            session_id=self.session.id,
-            agent_id=target_id,
-            delegator=self,
-            delegation_chain=chain + [asker_id],
-        )
-        result = await target_agent.run(
-            question,
-            deps=child_deps,
-            usage=usage,
-            usage_limits=UsageLimits(request_limit=50),
-        )
-        answer = str(result.output)
+        # The asker is visibly waiting, the target visibly working: delegation
+        # runs through the target's RunningAgent (streamed events, shared
+        # history, persisted state), not an invisible throwaway agent.
+        self._set_lifecycle(asker_id, "waiting-on-agent")
+        try:
+            worker = await self._workers(target_spec)
+            answer = await worker.run_once(
+                question,
+                usage=usage,
+                usage_limits=UsageLimits(request_limit=50),
+                delegation_chain=chain + [asker_id],
+                lock_timeout=self._busy_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise ModelRetry(
+                f"'{target_id}' has been busy for over {int(self._busy_timeout)}s; "
+                "proceed without them or try again later."
+            ) from None
+        except ModelRetry:
+            raise
+        except Exception as e:  # noqa: BLE001 — surfaced on the target as agent_error too
+            raise ModelRetry(f"consulting '{target_id}' failed ({e}); handle it without them.") from e
+        finally:
+            self._set_lifecycle(asker_id, "running")
         self._publish(target_id, asker_id, "reply", answer)
         return answer
+
+    def _set_lifecycle(self, agent_id: str, lifecycle: str) -> None:
+        self.session.registry.set_lifecycle(agent_id, lifecycle)
+        self.session.bus.publish("agent_lifecycle", {"agent_id": agent_id, "lifecycle": lifecycle})
 
     def _publish(self, frm: str, to: str, kind: str, body: str) -> None:
         self.session.bus.publish(

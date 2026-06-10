@@ -16,7 +16,7 @@ from .gateway import GatedModel
 from .graph import validate_structure
 from .models import resolve_model
 from .models_domain import AgentSpec, Capabilities, GraphNode, TeamGraph
-from .runtime import RunningAgent
+from .runtime import RunningAgent, obtain_worker
 from .sessions import Session
 from .tasks import ReviewVerdict, TaskRunner, run_check
 
@@ -119,32 +119,16 @@ def make_task_runner(app: FastAPI, session: Session) -> TaskRunner:
 
 
 async def get_or_create_running(app: FastAPI, session: Session, agent_id: str) -> RunningAgent:
+    """HTTP-facing get-or-create: resolve the spec, then defer to the shared
+    ``obtain_worker`` path (also used by delegation), which reuses a live worker
+    unless its spec changed and otherwise rebuilds carrying history forward."""
     spec = find_spec(session, agent_id)
     if spec is None:
         raise HTTPException(404, f"no agent '{agent_id}' in this session")
-
-    existing = session.registry.running(agent_id)
-    if existing is not None:
-        # Reuse the live worker only if its config is unchanged. If the user
-        # edited the spec (e.g. switched the model in Capabilities, or changed
-        # persona/capabilities), rebuild so the change takes effect on the next
-        # run — carrying the conversation history forward.
-        if not existing.spec_changed(spec):
-            return existing
-        prior_messages = list(existing.messages)
-        await existing.stop()
-        session.registry.detach_running(agent_id)
-    else:
-        prior_messages = app.state.agent_state.load_messages(session.id, agent_id)
-
-    ra = RunningAgent(
-        session=session,
-        spec=spec,
-        model=resolve_model(spec.model),
+    return await obtain_worker(
+        session,
+        spec,
         state_store=app.state.agent_state,
         message_log=app.state.messages,
-        initial_messages=prior_messages,
+        model_resolver=resolve_model,
     )
-    session.registry.attach_running(agent_id, ra)
-    ra.start()
-    return ra

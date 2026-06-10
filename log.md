@@ -387,3 +387,27 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   Frontend: SSE edge-animation timers are cleared on unmount (no setState after
   unmount), session-launch failures now surface in the launch popover, model-id
   parsing centralized in `bareModelId()`.
+
+### 2026-06-10 — Delegation routes through the target's RunningAgent (bug fix)
+
+- **What:** `ask_agent` previously built a fresh throwaway agent for the
+  target, so a delegated run was invisible — no lifecycle change, no transcript
+  events, no persisted history (the user saw the edge animate and nothing
+  else). `Delegator` now takes an async worker provider; targets are obtained
+  via `runtime.obtain_worker` (the same get-or-create path the HTTP layer
+  uses) and run through `run_once`, which streams events under the target's id
+  and persists its history. The asker is set to `waiting-on-agent` during the
+  consult. The parent's usage budget is threaded through (`usage` shared;
+  per-agent tally credits only the child's delta).
+- **Also (user report):** two tasks created at once were both injected into
+  the lead immediately. There was no scheduling: each POST /api/tasks spawns a
+  concurrent runner and both hit the same worker's `run_once` concurrently,
+  interleaving one conversation history. A per-worker `asyncio.Lock` now
+  serializes runs — an agent is one "person"; a second task (or a delegated
+  question) waits until the current run finishes. Known cosmetic gap: the
+  waiting task's status already shows `running` while it queues.
+- **Deadlock backstop:** delegation acquires the target's run lock with a
+  15-minute timeout (`DELEGATION_BUSY_TIMEOUT`); simultaneous mutual A⇄B
+  delegation would otherwise deadlock. Timeout → `ModelRetry` ("busy") so the
+  asker proceeds without the consult.
+- **Reversibility:** the worker-provider seam is injected; tests script it.

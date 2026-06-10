@@ -61,6 +61,8 @@ async def run_agent_streamed(
     usage_tally: "UsageTally | None" = None,
     message_history: list[ModelMessage] | None = None,
     history_out: list[ModelMessage] | None = None,
+    usage=None,
+    usage_limits=None,
 ) -> str:
     """Run an agent to completion, publishing its work to the bus and driving the
     agent's lifecycle. Returns the final output text.
@@ -70,6 +72,11 @@ async def run_agent_streamed(
     replaced in-place with the full message list after the run, so the caller
     (a ``RunningAgent``) can persist and continue.
 
+    ``usage``/``usage_limits`` support delegated runs: a parent run passes its
+    own ``RunUsage`` so the child's consumption counts against the same budget.
+    The per-agent tally is then credited with only this run's *delta*, not the
+    shared accumulated totals.
+
     On error, the agent lands in ``blocked`` (the user's attention) and an
     ``agent_error`` event is published — never a silent failure.
     """
@@ -78,8 +85,15 @@ async def run_agent_streamed(
     bus.publish("user_message", {"agent_id": agent_id, "text": prompt})
     registry.set_lifecycle(agent_id, "running")
     bus.publish("agent_lifecycle", {"agent_id": agent_id, "lifecycle": "running"})
+    base = (
+        (usage.requests, usage.input_tokens or 0, usage.output_tokens or 0)
+        if usage is not None
+        else (0, 0, 0)
+    )
     try:
-        async with agent.iter(prompt, deps=deps, message_history=message_history) as run:
+        async with agent.iter(
+            prompt, deps=deps, message_history=message_history, usage=usage, usage_limits=usage_limits
+        ) as run:
             async for node in run:
                 if Agent.is_model_request_node(node):
                     bus.publish("model_request", {"agent_id": agent_id})
@@ -118,9 +132,9 @@ async def run_agent_streamed(
                     u = run.result.usage
                     usage_tally.add(
                         agent_id,
-                        requests=u.requests,
-                        input_tokens=u.input_tokens,
-                        output_tokens=u.output_tokens,
+                        requests=u.requests - base[0],
+                        input_tokens=(u.input_tokens or 0) - base[1],
+                        output_tokens=(u.output_tokens or 0) - base[2],
                     )
                 if history_out is not None:
                     history_out[:] = run.result.all_messages()
