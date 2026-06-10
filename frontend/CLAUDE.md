@@ -1,0 +1,39 @@
+# frontend/ — React + Vite + TypeScript control room
+
+React 18 + Vite + `@xyflow/react` (React Flow). No unit-test runner — the
+contract is **type-check + build**, plus **visual Playwright verification**.
+
+## Run, build, verify
+```bash
+npm run dev        # Vite :5173, proxies /api /health /events to backend :8000
+npm run build      # tsc -b && vite build — MUST pass (strict, noUnusedLocals)
+```
+**IMPORTANT — verify UI changes in a real browser, do not trust the build alone.**
+With both servers up and a fresh DB:
+```bash
+../.venv/bin/python ../scripts/verify_ui.py    # from frontend/, or run from repo root
+```
+It drives the real app with Playwright (chromium) through the whole flow
+(onboarding → create team → launch session → control room → agent chat → task
+board), asserts structure, and writes screenshots to `/tmp/ag_shots/`. **Then
+Read those PNGs to actually look at the result** — that's how UI work is
+confirmed here. Extend the script when you add UI worth checking.
+
+## Design system (YOU MUST use it — no raw HTML controls)
+- Tokens live in `src/index.css` as CSS variables (`--primary` #2563eb, neutrals, radii, shadows). Light theme, single blue accent, role-based colors, WCAG-aware contrast.
+- Reusable primitives in `src/ui.tsx`: `Button` (primary/secondary/ghost/danger), `IconButton`, `Select`, `TextInput`, `TextArea`, `Field`, `Chip`. **Use these instead of bare `<button>`/`<select>`/`<input>`** so styling stays coherent. The add-agent control is a bottom-left `.fab`.
+- Keep it light theme (user preference). Reach for tokens/`var(--...)`, not hardcoded hex, in inline styles.
+
+## Architecture & non-obvious decisions (the *why*)
+- **Session-centric.** App revolves around an **active session** (persisted in `localStorage`, key `ag.activeSessionId`, reconciled against the live list). When there is no session, `Onboarding.tsx` runs the explicit create-team → launch-session flow. There is no default session — the backend won't invent one.
+- **`api.ts` holds the active session id as module state** (`setActiveSession`); session-scoped calls append `?session_id=` via `withSession`. This keeps components from threading the id everywhere. `useEvents(sessionId)` opens the SSE `/events` connection per session and reconnects on switch.
+- **`useTeamGraph(teamId)`** owns the React Flow node/edge state, debounced save, and is **team-scoped** (`/api/teams/{id}/graph`). The active team = the active session's team; editing it syncs the running session (the canvas doubles as the live control room).
+- **`graphMapping.ts` is the single backend⇄React Flow conversion point.** The full `AgentSpec` lives in `node.data.spec`; `position` is the only UI-owned field. Don't convert formats anywhere else.
+- TS types in `src/types.ts` mirror the backend by hand; the backend graph round-trip test guards the wire format.
+- The Agent tab transcript is **chat bubbles** (user right/blue, agent left); the user's own prompt shows because the backend emits a `user_message` SSE event at run start. SSE event types are registered in `useEvents.ts` — add new ones there.
+
+## Layout
+`src/` — `App.tsx` (shell + flow), `Canvas.tsx` + `AgentNode.tsx` (graph),
+`Sidebar.tsx` + `tabs/*` (Persona/Capabilities/Links/Agent/Stats), `TaskBoard.tsx`
++ `NewTaskDialog.tsx`, `SessionSwitcher.tsx`, `Onboarding.tsx`, hooks
+(`useTeamGraph`, `useEvents`), `api.ts`, `ui.tsx`, `index.css`, `types.ts`.
