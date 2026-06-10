@@ -7,6 +7,7 @@ the DB is fresh (empty). Screenshots in /tmp/ag_shots/.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -14,7 +15,9 @@ from playwright.sync_api import sync_playwright
 
 SHOTS = Path("/tmp/ag_shots")
 SHOTS.mkdir(parents=True, exist_ok=True)
-URL = "http://127.0.0.1:5173"
+# Override to point at an isolated stack (e.g. AG_UI_URL=http://127.0.0.1:5174)
+# when the default ports are taken by a live dev session.
+URL = os.environ.get("AG_UI_URL", "http://127.0.0.1:5173")
 REPO = "/tmp/ag_ui_repo"
 
 
@@ -75,10 +78,46 @@ def main() -> int:
         except Exception:
             pass
 
-        # task board
+        # sidebar resize: drag the handle 200px left and confirm it widens
+        tabs = page.locator("div.tabs")
+        before = tabs.bounding_box()
+        handle = page.get_by_title("Drag to resize")
+        hb = handle.bounding_box()
+        if hb and before:
+            page.mouse.move(hb["x"] + hb["width"] / 2, hb["y"] + 300)
+            page.mouse.down()
+            page.mouse.move(hb["x"] - 200, hb["y"] + 300, steps=5)
+            page.mouse.up()
+            page.wait_for_timeout(300)
+            after = tabs.bounding_box()
+            if not after or after["width"] < before["width"] + 150:
+                failures.append(
+                    f"sidebar did not widen on drag (before={before['width']:.0f}, "
+                    f"after={(after or {}).get('width', 0):.0f})"
+                )
+            else:
+                print(f"sidebar resized {before['width']:.0f} -> {after['width']:.0f}")
+        else:
+            failures.append("sidebar resize handle not found")
+        page.screenshot(path=str(SHOTS / "04_sidebar_resized.png"))
+
+        # task board: create a task, open its detail drawer
         page.get_by_role("button", name="Tasks").click()
         page.wait_for_timeout(500)
-        page.screenshot(path=str(SHOTS / "04_task_board.png"))
+        task_prompt = "Verify the detail drawer shows this full prompt text."
+        page.get_by_placeholder("What should the team do?").fill(task_prompt)
+        page.get_by_role("button", name="Create task").click()
+        page.wait_for_timeout(800)
+        page.screenshot(path=str(SHOTS / "05_task_board.png"))
+        try:
+            page.locator("button[aria-label^='Task:']").first.click()
+            page.get_by_text("PROMPT", exact=True).wait_for(timeout=4000)
+            if not page.get_by_text(task_prompt).last.is_visible():
+                failures.append("task detail drawer does not show the full prompt")
+        except Exception:
+            failures.append("task detail drawer did not open on card click")
+        page.wait_for_timeout(300)
+        page.screenshot(path=str(SHOTS / "06_task_detail.png"))
 
         browser.close()
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import type { Edge } from "@xyflow/react";
 import AgentTab from "./tabs/AgentTab";
 import CapabilitiesTab from "./tabs/CapabilitiesTab";
@@ -20,6 +20,17 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "stats", label: "Stats" },
 ];
 
+// Resizable width, persisted across sessions. The content (chat bubbles use
+// percentage widths, tabs flex) adapts to whatever width the user drags to.
+const LS_WIDTH = "ag.sidebarWidth";
+const MIN_W = 300;
+const MAX_W = 820;
+
+function initialWidth(): number {
+  const v = Number(localStorage.getItem(LS_WIDTH));
+  return Number.isFinite(v) && v >= MIN_W && v <= MAX_W ? v : 360;
+}
+
 export default function Sidebar({
   selected,
   onUpdate,
@@ -38,11 +49,29 @@ export default function Sidebar({
   onUpdateEdgeLabel: (edgeId: string, label: string) => void;
 }) {
   const [tab, setTab] = useState<TabKey>("persona");
+  const [width, setWidth] = useState(initialWidth);
+
+  const startResize = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const onMove = (ev: PointerEvent) => {
+      const w = Math.min(MAX_W, Math.max(MIN_W, window.innerWidth - ev.clientX));
+      setWidth(w);
+      localStorage.setItem(LS_WIDTH, String(w));
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, []);
 
   return (
     <div
       style={{
-        width: 360,
+        width,
+        position: "relative",
+        flexShrink: 0,
         borderLeft: "1px solid var(--border)",
         display: "flex",
         flexDirection: "column",
@@ -51,6 +80,19 @@ export default function Sidebar({
         minHeight: 0,
       }}
     >
+      <div
+        onPointerDown={startResize}
+        title="Drag to resize"
+        style={{
+          position: "absolute",
+          left: -4,
+          top: 0,
+          bottom: 0,
+          width: 8,
+          cursor: "col-resize",
+          zIndex: 10,
+        }}
+      />
       <div className="tabs">
         {TABS.map((t) => (
           <button
