@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { api } from "../api";
 import { Button, Chip, TextArea } from "../ui";
+import type React from "react";
 import type { BusEvent } from "../useEvents";
 import type { AgentLifecycle } from "../types";
 
@@ -143,6 +144,114 @@ function Bubble({
   );
 }
 
+// One-line, human-readable summary of a tool call — the full args stay one
+// click away. Tuned per tool so the transcript reads like a work log.
+function toolSummary(tool: string, args: Record<string, unknown> | undefined): string {
+  const a = (k: string) => (args?.[k] != null ? String(args[k]) : "");
+  switch (tool) {
+    case "read_file":
+      return a("start_line") ? `${a("path")} :${a("start_line")}–${a("end_line") || "end"}` : a("path");
+    case "write_file":
+      return a("path");
+    case "edit_file":
+      return `${a("path")} :${a("start")}–${a("end")}`;
+    case "list_dir":
+      return a("path") || ".";
+    case "grep":
+      return `"${a("pattern")}"${a("path") ? ` in ${a("path")}` : ""}`;
+    case "run_bash":
+      return truncate(a("command"), 90);
+    case "ask_agent":
+      return `${a("target_id")} — ${truncate(a("question"), 90)}`;
+    case "write_todos": {
+      const todos = args?.todos;
+      return Array.isArray(todos) ? `${todos.length} item${todos.length === 1 ? "" : "s"}` : "";
+    }
+    default:
+      return truncate(JSON.stringify(args ?? {}), 90);
+  }
+}
+
+const TOOL_ICON: Record<string, string> = {
+  read_file: "📖",
+  write_file: "📝",
+  edit_file: "✏️",
+  list_dir: "📁",
+  grep: "🔍",
+  run_bash: "💻",
+  ask_agent: "🤝",
+  write_todos: "☑️",
+};
+
+// A compact, expandable row for a tool call or its result: a readable summary
+// line; click to reveal the full payload.
+function ExpandableRow({
+  icon,
+  summary,
+  detail,
+  tone = "call",
+}: {
+  icon: string;
+  summary: React.ReactNode;
+  detail: string;
+  tone?: "call" | "result";
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      style={{
+        borderLeft: `2px solid ${tone === "call" ? "var(--primary)" : "var(--border-strong, #d1d5db)"}`,
+        marginLeft: 2,
+        paddingLeft: 9,
+      }}
+    >
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          gap: 6,
+          background: "none",
+          border: "none",
+          padding: 0,
+          cursor: "pointer",
+          font: "inherit",
+          fontSize: 12.5,
+          color: tone === "call" ? "var(--text)" : "var(--text-muted)",
+          textAlign: "left",
+          width: "100%",
+        }}
+        title={open ? "Collapse" : "Expand"}
+      >
+        <span style={{ flexShrink: 0 }}>{icon}</span>
+        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+          {summary}
+        </span>
+        <span style={{ color: "var(--text-faint)", fontSize: 10, flexShrink: 0 }}>{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <pre
+          className="mono"
+          style={{
+            margin: "6px 0 2px",
+            padding: 8,
+            background: "var(--surface-2)",
+            borderRadius: "var(--r-sm)",
+            fontSize: 11.5,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+            maxHeight: 260,
+            overflowY: "auto",
+            color: "var(--text)",
+          }}
+        >
+          {detail}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function EventRow({ event }: { event: BusEvent }) {
   const d = event.data;
   switch (event.type) {
@@ -154,7 +263,7 @@ function EventRow({ event }: { event: BusEvent }) {
       );
     case "thinking":
       return (
-        <Bubble side="left" bg="transparent" color="#9ca3af">
+        <Bubble side="left" bg="transparent" color="var(--text-muted)">
           <span style={{ fontStyle: "italic" }}>💭 {String(d.text)}</span>
         </Bubble>
       );
@@ -164,23 +273,45 @@ function EventRow({ event }: { event: BusEvent }) {
           {String(d.text)}
         </Bubble>
       );
-    case "tool_call":
+    case "tool_call": {
+      const tool = String(d.tool);
       return (
-        <Bubble side="left" bg="#eef2ff" mono>
-          🛠 {String(d.tool)}({JSON.stringify(d.args)})
-        </Bubble>
+        <ExpandableRow
+          icon={TOOL_ICON[tool] ?? "🛠"}
+          summary={
+            <>
+              <strong>{tool}</strong>
+              {"  "}
+              <span className="mono" style={{ color: "var(--text-muted)", fontSize: 11.5 }}>
+                {toolSummary(tool, d.args as Record<string, unknown>)}
+              </span>
+            </>
+          }
+          detail={JSON.stringify(d.args, null, 2)}
+          tone="call"
+        />
       );
-    case "tool_result":
+    }
+    case "tool_result": {
+      const result = String(d.result);
       return (
-        <Bubble side="left" bg="transparent" color="#6b7280" mono>
-          ↳ {truncate(String(d.result), 200)}
-        </Bubble>
+        <ExpandableRow
+          icon="↳"
+          summary={<span className="mono" style={{ fontSize: 11.5 }}>{truncate(firstLine(result), 110)}</span>}
+          detail={truncate(result, 4000)}
+          tone="result"
+        />
       );
+    }
     case "agent_done":
+      // The final text already appears as its own bubble — render completion
+      // as a thin marker instead of repeating the whole output.
       return (
-        <Bubble side="left" bg="#dcfce7" color="#166534">
-          ✓ {String(d.output)}
-        </Bubble>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#166534", fontSize: 11.5 }}>
+          <span style={{ flex: 1, height: 1, background: "#bbe7c8" }} />
+          ✓ run complete
+          <span style={{ flex: 1, height: 1, background: "#bbe7c8" }} />
+        </div>
       );
     case "agent_error":
       return (
@@ -191,6 +322,11 @@ function EventRow({ event }: { event: BusEvent }) {
     default:
       return null;
   }
+}
+
+function firstLine(s: string): string {
+  const i = s.indexOf("\n");
+  return i === -1 ? s : s.slice(0, i);
 }
 
 function truncate(s: string, n: number): string {
