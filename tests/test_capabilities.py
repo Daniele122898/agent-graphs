@@ -6,9 +6,9 @@ write tool) — a real safety regression, not a cosmetic change.
 
 from __future__ import annotations
 
-from backend.capabilities import make_dev_toolset, toolset_tool_names
-from backend.models_domain import Capabilities
-from backend.tools import DevTools
+from backend.agents.capabilities import make_dev_toolset, toolset_tool_names
+from backend.domain.models import Capabilities
+from backend.agents.tools import DevTools
 
 
 def _names(caps: Capabilities, repo) -> set[str]:

@@ -6,7 +6,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from backend.main import create_app
-from backend.models_domain import AgentSpec, GraphNode, TeamGraph
+from backend.domain.models import AgentSpec, GraphNode, TeamGraph
 from tests.conftest import bootstrap_session
 
 

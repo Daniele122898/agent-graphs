@@ -1,6 +1,6 @@
 """Wiring: the glue that turns injected-callable abstractions into real runs.
 
-``main.py`` owns the HTTP surface; this module owns the non-trivial wiring
+``api/`` owns the HTTP surface (``main.py`` boots the app); this module owns the non-trivial wiring
 behind it — resolving sessions/specs, building (and rebuilding) ``RunningAgent``
 workers, constructing the ``TaskRunner`` with real effect callables, and syncing
 team-graph edits into the bound session. Split out so the orchestration logic is
@@ -13,15 +13,15 @@ from fastapi import FastAPI, HTTPException
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
 
-from .a2a import neighbor_instructions
-from .gateway import GatedModel
-from .graph import validate_structure
-from .models import resolve_model
-from .models_domain import AgentSpec, Capabilities, GraphNode, TeamGraph
-from .persona import build_instructions, environment_instructions
-from .runtime import RunningAgent, obtain_worker
-from .sessions import Session
-from .tasks import ReviewVerdict, TaskRunner, run_check
+from .agents.a2a import neighbor_instructions
+from .runtime.gateway import GatedModel
+from .domain.graph import validate_structure
+from .providers.registry import resolve_model
+from .domain.models import AgentSpec, Capabilities, GraphNode, TeamGraph
+from .agents.persona import build_instructions, environment_instructions
+from .runtime.workers import RunningAgent, obtain_worker
+from .runtime.sessions import Session
+from .runtime.tasks import ReviewVerdict, TaskRunner, run_check
 
 REVIEW_GUIDANCE = (
     "\n\nYou are acting as a reviewer. Decide whether the result fully satisfies "

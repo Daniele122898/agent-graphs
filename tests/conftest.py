@@ -13,7 +13,7 @@ import pytest
 from pydantic_ai.messages import ModelResponse, ModelResponsePart
 from pydantic_ai.models.function import FunctionModel
 
-from backend import db as db_module
+from backend.storage import db as db_module
 
 
 def make_sequence_model(turns: list[list[ModelResponsePart]]) -> FunctionModel:

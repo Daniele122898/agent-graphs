@@ -9,10 +9,10 @@ from pathlib import Path
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from backend.agents import build_agent
-from backend.models_domain import AgentSpec, Capabilities
-from backend.todos import AgentDeps
-from backend.tools import DevTools
+from backend.agents.factory import build_agent
+from backend.domain.models import AgentSpec, Capabilities
+from backend.agents.todos import AgentDeps
+from backend.agents.tools import DevTools
 from tests.conftest import make_sequence_model
 
 

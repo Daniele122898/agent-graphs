@@ -678,3 +678,31 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
 - **Tests:** stale-hash + sandbox nudges at agent level, failed-run transcript
   persistence at runtime level, and the full delegation-recovery scenario at
   a2a level (the exact reported flow).
+
+### 2026-06-11 — Source restructure: packages, not a flat module root
+
+- **What:** Both source roots were flat (26 backend modules, 17 frontend
+  files). Backend now groups by subsystem: `api/` (one endpoint module per
+  resource, installed via closures over `app` — same style, just split out of
+  main.py), `domain/` (pure shapes + graph validation), `runtime/` (Session,
+  RunningAgent → workers.py, gateway, bus, streaming, tasks, usage),
+  `agents/` (factory, persona, tools, capabilities, todos, a2a, questions,
+  history), `providers/` (model resolution; LM Studio specifics split out of
+  the old models.py/stats.py), `storage/` (db schema, teams, agent_state).
+  `main.py` (boot only), `wiring.py` (composition root) and `util.py` stay at
+  the backend root. Frontend: `lib/` (api, types, ui), `hooks/`, `canvas/`,
+  `panels/` (+ `panels/tabs/`).
+- **Why:** readability/maintainability ahead of the provider-abstraction work
+  (a `providers/` home now exists), and CLAUDE.md guidance can live next to
+  the code it governs (each new package has its own CLAUDE.md with that
+  subsystem's invariants).
+- **Key invariants preserved:** `uvicorn backend.main:app` entry unchanged;
+  `DEFAULT_DB_PATH` still resolves to `backend/db.sqlite` (the user's data —
+  storage/db.py computes parent.parent); stores keep living with their
+  feature (task store in runtime/tasks.py, message log in agents/a2a.py).
+- **Behavior:** zero change — moves + import rewrites only; 102 tests
+  collected before and after, all green; verify_ui passes (twice).
+- **Also:** hardened verify_ui's park-the-new-node drag (grab point could land
+  under the widened sidebar → text-selection instead of a node drag; now
+  verified + retried, selection cleared). **Reversibility:** git mv history is
+  intact; moving files back is mechanical.

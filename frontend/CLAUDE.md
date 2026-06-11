@@ -21,23 +21,28 @@ confirmed here. Extend the script when you add UI worth checking.
 
 ## Design system (YOU MUST use it — no raw HTML controls)
 - Tokens live in `src/index.css` as CSS variables (`--primary` #2563eb, neutrals, radii, shadows). Light theme, single blue accent, role-based colors, WCAG-aware contrast.
-- Reusable primitives in `src/ui.tsx`: `Button` (primary/secondary/ghost/danger), `IconButton`, `Select`, `TextInput`, `TextArea`, `Field`, `Chip`. **Use these instead of bare `<button>`/`<select>`/`<input>`** so styling stays coherent. The add-agent control is a bottom-left `.fab`.
+- Reusable primitives in `src/lib/ui.tsx`: `Button` (primary/secondary/ghost/danger), `IconButton`, `Select`, `TextInput`, `TextArea`, `Field`, `Chip`. **Use these instead of bare `<button>`/`<select>`/`<input>`** so styling stays coherent. The add-agent control is a bottom-left `.fab`.
 - Keep it light theme (user preference). Reach for tokens/`var(--...)`, not hardcoded hex, in inline styles.
 
 ## Architecture & non-obvious decisions (the *why*)
 - **Session-centric.** App revolves around an **active session** (persisted in `localStorage`, key `ag.activeSessionId`, reconciled against the live list). When there is no session, `Onboarding.tsx` runs the explicit create-team → launch-session flow. There is no default session — the backend won't invent one.
-- **`api.ts` holds the active session id as module state** (`setActiveSession`); session-scoped calls append `?session_id=` via `withSession`. This keeps components from threading the id everywhere. `useEvents(sessionId)` opens the SSE `/events` connection per session and reconnects on switch.
+- **`lib/api.ts` holds the active session id as module state** (`setActiveSession`); session-scoped calls append `?session_id=` via `withSession`. This keeps components from threading the id everywhere. `useEvents(sessionId)` opens the SSE `/events` connection per session and reconnects on switch.
 - **`useTeamGraph(teamId)`** owns the React Flow node/edge state, debounced save, and is **team-scoped** (`/api/teams/{id}/graph`). The active team = the active session's team; editing it syncs the running session (the canvas doubles as the live control room).
-- **`graphMapping.ts` is the single backend⇄React Flow conversion point.** The full `AgentSpec` lives in `node.data.spec`; `position` is the only UI-owned field. Don't convert formats anywhere else.
+- **`canvas/graphMapping.ts` is the single backend⇄React Flow conversion point.** The full `AgentSpec` lives in `node.data.spec`; `position` is the only UI-owned field. Don't convert formats anywhere else.
 - **Edges are decorated at render time; only the dragged bend persists.** `Canvas` maps every edge to the `floating` type (`FloatingEdge.tsx`: a quadratic through a midpoint displaced perpendicular to the node axis, border-anchored toward that midpoint) and adds arrow markers. Reciprocal A⇄B pairs arc apart automatically: the perpendicular axis flips with edge direction, so the SAME default offset lands on opposite sides — do NOT add a per-edge canonical sign (it cancels the separation; this bug shipped once). The midpoint dot is a drag handle; the displacement persists as `GraphEdge.curve` (0 = auto), everything else stays render-time. Node handles exist only for drag-to-connect.
 - **Selecting an edge selects its SOURCE agent** and passes `focusEdgeId` down: the sidebar jumps to the Links tab and autofocuses that link's row. Edge labels are `pointerEvents: none` so clicks reach the selectable path beneath — don't make them interactive.
-- TS types in `src/types.ts` mirror the backend by hand; the backend graph round-trip test guards the wire format.
+- TS types in `src/lib/types.ts` mirror the backend by hand; the backend graph round-trip test guards the wire format.
 - The Agent tab transcript is **chat bubbles** (user right/blue, agent left); the user's own prompt shows because the backend emits a `user_message` SSE event at run start. SSE event types are registered in `useEvents.ts` — add new ones there.
 - **The transcript = persisted history + live tail.** On open, the Agent tab fetches `GET /api/agent/{id}/history` (the stored conversation rendered as the same row shapes, plus the system-context sections). The live tail is cut by event **`seq`** (a module-scoped monotonic counter in `useEvents` — NEVER an array index, the events array resets on remount/session switch) at the last `agent_done`/`agent_error` for the agent — *not* at "now", so a mid-run mount keeps the in-flight run visible. After a run finishes, history is re-fetched (≈400ms delay covers the persist) so the transcript converges. Clear/Summarize re-fetch and reset the baseline.
 - **ask_user questions** render as an amber card above the transcript (options as buttons + free-form input per question, one submit). Open questions are fetched from `GET /api/questions` (page-reload case) and re-fetched on `user_question`/`user_question_done` SSE events; the `waiting-on-user` lifecycle shows a purple "needs you" badge on the canvas node.
 
 ## Layout
-`src/` — `App.tsx` (shell + flow), `Canvas.tsx` + `AgentNode.tsx` (graph),
-`Sidebar.tsx` + `tabs/*` (Persona/Capabilities/Links/Agent/Stats), `TaskBoard.tsx`
-+ `NewTaskDialog.tsx`, `SessionSwitcher.tsx`, `Onboarding.tsx`, hooks
-(`useTeamGraph`, `useEvents`), `api.ts`, `ui.tsx`, `index.css`, `types.ts`.
+```
+src/
+  App.tsx, main.tsx, index.css   shell + entry + design tokens
+  lib/        api.ts (HTTP client + session state), types.ts (backend mirrors), ui.tsx (primitives)
+  hooks/      useEvents.ts (SSE), useTeamGraph.ts (React Flow state + debounced save)
+  canvas/     Canvas.tsx, AgentNode.tsx, FloatingEdge.tsx, graphMapping.ts
+  panels/     Sidebar.tsx, TaskBoard.tsx, NewTaskDialog.tsx, Onboarding.tsx, SessionSwitcher.tsx
+  panels/tabs/  AgentTab, CapabilitiesTab, LinksTab, PersonaTab, StatsTab
+```

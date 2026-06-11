@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import Canvas from "./Canvas";
-import Onboarding from "./Onboarding";
-import Sidebar from "./Sidebar";
-import SessionSwitcher from "./SessionSwitcher";
-import TaskBoard from "./TaskBoard";
-import { api, setActiveSession, withRetry, type TeamRow } from "./api";
-import { Button } from "./ui";
-import { useEvents } from "./useEvents";
-import { useTeamGraph } from "./useTeamGraph";
-import type { SessionInfo } from "./types";
+import Canvas from "./canvas/Canvas";
+import Onboarding from "./panels/Onboarding";
+import Sidebar from "./panels/Sidebar";
+import SessionSwitcher from "./panels/SessionSwitcher";
+import TaskBoard from "./panels/TaskBoard";
+import { api, setActiveSession, withRetry, type TeamRow } from "./lib/api";
+import { Button } from "./lib/ui";
+import { useEvents } from "./hooks/useEvents";
+import { useTeamGraph } from "./hooks/useTeamGraph";
+import type { SessionInfo } from "./lib/types";
 
 const LS_KEY = "ag.activeSessionId";
 

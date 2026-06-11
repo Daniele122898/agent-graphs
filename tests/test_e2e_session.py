@@ -14,12 +14,12 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from backend.a2a import MessageLog
-from backend.models_domain import AgentSpec, Capabilities, GraphEdge, GraphNode, TeamGraph
-from backend.runtime import RunningAgent
-from backend.sessions import SessionManager
-from backend.tasks import ReviewVerdict, TaskRunner, TaskStore
-from backend.teams import TeamStore
+from backend.agents.a2a import MessageLog
+from backend.domain.models import AgentSpec, Capabilities, GraphEdge, GraphNode, TeamGraph
+from backend.runtime.workers import RunningAgent
+from backend.runtime.sessions import SessionManager
+from backend.runtime.tasks import ReviewVerdict, TaskRunner, TaskStore
+from backend.storage.teams import TeamStore
 from tests.conftest import make_sequence_model
 
 

@@ -7,12 +7,12 @@ from __future__ import annotations
 
 from pydantic_ai.messages import TextPart
 
-from backend.agent_state import AgentStateStore
-from backend.models_domain import AgentSpec, Capabilities, GraphNode, TeamGraph
-from backend.runtime import RunningAgent
-from backend.sessions import SessionManager
-from backend.tasks import TaskStore
-from backend.teams import TeamStore
+from backend.storage.agent_state import AgentStateStore
+from backend.domain.models import AgentSpec, Capabilities, GraphNode, TeamGraph
+from backend.runtime.workers import RunningAgent
+from backend.runtime.sessions import SessionManager
+from backend.runtime.tasks import TaskStore
+from backend.storage.teams import TeamStore
 from tests.conftest import make_sequence_model
 
 

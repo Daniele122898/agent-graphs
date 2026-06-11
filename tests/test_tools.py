@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from backend.models_domain import Capabilities
-from backend.tools import (
+from backend.domain.models import Capabilities
+from backend.agents.tools import (
     DevTools,
     apply_line_edit,
     hash_lines,

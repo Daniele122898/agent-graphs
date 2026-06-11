@@ -174,11 +174,29 @@ def main() -> int:
         nb = newbie.bounding_box()
         lb = lead.bounding_box()
         if nb and lb:
-            page.mouse.move(nb["x"] + nb["width"] / 2, nb["y"] + 10)
-            page.mouse.down()
-            page.mouse.move(lb["x"] + 90, lb["y"] + 240, steps=8)
-            page.mouse.up()
-            page.wait_for_timeout(300)
+            # The spawn position can land (partly) under the sidebar; a grab
+            # there hits the sidebar instead of the node and silently fails
+            # (it text-selects the panel). Grab a point that is verifiably on
+            # the node AND left of the sidebar, verify the node actually
+            # moved, and retry a couple of times if it didn't.
+            tabs_box = page.locator("div.tabs").first.bounding_box()
+            sidebar_left = tabs_box["x"] if tabs_box else (vp["width"] * 0.55 if vp else 700)
+            target = (min(lb["x"] + 90, sidebar_left - 300), lb["y"] + 240)
+            for _attempt in range(3):
+                nb = newbie.bounding_box()
+                if not nb:
+                    break
+                grab_x = min(nb["x"] + nb["width"] / 2, sidebar_left - 20)
+                page.mouse.move(grab_x, nb["y"] + 10)
+                page.mouse.down()
+                page.mouse.move(target[0], target[1], steps=8)
+                page.mouse.up()
+                page.wait_for_timeout(300)
+                moved = newbie.bounding_box()
+                if moved and abs(moved["x"] - nb["x"]) + abs(moved["y"] - nb["y"]) > 40:
+                    break
+            # clear any accidental text selection so later clicks are clean
+            page.evaluate("window.getSelection()?.removeAllRanges()")
 
             def drag_handle(frm, to, frm_sel, to_sel):
                 src = frm.locator(frm_sel).first.bounding_box()

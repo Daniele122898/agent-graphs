@@ -12,7 +12,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from backend.history import compact_history
+from backend.agents.history import compact_history
 
 
 def _user(text: str) -> ModelRequest:

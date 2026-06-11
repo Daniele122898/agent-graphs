@@ -9,11 +9,11 @@ from types import SimpleNamespace
 from pydantic_ai.messages import TextPart
 
 import backend.wiring as wiring
-from backend.agent_state import AgentStateStore
-from backend.a2a import MessageLog
-from backend.models_domain import AgentSpec, Capabilities, GraphNode, TeamGraph
-from backend.sessions import SessionManager
-from backend.teams import TeamStore
+from backend.storage.agent_state import AgentStateStore
+from backend.agents.a2a import MessageLog
+from backend.domain.models import AgentSpec, Capabilities, GraphNode, TeamGraph
+from backend.runtime.sessions import SessionManager
+from backend.storage.teams import TeamStore
 from tests.conftest import make_sequence_model
 
 

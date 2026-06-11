@@ -8,11 +8,11 @@ import asyncio
 
 import pytest
 
-from backend.gateway import GatedModel, Gateway
-from backend.models_domain import AgentSpec, Capabilities
-from backend.agents import build_agent
-from backend.todos import AgentDeps
-from backend.tools import DevTools
+from backend.runtime.gateway import GatedModel, Gateway
+from backend.domain.models import AgentSpec, Capabilities
+from backend.agents.factory import build_agent
+from backend.agents.todos import AgentDeps
+from backend.agents.tools import DevTools
 from pydantic_ai.messages import TextPart
 from tests.conftest import make_sequence_model
 
@@ -75,9 +75,9 @@ async def test_gated_model_still_runs_agent(repo):
 
 
 async def test_two_sessions_have_independent_gateways(conn, fake_clock, repo):
-    from backend.models_domain import GraphNode, TeamGraph
-    from backend.sessions import SessionManager
-    from backend.teams import TeamStore
+    from backend.domain.models import GraphNode, TeamGraph
+    from backend.runtime.sessions import SessionManager
+    from backend.storage.teams import TeamStore
 
     team = TeamStore(conn, clock=fake_clock).create(
         "T", TeamGraph(nodes=[GraphNode(spec=AgentSpec(id="a", name="A", is_entry_point=True))])

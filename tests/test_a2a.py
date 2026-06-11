@@ -10,14 +10,14 @@ from __future__ import annotations
 from pydantic_ai.messages import TextPart, ToolCallPart
 from pydantic_ai.usage import RunUsage
 
-from backend.a2a import Delegator, MessageLog, neighbor_instructions, neighbor_list
-from backend.agents import build_agent
-from backend.models_domain import AgentSpec, Capabilities, GraphEdge, GraphNode, TeamGraph
-from backend.runtime import obtain_worker
-from backend.sessions import SessionManager
-from backend.teams import TeamStore
-from backend.todos import AgentDeps
-from backend.tools import DevTools
+from backend.agents.a2a import Delegator, MessageLog, neighbor_instructions, neighbor_list
+from backend.agents.factory import build_agent
+from backend.domain.models import AgentSpec, Capabilities, GraphEdge, GraphNode, TeamGraph
+from backend.runtime.workers import obtain_worker
+from backend.runtime.sessions import SessionManager
+from backend.storage.teams import TeamStore
+from backend.agents.todos import AgentDeps
+from backend.agents.tools import DevTools
 from tests.conftest import make_sequence_model
 
 

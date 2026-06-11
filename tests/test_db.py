@@ -7,7 +7,7 @@ multi-repo support would silently break, which is exactly a "broken" failure.
 
 from __future__ import annotations
 
-from backend import db as db_module
+from backend.storage import db as db_module
 
 
 def test_all_four_tables_exist(conn):

@@ -1,4 +1,4 @@
-"""FastAPI application entry point — the HTTP/SSE surface.
+"""FastAPI application entry point — boot, lifespan, and route mounting.
 
 Boots the persistence stores + ``SessionManager`` and **rehydrates any
 previously-persisted sessions** into memory so they survive restarts. It does
@@ -7,45 +7,30 @@ the user creates explicitly: define a team (graph + agents), then launch a
 session that binds that team to a repo. On a fresh database the app starts
 empty and the UI guides you through creating a team and launching a session.
 
-The non-trivial glue (building/rebuilding RunningAgents, the TaskRunner's real
-effect callables, graph sync) lives in ``wiring.py``; request bodies in
-``schemas.py``. ``create_app`` is a factory taking an injected ``db_path`` so
-tests spin up an isolated app against a temp DB. Run for real with::
+The endpoints live in ``api/`` (one module per resource, registered by
+``install_routes``); the non-trivial glue (building/rebuilding RunningAgents,
+the TaskRunner's real effect callables, graph sync) lives in ``wiring.py``.
+``create_app`` is a factory taking an injected ``db_path`` so tests spin up an
+isolated app against a temp DB. Run for real with::
 
-    uvicorn backend.main:app --reload
+    uvicorn backend.main:app --reload --timeout-graceful-shutdown 3
 """
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 
-from . import db as db_module
-from . import wiring
-from .a2a import MessageLog
-from .agent_state import AgentStateStore
-from .graph import validate_structure
-from .history import render_messages
-from .models_domain import TeamGraph
-from .schemas import (
-    AnswerRequest,
-    LaunchSessionRequest,
-    ModeRequest,
-    NewTaskRequest,
-    NewTeamRequest,
-    RenameRequest,
-    RunRequest,
-)
-from .sessions import SessionManager
-from .stats import lmstudio_models
-from .streaming import sse_stream
-from .tasks import TaskStore
-from .teams import TeamStore
+from .agents.a2a import MessageLog
+from .api import install_routes
+from .runtime.sessions import SessionManager
+from .runtime.tasks import TaskStore
+from .storage import db as db_module
+from .storage.agent_state import AgentStateStore
+from .storage.teams import TeamStore
 
 
 def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
@@ -111,291 +96,7 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
             "sessions": len(app.state.sessions.list()),
         }
 
-    # --- sessions ------------------------------------------------------------
-
-    @app.get("/api/session")
-    def current_session(session_id: str) -> dict:
-        return wiring.resolve_session(app, session_id).info().model_dump()
-
-    @app.get("/api/sessions")
-    def list_sessions() -> dict:
-        return {"sessions": [s.info().model_dump() for s in app.state.sessions.list()]}
-
-    @app.post("/api/sessions")
-    def launch_session(body: LaunchSessionRequest) -> dict:
-        """Launch a new session: bind a team definition to a repo. Warns (does
-        not block) if another active session already binds that repo — two task
-        forces will fight over the same files."""
-        team = app.state.teams.get(body.team_id)
-        if team is None:
-            raise HTTPException(404, f"no team '{body.team_id}'")
-        existing = app.state.sessions.active_sessions_for_repo(body.repo_path)
-        Path(body.repo_path).mkdir(parents=True, exist_ok=True)
-        session = app.state.sessions.create_session(
-            team_id=team.id, repo_path=body.repo_path, graph=team.graph, mode=body.mode
-        )
-        info = session.info().model_dump()
-        info["warning"] = (
-            f"{len(existing)} other active session(s) already bound to this repo"
-            if existing else None
-        )
-        return info
-
-    @app.post("/api/sessions/{session_id}/resume")
-    def resume_session(session_id: str) -> dict:
-        """Rehydrate a persisted session into memory (snapshot/resume). The team
-        graph is reloaded from its definition; per-agent history reloads lazily
-        when each agent next runs."""
-        live = app.state.sessions.get(session_id)
-        if live is not None:
-            return live.info().model_dump()
-        row = app.state.conn.execute(
-            "SELECT team_id FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
-        if row is None:
-            raise HTTPException(404, "no such session")
-        team = app.state.teams.get(row["team_id"])
-        if team is None:
-            raise HTTPException(409, f"team '{row['team_id']}' no longer exists; session cannot be resumed")
-        session = app.state.sessions.resume_session(session_id, team.graph)
-        if session is None:
-            raise HTTPException(404, "no such session")
-        return session.info().model_dump()
-
-    @app.post("/api/session/mode")
-    def set_mode(body: ModeRequest, session_id: str) -> dict:
-        """Toggle the LLM execution gateway mode for this session: parallel
-        (default) or serial (low-spec, one model call at a time)."""
-        session = wiring.resolve_session(app, session_id)
-        session.gateway.set_mode(body.mode)
-        return session.info().model_dump()
-
-    # --- team library ----------------------------------------------------------
-
-    @app.get("/api/teams")
-    def list_teams() -> dict:
-        return {"teams": [t.model_dump() for t in app.state.teams.list()]}
-
-    @app.post("/api/teams")
-    def create_team(body: NewTeamRequest) -> dict:
-        # A brand-new team gets a starter lead agent (so it's launchable) unless
-        # an explicit graph was supplied (e.g. "save as" from the editor).
-        graph = body.graph if body.graph is not None else wiring.starter_team_graph()
-        errors = validate_structure(graph)
-        if errors:
-            raise HTTPException(422, {"errors": errors})
-        return app.state.teams.create(body.name, graph).model_dump()
-
-    @app.get("/api/teams/{team_id}")
-    def get_team(team_id: str) -> dict:
-        team = app.state.teams.get(team_id)
-        if team is None:
-            raise HTTPException(404, "no such team")
-        return team.model_dump()
-
-    @app.get("/api/teams/{team_id}/graph")
-    def get_team_graph(team_id: str) -> dict:
-        team = app.state.teams.get(team_id)
-        if team is None:
-            raise HTTPException(404, "no such team")
-        return team.graph.model_dump()
-
-    @app.put("/api/teams/{team_id}/graph")
-    def put_team_graph(team_id: str, graph: TeamGraph) -> dict:
-        return wiring.apply_team_graph(app, team_id, graph)
-
-    @app.post("/api/teams/{team_id}/rename")
-    def rename_team(team_id: str, body: RenameRequest) -> dict:
-        team = app.state.teams.rename(team_id, body.name)
-        if team is None:
-            raise HTTPException(404, "no such team")
-        return team.model_dump()
-
-    # --- agents + events -------------------------------------------------------
-
-    @app.get("/events")
-    async def events(session_id: str | None = None) -> StreamingResponse:
-        session = wiring.resolve_session(app, session_id)
-        return StreamingResponse(sse_stream(session.bus), media_type="text/event-stream")
-
-    @app.post("/api/agent/{agent_id}/run")
-    async def run_agent(agent_id: str, body: RunRequest, session_id: str | None = None) -> dict:
-        """Give a long-lived agent a prompt. Creates+starts the RunningAgent on
-        first use; thereafter the same worker handles follow-ups with history."""
-        session = wiring.resolve_session(app, session_id)
-        ra = await wiring.get_or_create_running(app, session, agent_id)
-        ra.submit(body.prompt)
-        return {"status": "started", "agent_id": agent_id}
-
-    @app.post("/api/agent/{agent_id}/interject")
-    async def interject_agent(agent_id: str, body: RunRequest, session_id: str | None = None) -> dict:
-        """Inject a message. If the agent is running, it's processed right after
-        the current run (with full history); if idle, it runs now."""
-        session = wiring.resolve_session(app, session_id)
-        ra = await wiring.get_or_create_running(app, session, agent_id)
-        ra.submit(body.prompt)
-        return {"status": "queued", "agent_id": agent_id}
-
-    def _agent_for_history(session_id: str | None, agent_id: str):
-        """Shared resolution for the history endpoints: session + spec, and a
-        409 if the agent is mid-run (mutating history under a run would corrupt
-        the conversation the run is building)."""
-        session = wiring.resolve_session(app, session_id)
-        spec = wiring.find_spec(session, agent_id)
-        if spec is None:
-            raise HTTPException(404, f"no agent '{agent_id}' in this session")
-        return session, spec
-
-    @app.get("/api/agent/{agent_id}/history")
-    def agent_history(agent_id: str, session_id: str | None = None) -> dict:
-        """The agent's real model context: the system sections sent with every
-        request plus the full stored conversation, rendered as transcript rows."""
-        session, spec = _agent_for_history(session_id, agent_id)
-        msgs = wiring.agent_messages(app, session, agent_id)
-        return {
-            "instructions": wiring.agent_context_sections(session, spec),
-            "rows": render_messages(msgs),
-            "message_count": len(msgs),
-        }
-
-    def _require_not_busy(session, agent_id: str) -> None:
-        ra = session.registry.running(agent_id)
-        if ra is not None and ra.busy:
-            raise HTTPException(409, "agent is mid-run — stop it first")
-
-    @app.post("/api/agent/{agent_id}/history/clear")
-    def clear_agent_history(agent_id: str, session_id: str | None = None) -> dict:
-        """Wipe the conversation for a fresh start. Instructions (persona,
-        capabilities, neighbors, environment) are rebuilt every request, so
-        the agent keeps its identity — it just forgets the conversation."""
-        session, _spec = _agent_for_history(session_id, agent_id)
-        _require_not_busy(session, agent_id)
-        wiring.set_agent_history(app, session, agent_id, [])
-        return {"status": "cleared", "agent_id": agent_id}
-
-    @app.post("/api/agent/{agent_id}/history/summarize")
-    async def summarize_agent_history(agent_id: str, session_id: str | None = None) -> dict:
-        """Compact the conversation: ask the agent's model to summarize it,
-        then replace the history with just the summary."""
-        session, spec = _agent_for_history(session_id, agent_id)
-        _require_not_busy(session, agent_id)
-        msgs = wiring.agent_messages(app, session, agent_id)
-        if not msgs:
-            raise HTTPException(409, "no history to summarize")
-        try:
-            new_history = await wiring.summarize_agent_history(session, spec, msgs)
-        except Exception as e:  # noqa: BLE001 — surface model failures as a clean 502
-            raise HTTPException(502, f"summarization failed: {e}")
-        wiring.set_agent_history(app, session, agent_id, new_history)
-        return {"status": "summarized", "agent_id": agent_id, "rows": render_messages(new_history)}
-
-    @app.post("/api/agent/{agent_id}/stop")
-    async def stop_agent(agent_id: str, session_id: str | None = None) -> dict:
-        session = wiring.resolve_session(app, session_id)
-        ra = session.registry.running(agent_id)
-        if ra is not None:
-            await ra.stop()
-            session.registry.detach_running(agent_id)  # allow a fresh start
-        return {"status": "stopped", "agent_id": agent_id}
-
-    # --- ask_user questions --------------------------------------------------
-
-    @app.get("/api/questions")
-    def open_questions(session_id: str | None = None) -> dict:
-        """All unanswered ask_user questions in this session (for page loads;
-        live arrivals come over SSE as `user_question` events)."""
-        session = wiring.resolve_session(app, session_id)
-        return {"questions": session.questions.list_open()}
-
-    @app.post("/api/questions/{question_id}/answer")
-    def answer_question(question_id: str, body: AnswerRequest, session_id: str | None = None) -> dict:
-        """Resolve a pending ask_user call; the parked run resumes with these
-        answers as the tool result."""
-        session = wiring.resolve_session(app, session_id)
-        try:
-            ok = session.questions.answer(question_id, body.answers)
-        except ValueError as e:
-            raise HTTPException(422, str(e))
-        if not ok:
-            raise HTTPException(404, "no such pending question (already answered, timed out, or the run ended)")
-        return {"status": "answered", "id": question_id}
-
-    # --- stats + messages --------------------------------------------------------
-
-    @app.get("/api/stats/models")
-    async def stats_models() -> dict:
-        """LM Studio model stats for the Stats tab + Capabilities model picker.
-        Returns a friendly error payload (not a 500) if LM Studio is unreachable,
-        so the UI degrades gracefully when no local server is running."""
-        try:
-            return {"models": await lmstudio_models(), "error": None}
-        except Exception as e:  # noqa: BLE001
-            return {"models": [], "error": str(e)}
-
-    @app.get("/api/stats/usage/{agent_id}")
-    def stats_usage(agent_id: str, session_id: str | None = None) -> dict:
-        return wiring.resolve_session(app, session_id).usage.get(agent_id)
-
-    @app.get("/api/messages")
-    def messages(session_id: str | None = None) -> dict:
-        session = wiring.resolve_session(app, session_id)
-        return {"messages": app.state.messages.for_session(session.id)}
-
-    # --- tasks -------------------------------------------------------------------
-
-    @app.get("/api/tasks")
-    def list_tasks(session_id: str | None = None) -> dict:
-        session = wiring.resolve_session(app, session_id)
-        return {"tasks": [t.model_dump() for t in app.state.tasks.list_for_session(session.id)]}
-
-    @app.post("/api/tasks")
-    async def create_task(body: NewTaskRequest, session_id: str | None = None) -> dict:
-        session = wiring.resolve_session(app, session_id)
-        agent_id = body.assigned_agent_id or wiring.default_entry_point(session)
-        if wiring.find_spec(session, agent_id) is None:
-            raise HTTPException(404, f"no agent '{agent_id}' to assign the task to")
-        task = app.state.tasks.create(
-            session_id=session.id,
-            title=body.title or body.prompt[:60],
-            prompt=body.prompt,
-            assigned_agent_id=agent_id,
-            completion_signal=body.completion_signal,
-        )
-        runner = wiring.make_task_runner(app, session)
-        t = asyncio.create_task(runner.run(task.id))
-        app.state.task_runs.add(t)
-        t.add_done_callback(app.state.task_runs.discard)
-        return task.model_dump()
-
-    @app.get("/api/tasks/{task_id}")
-    def get_task(task_id: str) -> dict:
-        task = app.state.tasks.get(task_id)
-        if task is None:
-            raise HTTPException(404, "no such task")
-        return task.model_dump()
-
-    @app.post("/api/tasks/{task_id}/retry")
-    async def retry_task(task_id: str) -> dict:
-        """Re-run a blocked task in place: clear the stale result and hand the
-        same row back to a fresh TaskRunner (whose first move is blocked →
-        running, a legal lifecycle transition). No copy/re-create needed."""
-        task = app.state.tasks.get(task_id)
-        if task is None:
-            raise HTTPException(404, "no such task")
-        if task.status != "blocked":
-            raise HTTPException(409, f"only blocked tasks can be retried (status is '{task.status}')")
-        session = app.state.sessions.get(task.session_id)
-        if session is None:
-            raise HTTPException(409, "the task's session is not live; resume it first")
-        if wiring.find_spec(session, task.assigned_agent_id) is None:
-            raise HTTPException(409, f"assigned agent '{task.assigned_agent_id}' is no longer in the team")
-        app.state.tasks.set_result(task_id, "")
-        runner = wiring.make_task_runner(app, session)
-        t = asyncio.create_task(runner.run(task_id))
-        app.state.task_runs.add(t)
-        t.add_done_callback(app.state.task_runs.discard)
-        return {"status": "retrying", "task_id": task_id}
-
+    install_routes(app)
     return app
 
 

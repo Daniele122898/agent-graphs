@@ -15,11 +15,11 @@ import os
 
 import pytest
 
-from backend.agents import build_agent
-from backend.models import resolve_model
-from backend.models_domain import AgentSpec, Capabilities
-from backend.todos import AgentDeps
-from backend.tools import DevTools
+from backend.agents.factory import build_agent
+from backend.providers.registry import resolve_model
+from backend.domain.models import AgentSpec, Capabilities
+from backend.agents.todos import AgentDeps
+from backend.agents.tools import DevTools
 
 LIVE = os.environ.get("AGENT_GRAPHS_LIVE") == "1"
 MODEL = os.environ.get("AGENT_GRAPHS_LIVE_MODEL", "lmstudio:qwen/qwen3.5-9b")

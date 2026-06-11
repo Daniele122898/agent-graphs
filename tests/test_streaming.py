@@ -8,13 +8,13 @@ import json
 
 from pydantic_ai.messages import TextPart, ToolCallPart
 
-from backend.agents import build_agent
-from backend.bus import EventBus
-from backend.models_domain import AgentSpec, Capabilities
-from backend.sessions import AgentRegistry
-from backend.streaming import format_sse, run_agent_streamed
-from backend.todos import AgentDeps
-from backend.tools import DevTools
+from backend.agents.factory import build_agent
+from backend.runtime.bus import EventBus
+from backend.domain.models import AgentSpec, Capabilities
+from backend.runtime.sessions import AgentRegistry
+from backend.runtime.streaming import format_sse, run_agent_streamed
+from backend.agents.todos import AgentDeps
+from backend.agents.tools import DevTools
 from tests.conftest import make_sequence_model
 
 

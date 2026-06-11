@@ -5,16 +5,16 @@ from __future__ import annotations
 
 import pytest
 
-from backend.models_domain import AgentSpec, GraphNode, TeamGraph
-from backend.sessions import SessionManager
-from backend.tasks import (
+from backend.domain.models import AgentSpec, GraphNode, TeamGraph
+from backend.runtime.sessions import SessionManager
+from backend.runtime.tasks import (
     ReviewVerdict,
     TaskRunner,
     TaskStore,
     parse_completion_signal,
     validate_transition,
 )
-from backend.teams import TeamStore
+from backend.storage.teams import TeamStore
 
 
 # --- pure state machine -----------------------------------------------------

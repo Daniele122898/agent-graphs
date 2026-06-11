@@ -111,20 +111,22 @@ python scripts/verify_ui.py
 
 ```
 backend/        FastAPI app + Pydantic AI agent harness
-  main.py         app factory + lifespan + HTTP/SSE endpoints
-  wiring.py       glue: workers, task-runner effects, graph sync
-  db.py           SQLite schema: teams, sessions, agent_state, tasks, messages
-  teams.py        TeamStore — team-definition CRUD (templates)
-  sessions.py     SessionManager + Session (owns registry/lock/gateway/bus/questions)
-  runtime.py      RunningAgent — the long-lived worker
-  a2a.py          delegation (ask_agent) + inter-agent message log
-  questions.py    ask_user — parks a run on the human's answer
-  tasks.py        task store + runner (completion gates, revision caps)
-  gateway.py      LLM execution gateway (parallel | serial)
-  bus.py          per-session event bus
-  models_domain.py  Pydantic data shapes (the spine)
-tests/          deterministic function + e2e tests (token-free)
+  main.py         app factory + lifespan (boot, rehydration)
+  wiring.py       composition root: workers, task-runner effects, graph sync
+  api/            HTTP/SSE endpoints, one module per resource + wire schemas
+  domain/         pure Pydantic data shapes (the spine) + graph validation
+  runtime/        Session/SessionManager, RunningAgent, gateway, bus,
+                  streaming, task store + runner, usage tally
+  agents/         building one agent: persona, capability-scoped tools,
+                  todos, ask_agent delegation, ask_user, history compaction
+  providers/      model backends (LM Studio, ...) + model-string resolution
+  storage/        SQLite schema/connections, team + agent-state stores
 frontend/       Vite + React + TypeScript control room
+  src/lib/        api client, backend type mirrors, UI primitives
+  src/hooks/      useEvents (SSE), useTeamGraph (React Flow state)
+  src/canvas/     graph canvas: nodes, floating edges, mapping
+  src/panels/     sidebar (+ tabs), task board, onboarding, session switcher
+tests/          deterministic function + e2e tests (token-free)
 scripts/        verify_ui.py (Playwright harness), scripted_backend.py
 specs/          the design document + study notes (pi harness, LM Studio API)
 plan.md         phased task tracker

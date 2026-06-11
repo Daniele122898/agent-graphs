@@ -3,9 +3,9 @@ per-session infrastructure is NOT shared (no global singletons)."""
 
 from __future__ import annotations
 
-from backend.models_domain import AgentSpec, GraphNode, TeamGraph
-from backend.sessions import SessionManager
-from backend.teams import TeamStore
+from backend.domain.models import AgentSpec, GraphNode, TeamGraph
+from backend.runtime.sessions import SessionManager
+from backend.storage.teams import TeamStore
 
 
 def _team_with_lead(conn, fake_clock):

@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from backend.graph import validate_runnable, validate_structure
+from backend.domain.graph import validate_runnable, validate_structure
 from backend.main import create_app
-from backend.models_domain import AgentSpec, GraphEdge, GraphNode, TeamGraph
+from backend.domain.models import AgentSpec, GraphEdge, GraphNode, TeamGraph
 
 
 def _node(id_: str, entry: bool = False) -> GraphNode:

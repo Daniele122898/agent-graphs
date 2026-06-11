@@ -11,11 +11,11 @@ import asyncio
 from pydantic_ai.messages import TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from backend.agent_state import AgentStateStore
-from backend.models_domain import AgentSpec, Capabilities, GraphNode, TeamGraph
-from backend.runtime import RunningAgent
-from backend.sessions import SessionManager
-from backend.teams import TeamStore
+from backend.storage.agent_state import AgentStateStore
+from backend.domain.models import AgentSpec, Capabilities, GraphNode, TeamGraph
+from backend.runtime.workers import RunningAgent
+from backend.runtime.sessions import SessionManager
+from backend.storage.teams import TeamStore
 from tests.conftest import make_sequence_model
 
 
@@ -134,7 +134,7 @@ async def test_failed_run_still_persists_its_partial_transcript(conn, fake_clock
     it accumulated — otherwise the UI reloads an EMPTY history after every
     failure and the user sees the agent's work vanish."""
     import pytest
-    from backend.agent_state import AgentStateStore
+    from backend.storage.agent_state import AgentStateStore
 
     session, spec = _session(conn, fake_clock, repo)
 
