@@ -117,6 +117,23 @@ export default function AgentTab({
   const busy = lifecycle === "running" || lifecycle === "waiting-on-agent" || lifecycle === "waiting-on-user";
   const hasConversation = (history?.rows.length ?? 0) > 0 || live.length > 0;
 
+  // Follow the newest messages: keep the transcript pinned to the bottom as
+  // content arrives — but only while the user is already near the bottom, so
+  // scrolling up to read is never fought.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const stick = useRef(true);
+  const onTranscriptScroll = () => {
+    const el = scrollRef.current;
+    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+  useEffect(() => {
+    stick.current = true; // a fresh agent always starts followed
+  }, [agentId]);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [history, live.length, questions.length, todos.length]);
+
   const clearHistory = async () => {
     if (!window.confirm("Clear this agent's entire conversation? Its persona, capabilities and environment are rebuilt on every request, so only the conversation is forgotten.")) return;
     setWorking("clear");
@@ -214,7 +231,12 @@ export default function AgentTab({
         </div>
       )}
 
-      <div style={{ flex: 1, overflowY: "auto", fontSize: 13, display: "flex", flexDirection: "column", gap: 8, paddingTop: 4 }}>
+      <div
+        ref={scrollRef}
+        onScroll={onTranscriptScroll}
+        data-testid="transcript"
+        style={{ flex: 1, overflowY: "auto", fontSize: 13, display: "flex", flexDirection: "column", gap: 8, paddingTop: 4 }}
+      >
         {history && history.instructions.length > 0 && (
           <ExpandableRow
             icon="⚙️"
