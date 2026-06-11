@@ -69,7 +69,7 @@ def test_graph_round_trips_through_api(tmp_path):
                 _node("lead", entry=True),
                 GraphNode(spec=AgentSpec(id="react", name="React Expert"), position={"x": 200, "y": 100}),
             ],
-            edges=[GraphEdge(id="e1", source="lead", target="react", label="React/JSX questions")],
+            edges=[GraphEdge(id="e1", source="lead", target="react", label="React/JSX questions", curve=40)],
         )
         put = client.put(f"/api/teams/{team['id']}/graph", json=new_graph.model_dump())
         assert put.status_code == 200
@@ -77,6 +77,7 @@ def test_graph_round_trips_through_api(tmp_path):
         got = client.get(f"/api/teams/{team['id']}/graph").json()
         assert {n["spec"]["id"] for n in got["nodes"]} == {"lead", "react"}
         assert got["edges"][0]["label"] == "React/JSX questions"
+        assert got["edges"][0]["curve"] == 40  # the dragged bend survives
         # position survives the round-trip
         react = next(n for n in got["nodes"] if n["spec"]["id"] == "react")
         assert react["position"] == {"x": 200, "y": 100}

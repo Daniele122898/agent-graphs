@@ -22,6 +22,7 @@ export function toReactFlow(graph: TeamGraph): { nodes: RFNode[]; edges: Edge[] 
     source: e.source,
     target: e.target,
     label: e.label,
+    data: { curve: e.curve ?? 0 },
   }));
   return { nodes, edges };
 }
@@ -36,6 +37,7 @@ export function fromReactFlow(nodes: RFNode[], edges: Edge[]): TeamGraph {
     source: e.source,
     target: e.target,
     label: typeof e.label === "string" ? e.label : "",
+    curve: typeof e.data?.curve === "number" ? e.data.curve : 0,
   }));
   return { nodes: gNodes, edges: gEdges };
 }

@@ -124,6 +124,10 @@ class GraphEdge(BaseModel):
     source: str
     target: str
     label: str = ""
+    # UI-owned routing: signed perpendicular displacement (flow px) of the
+    # edge's midpoint, set by dragging the bend handle on the canvas. 0 = auto
+    # (straight, or the default arc for reciprocal pairs).
+    curve: float = 0.0
 
 
 class TeamGraph(BaseModel):

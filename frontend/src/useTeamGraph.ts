@@ -102,6 +102,13 @@ export function useTeamGraph(teamId: string | null) {
     [setEdges]
   );
 
+  // Set the dragged bend of an edge (persisted via the debounced graph save).
+  const updateEdgeCurve = useCallback(
+    (edgeId: string, curve: number) =>
+      setEdges((eds) => eds.map((e) => (e.id === edgeId ? { ...e, data: { ...e.data, curve } } : e))),
+    [setEdges]
+  );
+
   // Selecting an edge loads its OWNING (source) agent in the sidebar and
   // exposes the edge id so the sidebar can jump to the Links tab for editing.
   const onSelectionChange = useCallback(
@@ -132,6 +139,7 @@ export function useTeamGraph(teamId: string | null) {
     addNode,
     updateSpec,
     updateEdgeLabel,
+    updateEdgeCurve,
     selectedId,
     selectedEdgeId,
     selectedSpec,

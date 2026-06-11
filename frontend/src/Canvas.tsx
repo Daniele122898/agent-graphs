@@ -29,6 +29,7 @@ export default function Canvas(props: {
   onEdgesChange: (c: EdgeChange<Edge>[]) => void;
   onConnect: (c: Connection) => void;
   onSelectionChange: (p: OnSelectionChangeParams) => void;
+  onUpdateEdgeCurve: (edgeId: string, curve: number) => void;
   addNode: () => void;
   status: string;
   activeEdges: Set<string>;
@@ -38,19 +39,18 @@ export default function Canvas(props: {
     ...n,
     data: { ...n.data, lifecycle: props.lifecycles[n.id] ?? "idle" },
   }));
-  // Render-time edge decoration (the persisted graph stays plain): floating
-  // edge type + arrowhead; reciprocal pairs get opposite perpendicular offsets
-  // so A⇄B renders as two parallel arcs (derived fresh from the full list, so
-  // drawing a reverse edge separates the pair instantly); recently-active
-  // delegation edges animate.
+  // Render-time edge decoration (the persisted graph stays plain except the
+  // user-dragged `curve`): floating edge type + arrowhead; reciprocal pairs
+  // flagged so FloatingEdge arcs them apart (derived fresh from the full
+  // list, so drawing a reverse edge separates the pair instantly);
+  // recently-active delegation edges animate.
   const edges = props.edges.map((e) => {
     const reciprocal = props.edges.some((o) => o.source === e.target && o.target === e.source);
-    const offsetDir = reciprocal ? (e.source < e.target ? 1 : -1) : 0;
     const active = props.activeEdges.has(`${e.source}->${e.target}`);
     return {
       ...e,
       type: "floating",
-      data: { ...e.data, offsetDir },
+      data: { ...e.data, reciprocal, onCurveChange: props.onUpdateEdgeCurve },
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: active ? "#2563eb" : "#b1b1b7" },
       ...(active
         ? { animated: true, style: { ...e.style, stroke: "#2563eb", strokeWidth: 2 } }

@@ -199,17 +199,59 @@ def main() -> int:
             if paths.count() < 2:
                 failures.append(f"expected 2 edges after reciprocal connect, got {paths.count()}")
             else:
-                d1 = paths.nth(0).get_attribute("d")
-                d2 = paths.nth(1).get_attribute("d")
-                if d1 == d2:
-                    failures.append("reciprocal edges share an identical path (overlap)")
+                # geometric separation, not string difference — reversed paths
+                # can differ as strings while overlapping exactly
+                centers = page.eval_on_selector_all(
+                    ".react-flow__edge path.react-flow__edge-path",
+                    "els => els.map(e => { const b = e.getBBox(); return [b.x + b.width/2, b.y + b.height/2]; })",
+                )
+                dist = ((centers[0][0] - centers[1][0]) ** 2 + (centers[0][1] - centers[1][1]) ** 2) ** 0.5
+                if dist < 12:
+                    failures.append(f"reciprocal edges overlap (midpoint distance {dist:.1f}px)")
                 else:
-                    print("reciprocal edges render as distinct arcs")
+                    print(f"reciprocal edges render {dist:.0f}px apart")
             page.screenshot(path=str(SHOTS / "13_reciprocal_edges.png"))
 
-            # click an edge → sidebar should land on the Links tab with the row
-            edge = page.locator(".react-flow__edge").first
-            edge.click(force=True)
+            # bend handle: drag one edge's midpoint dot PERPENDICULAR to the
+            # node axis (drag along the axis projects to ~0 and snaps back)
+            bends = page.locator("div[title='Drag to bend this link']")
+            bb = bends.first.bounding_box()
+            lb2 = lead.bounding_box()
+            nb2 = newbie.bounding_box()
+            if bb and lb2 and nb2:
+                ax = (nb2["x"] + nb2["width"] / 2) - (lb2["x"] + lb2["width"] / 2)
+                ay = (nb2["y"] + nb2["height"] / 2) - (lb2["y"] + lb2["height"] / 2)
+                alen = (ax * ax + ay * ay) ** 0.5 or 1
+                px_, py_ = -ay / alen, ax / alen
+                sx = bb["x"] + bb["width"] / 2
+                sy = bb["y"] + bb["height"] / 2
+                page.mouse.move(sx, sy)
+                page.mouse.down()
+                page.mouse.move(sx + px_ * 90, sy + py_ * 90, steps=6)
+                page.mouse.up()
+                page.wait_for_timeout(400)
+                after_bb = bends.first.bounding_box()
+                moved = after_bb and abs(after_bb["x"] - bb["x"]) + abs(after_bb["y"] - bb["y"]) > 25
+                if moved:
+                    print("edge bend handle drags")
+                else:
+                    failures.append("edge bend handle did not move on drag")
+                page.screenshot(path=str(SHOTS / "13b_edge_bent.png"))
+            else:
+                failures.append("edge bend handle or nodes not found")
+
+            # click an edge → sidebar should land on the Links tab with the
+            # row. Click an exact point ON the curve (bbox centers sit off a
+            # bent path), away from the midpoint bend handle.
+            pt = page.eval_on_selector(
+                ".react-flow__edge path.react-flow__edge-path",
+                """e => {
+                    const p = e.getPointAtLength(e.getTotalLength() * 0.3);
+                    const m = e.getScreenCTM();
+                    return { x: p.x * m.a + p.y * m.c + m.e, y: p.x * m.b + p.y * m.d + m.f };
+                }""",
+            )
+            page.mouse.click(pt["x"], pt["y"])
             page.wait_for_timeout(400)
             active_tab = page.locator("button.tab-active").inner_text()
             if active_tab != "Links":

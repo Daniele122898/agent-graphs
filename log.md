@@ -616,3 +616,22 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   pointer-transparent so clicks land on the selectable path beneath.
 - **Reversibility:** one new component + render-time mapping; deleting the
   edgeTypes entry restores default edges.
+
+### 2026-06-11 — Reciprocal edges DID overlap (sign bug) + draggable edge bends
+
+- **What:** the floating-edge "reciprocal offset" shipped with a sign bug:
+  the perpendicular axis flips with edge direction, so the canonical
+  `source < target ? +1 : -1` factor CANCELED the natural flip — both edges
+  of a pair landed on the same side (the verify assertion compared path
+  *strings*, which differ for reversed-but-coincident curves; now it
+  compares midpoint geometry). Fix: no per-edge sign at all — the same
+  default offset applied in each edge's own frame separates the pair.
+- **Draggable bends (user request):** every edge now has a midpoint dot;
+  dragging it perpendicular routes the edge around clutter. The displacement
+  persists as `GraphEdge.curve` (new backend field, default 0 = auto:
+  straight, or the default arc for reciprocal pairs; dragging near straight
+  snaps back to 0). The path is a quadratic THROUGH the displaced midpoint,
+  with border anchors recomputed toward it so the attachment angle follows
+  the bend.
+- **Reversibility:** curve is one optional field with a safe default; the
+  rendering change is contained in FloatingEdge/Canvas.

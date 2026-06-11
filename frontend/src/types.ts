@@ -38,6 +38,7 @@ export interface GraphEdge {
   source: string;
   target: string;
   label: string;
+  curve?: number; // signed midpoint bend, set by dragging on the canvas
 }
 
 export interface TeamGraph {

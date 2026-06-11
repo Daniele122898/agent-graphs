@@ -163,6 +163,7 @@ export default function App() {
                 onEdgesChange={graph.onEdgesChange}
                 onConnect={graph.onConnect}
                 onSelectionChange={graph.onSelectionChange}
+                onUpdateEdgeCurve={graph.updateEdgeCurve}
                 addNode={graph.addNode}
                 status={graph.status}
                 activeEdges={activeEdges}
