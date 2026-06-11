@@ -179,6 +179,7 @@ export default function App() {
             edges={graph.edges}
             agentNames={agentNames}
             onUpdateEdgeLabel={graph.updateEdgeLabel}
+            focusEdgeId={graph.selectedEdgeId}
           />
         </div>
       )}

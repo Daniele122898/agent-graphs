@@ -1,6 +1,7 @@
 // Small, coherent UI primitives backed by index.css. Components use these
 // instead of raw HTML controls so styling stays consistent everywhere.
 
+import { forwardRef } from "react";
 import type { ButtonHTMLAttributes, SelectHTMLAttributes, InputHTMLAttributes, TextareaHTMLAttributes, ReactNode } from "react";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger";
@@ -23,9 +24,11 @@ export function Select({ className = "", ...rest }: SelectHTMLAttributes<HTMLSel
   return <select className={`select ${className}`} {...rest} />;
 }
 
-export function TextInput({ className = "", ...rest }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input className={`input ${className}`} {...rest} />;
-}
+export const TextInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
+  function TextInput({ className = "", ...rest }, ref) {
+    return <input ref={ref} className={`input ${className}`} {...rest} />;
+  }
+);
 
 export function TextArea({ className = "", ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return <textarea className={`textarea ${className}`} {...rest} />;

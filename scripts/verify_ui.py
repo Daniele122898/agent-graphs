@@ -160,6 +160,69 @@ def main() -> int:
                 failures.append(f"{name} button missing in Agent tab")
         page.screenshot(path=str(SHOTS / "09_agent_context.png"))
 
+        # floating edges + edge selection: add a second agent, draw A→B and
+        # B→A, confirm the two paths differ (reciprocal arcs, not an overlap),
+        # then click one edge and confirm the sidebar jumps to the Links tab.
+        page.get_by_role("button", name="Canvas").click()
+        page.wait_for_timeout(400)
+        page.locator("button.fab").click()
+        page.wait_for_timeout(500)
+        lead = page.locator(".react-flow__node", has_text="Lead").first
+        newbie = page.locator(".react-flow__node", has_text="New Agent").first
+        # park the new node BELOW the lead (staying left of the sidebar, which
+        # may be wide after the resize test) so both handles stay reachable
+        nb = newbie.bounding_box()
+        lb = lead.bounding_box()
+        if nb and lb:
+            page.mouse.move(nb["x"] + nb["width"] / 2, nb["y"] + 10)
+            page.mouse.down()
+            page.mouse.move(lb["x"] + 90, lb["y"] + 240, steps=8)
+            page.mouse.up()
+            page.wait_for_timeout(300)
+
+            def drag_handle(frm, to, frm_sel, to_sel):
+                src = frm.locator(frm_sel).first.bounding_box()
+                dst = to.locator(to_sel).first.bounding_box()
+                if not src or not dst:
+                    return False
+                page.mouse.move(src["x"] + src["width"] / 2, src["y"] + src["height"] / 2)
+                page.mouse.down()
+                page.mouse.move(dst["x"] + dst["width"] / 2, dst["y"] + dst["height"] / 2, steps=10)
+                page.mouse.up()
+                page.wait_for_timeout(300)
+                return True
+
+            drag_handle(lead, newbie, ".react-flow__handle-right", ".react-flow__handle-left")
+            drag_handle(newbie, lead, ".react-flow__handle-right", ".react-flow__handle-left")
+            page.wait_for_timeout(400)
+            paths = page.locator(".react-flow__edge path.react-flow__edge-path")
+            if paths.count() < 2:
+                failures.append(f"expected 2 edges after reciprocal connect, got {paths.count()}")
+            else:
+                d1 = paths.nth(0).get_attribute("d")
+                d2 = paths.nth(1).get_attribute("d")
+                if d1 == d2:
+                    failures.append("reciprocal edges share an identical path (overlap)")
+                else:
+                    print("reciprocal edges render as distinct arcs")
+            page.screenshot(path=str(SHOTS / "13_reciprocal_edges.png"))
+
+            # click an edge → sidebar should land on the Links tab with the row
+            edge = page.locator(".react-flow__edge").first
+            edge.click(force=True)
+            page.wait_for_timeout(400)
+            active_tab = page.locator("button.tab-active").inner_text()
+            if active_tab != "Links":
+                failures.append(f"edge click landed on '{active_tab}' tab, expected Links")
+            elif not page.get_by_text("Can consult").first.is_visible():
+                failures.append("Links tab content missing after edge click")
+            else:
+                print("edge click → Links tab with editable link")
+            page.screenshot(path=str(SHOTS / "14_edge_selected.png"))
+        else:
+            failures.append("could not locate nodes for the edge test")
+
+
         browser.close()
 
     if failures:

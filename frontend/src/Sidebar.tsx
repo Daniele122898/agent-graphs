@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Edge } from "@xyflow/react";
 import AgentTab from "./tabs/AgentTab";
 import CapabilitiesTab from "./tabs/CapabilitiesTab";
@@ -39,6 +39,7 @@ export default function Sidebar({
   edges,
   agentNames,
   onUpdateEdgeLabel,
+  focusEdgeId,
 }: {
   selected: AgentSpec | null;
   onUpdate: (s: AgentSpec) => void;
@@ -47,9 +48,16 @@ export default function Sidebar({
   edges: Edge[];
   agentNames: Record<string, string>;
   onUpdateEdgeLabel: (edgeId: string, label: string) => void;
+  focusEdgeId: string | null;
 }) {
   const [tab, setTab] = useState<TabKey>("persona");
   const [width, setWidth] = useState(initialWidth);
+
+  // Clicking an edge on the canvas selects its source agent AND jumps the
+  // sidebar to the Links tab so the link is immediately editable.
+  useEffect(() => {
+    if (focusEdgeId) setTab("links");
+  }, [focusEdgeId]);
 
   const startResize = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
@@ -117,7 +125,7 @@ export default function Sidebar({
         ) : tab === "stats" ? (
           <StatsTab spec={selected} />
         ) : (
-          <LinksTab agentId={selected.id} edges={edges} agentNames={agentNames} onUpdateLabel={onUpdateEdgeLabel} />
+          <LinksTab agentId={selected.id} edges={edges} agentNames={agentNames} onUpdateLabel={onUpdateEdgeLabel} focusEdgeId={focusEdgeId} />
         )}
       </div>
     </div>

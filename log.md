@@ -597,3 +597,22 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   new `scripts/scripted_backend.py` (FunctionModel-backed backend).
 - **Reversibility:** tool + board are additive; the nudge is one loop in
   wiring with a constant cap; lifecycle value is additive.
+
+### 2026-06-11 — Floating edges + edge selection → Links tab (user request)
+
+- **What:** fixed left/right handles made A⇄B pairs overlap into one
+  unreadable line (and drew loops when the target sat left of the source).
+  New `FloatingEdge` type: anchors at the intersection of the center-to-center
+  line with each node's border; reciprocal pairs get opposite ±18px
+  perpendicular offsets so they render as two parallel arcs with arrowheads.
+  Decoration happens at RENDER time in Canvas (type/marker/offset derived from
+  the full edge list) — the persisted graph and graphMapping stay plain, and
+  drawing a reverse edge separates the pair instantly. Handles remain only as
+  connection-drag sources.
+- **Edge selection was silently dropped:** `onSelectionChange` only read
+  `nodes`. Now one selected edge sets the sidebar agent to the edge's SOURCE
+  and passes `focusEdgeId` down — the sidebar jumps to the Links tab, the
+  row highlights, and the "why" input autofocuses. Edge labels are
+  pointer-transparent so clicks land on the selectable path beneath.
+- **Reversibility:** one new component + render-time mapping; deleting the
+  edgeTypes entry restores default edges.

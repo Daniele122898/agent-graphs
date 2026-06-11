@@ -4,7 +4,7 @@
 // Sidebar (spec editor) share one source of truth.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { addEdge, useEdgesState, useNodesState, type Connection, type Edge } from "@xyflow/react";
+import { addEdge, useEdgesState, useNodesState, type Connection, type Edge, type Node } from "@xyflow/react";
 import { api } from "./api";
 import { fromReactFlow, toReactFlow, type RFNode } from "./graphMapping";
 import { defaultCapabilities, type AgentSpec } from "./types";
@@ -31,6 +31,7 @@ export function useTeamGraph(teamId: string | null) {
   const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [status, setStatus] = useState("loading…");
   const loaded = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -101,8 +102,18 @@ export function useTeamGraph(teamId: string | null) {
     [setEdges]
   );
 
+  // Selecting an edge loads its OWNING (source) agent in the sidebar and
+  // exposes the edge id so the sidebar can jump to the Links tab for editing.
   const onSelectionChange = useCallback(
-    ({ nodes: sel }: { nodes: RFNode[] }) => setSelectedId(sel.length === 1 ? sel[0].id : null),
+    ({ nodes: selN, edges: selE }: { nodes: Node[]; edges: Edge[] }) => {
+      if (selE.length === 1) {
+        setSelectedEdgeId(selE[0].id);
+        setSelectedId(selE[0].source);
+      } else {
+        setSelectedEdgeId(null);
+        setSelectedId(selN.length === 1 ? selN[0].id : null);
+      }
+    },
     []
   );
 
@@ -122,6 +133,7 @@ export function useTeamGraph(teamId: string | null) {
     updateSpec,
     updateEdgeLabel,
     selectedId,
+    selectedEdgeId,
     selectedSpec,
     status,
     snapshot: () => fromReactFlow(nodes, edges),
