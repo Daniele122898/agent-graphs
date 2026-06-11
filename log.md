@@ -740,3 +740,31 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   (no key / LM Studio down).
 - **Reversibility:** the abstraction is additive; deleting providers/deepseek.py
   + the registry entry reverts to LM Studio-only.
+
+### 2026-06-11 — Agents load AGENTS.md/CLAUDE.md project context like Claude Code
+
+- **What:** when an agent reads a file, `read_file` now prepends the context
+  files governing it — for each directory from the session repo root down to
+  the file's directory, `AGENTS.md` if present else `CLAUDE.md` (AGENTS.md
+  shadows CLAUDE.md per directory, supporting both tool ecosystems) — each
+  wrapped in `[project context from <path> — applies ONLY to <scope>]`
+  delimiters, root-first. Matches Claude Code's lazy/additive subdirectory
+  memory behavior (researched: docs + community writeups).
+- **Key choices:**
+  - **Once per conversation**, tracked by a `ProjectContext` owned by the
+    `RunningAgent` and reset on history clear/summarize — the blocks live in
+    the message history, so a cleared/compacted conversation must be able to
+    receive them again. A worker rebuild (spec change) also resets; re-injection
+    is harmless.
+  - **Blocks are PREPENDED** to the read result so the edit-token stays the
+    last line (models copy the trailing token into edit_file).
+  - Reading a context file directly marks it seen without a duplicate block;
+    per-file 10k-char cap (weak local models); a broken/unreadable context
+    file never fails the read. DevTools without a tracker (bare construction
+    in tests) injects nothing — injection is explicit, per the DI style.
+  - TOOL_GUIDANCE tells the model what the blocks are and that they are
+    folder-scoped.
+- **Tests:** pure lookup order + shadowing, delimiters/scope wording,
+  once-per-conversation dedup, self-read, reset, truncation, and an
+  end-to-end RunningAgent run (inject → no repeat → clear → re-inject).
+- **Reversibility:** drop the `project_context` kwarg wiring and the module.

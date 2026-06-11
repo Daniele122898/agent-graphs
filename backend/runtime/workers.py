@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Callable
 from pydantic_ai.models import Model
 
 from ..agents.a2a import Delegator, MessageLog
+from ..agents.context_files import ProjectContext
 from ..agents.factory import build_agent
 from .gateway import GatedModel
 from ..providers.registry import resolve_model, thinking_settings
@@ -74,6 +75,9 @@ class RunningAgent:
         self._stopped = False
         self._bash_runner = bash_runner
         self._model_resolver = model_resolver
+        # Which AGENTS.md/CLAUDE.md files this conversation has already seen
+        # (read_file injects governing context files once per conversation).
+        self.project_context = ProjectContext(session.repo_root)
         # One run at a time per worker: an agent is one "person". Concurrent
         # work (a second task, a delegated question) queues here rather than
         # interleaving into the same conversation history.
@@ -102,7 +106,7 @@ class RunningAgent:
         )
 
     def _dev_tools(self, spec: AgentSpec) -> DevTools:
-        kwargs = {"write_lock": self.session.write_lock}
+        kwargs = {"write_lock": self.session.write_lock, "project_context": self.project_context}
         if self._bash_runner is not None:
             kwargs["bash_runner"] = self._bash_runner
         return DevTools(self.session.repo_root, spec.capabilities, **kwargs)
@@ -222,6 +226,9 @@ class RunningAgent:
         """Swap the conversation wholesale (clear / summarize-compact). The
         caller must ensure no run is in flight — see ``busy``."""
         self._messages = list(messages)
+        # The injected AGENTS.md/CLAUDE.md blocks lived in the old messages —
+        # let them re-enter the fresh conversation on the next read.
+        self.project_context.reset()
         self._persist()
 
     def spec_changed(self, current_spec) -> bool:

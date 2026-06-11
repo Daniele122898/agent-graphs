@@ -4,7 +4,7 @@
 (DevTools: sandboxed fs + bash), `capabilities.py` (profile → toolset),
 `todos.py` (write_todos + AgentDeps), `a2a.py` (ask_agent delegation),
 `questions.py` (ask_user + QuestionBoard), `history.py` (compaction +
-transcript rendering).
+transcript rendering), `context_files.py` (AGENTS.md/CLAUDE.md loading).
 
 ## Invariants (the *why*)
 - **Recoverable tool errors MUST surface as `ModelRetry`, never plain
@@ -36,6 +36,14 @@ transcript rendering).
   asyncio Future, sets `waiting-on-user`, restores `running` after; answers
   must match the question count; a timeout returns a "proceed on your best
   judgment" tool result; a restart cancels pending questions with the run.
+- **Project context files load lazily, Claude Code-style** (`context_files.py`):
+  `read_file` prepends the AGENTS.md/CLAUDE.md files governing the file being
+  read (one per directory from the session repo root down; **AGENTS.md shadows
+  CLAUDE.md per directory**), each wrapped in delimiters naming its folder and
+  scope. Once per conversation: the tracker lives on the `RunningAgent`
+  (`project_context`) and resets on `replace_history` (clear/summarize) so the
+  guidance can re-enter a fresh conversation. The edit-token must stay the LAST
+  line of a read result — blocks are prepended, never appended.
 - **Local-model prompt hygiene**: every tool needs a docstring (it becomes the
   OpenAI tool description — an empty one starves small models of guidance).
 - **Compaction** (`history.py`) only trims the conversation, never instructions,

@@ -51,6 +51,12 @@ Editing files:
   dictate line numbers or hashes.
 - `write_file(path, content)` creates or overwrites a whole file.
 
+Project context files:
+- `read_file` results may begin with `[project context from <path> ...]` blocks —
+  standing instructions from the repository's maintainers (AGENTS.md/CLAUDE.md).
+  Follow them; each block applies ONLY to the folder it names and everything
+  below it.
+
 Planning:
 - For anything non-trivial (roughly 3+ steps) or work you delegate, call
   `write_todos` first to lay out a checklist, and keep it updated as you progress.

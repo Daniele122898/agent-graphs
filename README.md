@@ -37,6 +37,11 @@ Built incrementally, phase by phase. Current progress is tracked in `plan.md`.
 - **Capability-scoped tools**: read-only agents literally have no write
   tools; a hash-guarded line-range edit tool keeps weak local models from
   corrupting files.
+- **Project context files, Claude Code-style**: when an agent reads a file,
+  the `AGENTS.md`/`CLAUDE.md` files governing it (its directory and every
+  directory up to the repo root) are injected into context once per
+  conversation, each clearly delimited with the folder it applies to.
+  `AGENTS.md` wins over `CLAUDE.md` when both exist in a directory.
 
 ## Requirements
 

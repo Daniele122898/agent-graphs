@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from ..domain.models import Capabilities
+from .context_files import ProjectContext
 
 READ_LINE_CAP = 2000
 """Max lines returned by a single read (à la Pi's ~3000 cap)."""
@@ -143,11 +144,16 @@ class DevTools:
         *,
         write_lock: asyncio.Lock | None = None,
         bash_runner: BashRunner = _default_bash_runner,
+        project_context: ProjectContext | None = None,
     ):
         self.root = Path(root).resolve()
         self.caps = caps
         self._lock = write_lock or asyncio.Lock()
         self._bash = bash_runner
+        # When provided (RunningAgent passes its per-conversation tracker),
+        # read_file injects the AGENTS.md/CLAUDE.md files governing what was
+        # read — see context_files.py. None = no injection (bare tool tests).
+        self._project_context = project_context
 
     # reads -------------------------------------------------------------
 
@@ -167,7 +173,15 @@ class DevTools:
         body = numbered_slice(content, start_line, end_line)
         start, end, _ = effective_range(len(lines), start_line, end_line)
         token = hash_lines(lines[start - 1 : end])
-        return f"{body}\n[edit-token {start}-{end} {token}]"
+        out = f"{body}\n[edit-token {start}-{end} {token}]"
+        # First read under a directory pulls in its governing AGENTS.md/
+        # CLAUDE.md guidance. Prepended so the edit-token stays LAST — models
+        # copy the trailing token into edit_file.
+        if self._project_context is not None:
+            blocks = self._project_context.blocks_for(full)
+            if blocks:
+                out = "\n\n".join(blocks) + "\n\n" + out
+        return out
 
     def list_dir(self, path: str = ".") -> str:
         """List a directory's entries (subdirectories end with ``/``)."""
