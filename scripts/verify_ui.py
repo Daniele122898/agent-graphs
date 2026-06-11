@@ -7,8 +7,10 @@ the DB is fresh (empty). Screenshots in /tmp/ag_shots/.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+import urllib.request
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -19,6 +21,8 @@ SHOTS.mkdir(parents=True, exist_ok=True)
 # when the default ports are taken by a live dev session.
 URL = os.environ.get("AG_UI_URL", "http://127.0.0.1:5173")
 REPO = "/tmp/ag_ui_repo"
+# The backend is reachable through the Vite proxy at the same origin.
+API = URL
 
 
 def main() -> int:
@@ -159,6 +163,59 @@ def main() -> int:
             if not page.get_by_role("button", name=name).first.is_visible():
                 failures.append(f"{name} button missing in Agent tab")
         page.screenshot(path=str(SHOTS / "09_agent_context.png"))
+
+        # model backend picker: the Capabilities tab has a Backend dropdown
+        # ABOVE the model dropdown; switching to DeepSeek reveals the thinking
+        # controls (toggle + effort) and the choice persists into the spec.
+        page.get_by_role("button", name="Capabilities").click()
+        page.wait_for_timeout(500)
+
+        def field_select(label: str):
+            """The <select> inside a ui.Field by its label text (the wrapping
+            <label> association is not exposed to get_by_label)."""
+            return page.locator(f"label:has(span.field-label:text-is('{label}')) select")
+
+        backend_sel = field_select("Backend")
+        model_sel = field_select("Model")
+        if not backend_sel.is_visible():
+            failures.append("Backend dropdown missing in Capabilities tab")
+        else:
+            bb_box, mb_box = backend_sel.bounding_box(), model_sel.bounding_box()
+            if bb_box and mb_box and bb_box["y"] > mb_box["y"]:
+                failures.append("Backend dropdown is BELOW the model dropdown")
+            page.screenshot(path=str(SHOTS / "17_capabilities_backend.png"))
+            backend_sel.select_option("deepseek")
+            page.wait_for_timeout(800)  # model list fetch (live API or error)
+            think_sel = field_select("Thinking")
+            if not think_sel.is_visible():
+                failures.append("Thinking dropdown missing after switching to DeepSeek")
+            else:
+                think_sel.select_option("on")
+                page.wait_for_timeout(300)
+                effort_sel = field_select("Thinking effort")
+                if not effort_sel.is_visible():
+                    failures.append("Thinking effort dropdown missing with thinking on")
+                else:
+                    effort_sel.select_option("max")
+                    page.wait_for_timeout(900)  # debounced graph save
+
+                    teams = json.load(urllib.request.urlopen(f"{API}/api/teams"))["teams"]
+                    graph = json.load(
+                        urllib.request.urlopen(f"{API}/api/teams/{teams[0]['id']}/graph")
+                    )
+                    lead_spec = next(n["spec"] for n in graph["nodes"] if n["spec"]["id"] == "lead")
+                    if not (
+                        lead_spec["model"].startswith("deepseek:")
+                        and lead_spec["thinking"] is True
+                        and lead_spec["thinking_effort"] == "max"
+                    ):
+                        failures.append(f"backend/thinking choice did not persist: {lead_spec}")
+                    else:
+                        print("backend switch + thinking choice persisted to the graph")
+            page.screenshot(path=str(SHOTS / "18_deepseek_thinking.png"))
+            # back to the local default so later steps don't depend on a key
+            backend_sel.select_option("lmstudio")
+            page.wait_for_timeout(900)
 
         # floating edges + edge selection: add a second agent, draw A→B and
         # B→A, confirm the two paths differ (reciprocal arcs, not an overlap),

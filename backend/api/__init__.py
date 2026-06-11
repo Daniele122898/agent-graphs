@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from . import agents, questions, sessions, stats, tasks, teams
+from . import agents, providers, questions, sessions, stats, tasks, teams
 
 
 def install_routes(app: FastAPI) -> None:
     """Register every endpoint group on the app."""
-    for module in (sessions, teams, agents, questions, stats, tasks):
+    for module in (sessions, teams, agents, questions, stats, tasks, providers):
         module.install(app)

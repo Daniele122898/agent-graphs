@@ -23,3 +23,6 @@ frontend/.vite/
 .DS_Store
 .idea/
 .vscode/
+
+# Local configuration (holds API keys — config.example.yml is the committed shape)
+config.yml

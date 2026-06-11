@@ -9,11 +9,12 @@ subsystem's invariants — read it before editing there.
 - `main.py` — app factory + lifespan (boot, rehydrate sessions, orphan-task parking). Entry point: `uvicorn backend.main:app`.
 - `wiring.py` — the composition root: turns injected-callable abstractions into real agent/reviewer/check runs (`get_or_create_running`, `make_task_runner`, `apply_team_graph`, `resolve_session`, `starter_team_graph`, history clear/summarize helpers, the open-todos continuation nudge).
 - `util.py` — id generation + clock (the only places uuid/wall-clock are read).
+- `config.py` — user-local `config.yml` at the repo root (API keys, provider endpoints). **Gitignored — never commit it**; `config.example.yml` is the committed shape. Precedence: env var > config.yml > default.
 - `api/` — the HTTP/SSE surface, one module per resource. Wire shapes in `api/schemas.py`.
 - `domain/` — pure Pydantic data shapes (`models.py`) + pure graph validation (`graph.py`). No I/O, no behavior.
 - `runtime/` — the live machinery a session owns: `sessions.py` (Session/SessionManager), `workers.py` (RunningAgent), `gateway.py`, `bus.py`, `streaming.py`, `tasks.py` (store + TaskRunner), `stats.py` (UsageTally).
 - `agents/` — everything that builds one agent: `factory.py` (build_agent), `persona.py`, `capabilities.py`, `tools.py` (DevTools), `todos.py`, `a2a.py` (delegation), `questions.py` (ask_user), `history.py` (compaction + rendering).
-- `providers/` — model backends: `registry.py` (model string → Pydantic AI model), `lmstudio.py`.
+- `providers/` — model backends behind one `ModelBackend` abstraction: `base.py`, `lmstudio.py`, `deepseek.py`, `registry.py` (model string → Pydantic AI model; thinking preference → ModelSettings).
 - `storage/` — `db.py` (SQLite schema + connections; `DEFAULT_DB_PATH` stays `backend/db.sqlite` — the user's data), `teams.py`, `agent_state.py`. Table CRUD otherwise lives with the component that owns the table (e.g. tasks, message log).
 
 ## Cross-cutting invariants (the *why*)

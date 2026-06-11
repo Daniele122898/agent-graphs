@@ -706,3 +706,37 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   under the widened sidebar → text-selection instead of a node drag; now
   verified + retried, selection cleared). **Reversibility:** git mv history is
   intact; moving files back is mechanical.
+
+### 2026-06-11 — Pluggable model backends + DeepSeek with thinking control
+
+- **What:** a `ModelBackend` abstraction (providers/base.py) with two
+  implementations — LM Studio (existing behavior) and the DeepSeek API — a
+  registry that resolves `"<backend>:<model>"` strings and maps per-agent
+  thinking preferences to backend-specific settings, `/api/providers` +
+  `/api/providers/{id}/models` endpoints, and a Capabilities-tab Backend
+  dropdown above the model dropdown with thinking on/off + effort (high|max)
+  controls that appear only when the backend supports them. AgentSpec gained
+  optional `thinking`/`thinking_effort` fields (old persisted specs load
+  unchanged — no migration).
+- **Key choices:**
+  - **Keys in a gitignored `config.yml`** (committed `config.example.yml`
+    shape; env vars override) — verified `git check-ignore` BEFORE writing the
+    real key; the working agreement in CLAUDE.md now mandates an `sk-` grep of
+    staged diffs.
+  - **Thinking is a request parameter, not a model id**: DeepSeek deprecated
+    the deepseek-chat/deepseek-reasoner split (2026-07-24); we send the native
+    `extra_body.thinking` object (`enabled/disabled`, `reasoning_effort`
+    high|max). pydantic-ai's DeepSeek profile already passes prior
+    `reasoning_content` back (the v4 API requires it in tool loops) — the
+    exact opposite of our LM Studio profile, deliberately.
+  - **The resolver seam is untouched** (`resolve_model(str) -> Model`) so all
+    FunctionModel test plumbing and `wiring.resolve_model` monkeypatches keep
+    working; thinking travels separately via `thinking_settings(...)` →
+    `Agent(model_settings=...)` (workers, reviewer, summarizer).
+- **Verified live**: real DeepSeek list-models (v4-flash + v4-pro), a 1-token
+  chat call (thinking disabled), and a thinking call (ThinkingPart + 25
+  reasoning tokens, effort accepted). UI verified in-browser: backend switch,
+  thinking controls, persistence to the team graph, friendly degraded states
+  (no key / LM Studio down).
+- **Reversibility:** the abstraction is additive; deleting providers/deepseek.py
+  + the registry entry reverts to LM Studio-only.

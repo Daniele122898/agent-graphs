@@ -16,7 +16,7 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, Text
 from .agents.a2a import neighbor_instructions
 from .runtime.gateway import GatedModel
 from .domain.graph import validate_structure
-from .providers.registry import resolve_model
+from .providers.registry import resolve_model, thinking_settings
 from .domain.models import AgentSpec, Capabilities, GraphNode, TeamGraph
 from .agents.persona import build_instructions, environment_instructions
 from .runtime.workers import RunningAgent, obtain_worker
@@ -130,6 +130,7 @@ def make_task_runner(app: FastAPI, session: Session) -> TaskRunner:
             model=GatedModel(resolve_model(spec.model), session.gateway),
             output_type=ReviewVerdict,
             instructions=(spec.persona or f"You are {spec.name}.") + REVIEW_GUIDANCE,
+            model_settings=thinking_settings(spec.model, spec.thinking, spec.thinking_effort),
         )
         r = await reviewer.run(f"Task:\n{task_prompt}\n\nResult to review:\n{result}")
         return r.output
@@ -198,6 +199,7 @@ async def summarize_agent_history(
     summarizer = Agent(
         model=GatedModel(resolve_model(spec.model), session.gateway),
         instructions=spec.persona or f"You are {spec.name}.",
+        model_settings=thinking_settings(spec.model, spec.thinking, spec.thinking_effort),
     )
     r = await summarizer.run(SUMMARIZE_PROMPT, message_history=messages)
     summary = str(r.output).strip()

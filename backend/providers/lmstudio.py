@@ -22,6 +22,9 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile, openai_model_profile
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from ..config import provider_setting
+from .base import ModelBackend, ThinkingSupport
+
 # A local model that stops responding (e.g. it was swapped/unloaded mid-call)
 # must fail the run, not hang it forever. Generation on a weak laptop is slow,
 # so the read timeout is generous — but finite.
@@ -29,7 +32,12 @@ LOCAL_READ_TIMEOUT = float(os.environ.get("AGENT_GRAPHS_LOCAL_READ_TIMEOUT", "60
 
 
 def lmstudio_base_url() -> str:
-    return os.environ.get("AGENT_GRAPHS_LMSTUDIO_URL", "http://127.0.0.1:1234/v1")
+    return provider_setting(
+        "lmstudio",
+        "base_url",
+        env="AGENT_GRAPHS_LMSTUDIO_URL",
+        default="http://127.0.0.1:1234/v1",
+    )
 
 
 def build_lmstudio_model(name: str) -> Model:
@@ -64,3 +72,27 @@ async def lmstudio_models() -> list[dict]:
         r = await client.get(url)
         r.raise_for_status()
         return r.json().get("data", [])
+
+
+class LMStudioBackend(ModelBackend):
+    id = "lmstudio"
+    label = "LM Studio (local)"
+    default_model = "qwen/qwen3.5-9b"
+    # Local thinking models think on their own terms; LM Studio's OpenAI API
+    # exposes no portable on/off or effort control, so none is offered.
+    thinking = ThinkingSupport()
+
+    async def list_models(self) -> list[dict]:
+        return [
+            {
+                "id": m["id"],
+                "label": m["id"],
+                "tool_use": "tool_use" in (m.get("capabilities") or []),
+            }
+            for m in await lmstudio_models()
+            # Only chat-capable LLMs belong in the agent model picker.
+            if m.get("type") not in ("embeddings",)
+        ]
+
+    def build(self, name: str) -> Model:
+        return build_lmstudio_model(name)

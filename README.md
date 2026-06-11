@@ -29,6 +29,11 @@ Built incrementally, phase by phase. Current progress is tracked in `plan.md`.
 - **The Agent tab shows the real model context**: the system sections sent
   with every request plus the full stored conversation, with **Clear** and
   **Summarize** (model-written compaction) controls.
+- **Pluggable model backends**: each agent picks a backend (local LM Studio or
+  the hosted DeepSeek API) and a model from that backend's live list, plus —
+  where the backend supports it — a thinking on/off toggle and a thinking
+  effort level (DeepSeek: high/max). Adding another API is one small backend
+  class.
 - **Capability-scoped tools**: read-only agents literally have no write
   tools; a hash-guarded line-range edit tool keeps weak local models from
   corrupting files.
@@ -59,6 +64,21 @@ pip install -e ".[dev]"
 cd frontend
 npm install
 ```
+
+### Configuration (API keys)
+
+Hosted model backends read their credentials from `config.yml` at the repo
+root, which is **gitignored** so keys are never committed. Copy the committed
+example and fill in your own values:
+
+```bash
+cp config.example.yml config.yml
+# then edit config.yml — e.g. set providers.deepseek.api_key
+```
+
+Environment variables override the file (`DEEPSEEK_API_KEY`,
+`AGENT_GRAPHS_LMSTUDIO_URL`). Without a key the backend still runs; the
+DeepSeek entry in the UI just shows "not configured" with a hint.
 
 ## Running
 

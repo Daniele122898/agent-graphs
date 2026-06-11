@@ -95,10 +95,16 @@ class AgentSpec(BaseModel):
     id: str
     name: str
     persona: str = ""
-    # Default must be a model with LM Studio `tool_use` capability — without it
-    # tool calls come back as text and silently do nothing (qwen2.5-coder-*
-    # lacks tool_use; see specs/lmstudio-api.md).
+    # "<backend-id>:<model-name>" (see providers/registry.py). Default must be
+    # a model with LM Studio `tool_use` capability — without it tool calls come
+    # back as text and silently do nothing (qwen2.5-coder-* lacks tool_use;
+    # see specs/lmstudio-api.md).
     model: str = "lmstudio:qwen/qwen3.5-9b"
+    # Thinking preference, applied only when the model's backend supports it
+    # (providers/base.ThinkingSupport): None = backend default, True/False =
+    # explicit on/off; effort is a backend-specific level (DeepSeek: high|max).
+    thinking: bool | None = None
+    thinking_effort: str | None = None
     is_entry_point: bool = False
     capabilities: Capabilities = Field(default_factory=Capabilities)
 

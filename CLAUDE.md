@@ -20,6 +20,7 @@ own `CLAUDE.md` with subsystem detail (loaded when you open files there).
 - **Keep `CLAUDE.md` files current** (see the section at the bottom).
 - **Verify UI changes in a real browser with Playwright** before claiming they work — see `frontend/CLAUDE.md`. Type-check/build alone is not sufficient for UI.
 - The user (Daniele) is often away; **work autonomously and only stop if genuinely blocked.** Don't delete local state you didn't create (e.g. `backend/db.sqlite`) without checking — it holds the user's experimentation.
+- **API keys live ONLY in the gitignored `config.yml`** (loaded by `backend/config.py`; `config.example.yml` is the committed shape). NEVER commit a key — grep the staged diff for `sk-` before any commit touching config or docs.
 
 ## Architecture in one screen (the *why*)
 - **Team = definition (template); Session = running instance bound to a repo.** This image-vs-container split is the spine of the data model and runtime — designed in from day one so multi-repo is UI work, not a rewrite. One process holds `dict[session_id, Session]`.

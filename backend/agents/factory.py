@@ -22,13 +22,17 @@ from .todos import AgentDeps, write_todos
 from .tools import DevTools
 
 
-def build_agent(spec: AgentSpec, *, model: Model, dev_tools: DevTools) -> Agent[AgentDeps]:
+def build_agent(
+    spec: AgentSpec, *, model: Model, dev_tools: DevTools, model_settings=None
+) -> Agent[AgentDeps]:
     """Wire a spec + injected model + capability-derived toolset into an Agent.
 
     ``dev_tools`` must be bound to the session's repo root, this spec's
     capabilities, and the session's write-lock (the caller owns those). The
     agent also gets ``ask_agent`` (delegation) and a *dynamic* neighbor list
     appended to its instructions, re-evaluated each run so it tracks graph edits.
+    ``model_settings`` carries backend-specific request settings (the spec's
+    thinking preference, mapped by ``providers.registry.thinking_settings``).
     """
     agent: Agent[AgentDeps] = Agent(
         model=model,
@@ -37,6 +41,7 @@ def build_agent(spec: AgentSpec, *, model: Model, dev_tools: DevTools) -> Agent[
         toolsets=[make_dev_toolset(dev_tools)],
         tools=[write_todos, ask_agent, ask_user],
         capabilities=[compaction_capability()],
+        model_settings=model_settings,
         # Small local models need a few self-correction rounds (stale edit
         # hash → re-read → retry); the default of 1 kills runs too eagerly.
         retries=3,

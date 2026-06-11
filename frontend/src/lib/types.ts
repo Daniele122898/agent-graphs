@@ -23,7 +23,11 @@ export interface AgentSpec {
   id: string;
   name: string;
   persona: string;
-  model: string;
+  model: string; // "<backend-id>:<model-name>"
+  // Thinking preference — only honored by backends that support it (see the
+  // provider metadata): null/undefined = backend default, true/false = on/off.
+  thinking?: boolean | null;
+  thinking_effort?: string | null;
   is_entry_point: boolean;
   capabilities: Capabilities;
 }

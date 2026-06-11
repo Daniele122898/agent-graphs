@@ -10,6 +10,7 @@ dependencies = [
     "pydantic-ai-slim[openai]>=0.0.40",
     "httpx>=0.27",
     "anyio>=4.4",
+    "pyyaml>=6.0",        # config.yml (API keys / provider endpoints)
 ]
 
 [project.optional-dependencies]

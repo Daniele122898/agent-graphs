@@ -107,6 +107,11 @@ export const api = {
     }).then(json<{ status: string }>),
   lmstudioModels: () =>
     fetch("/api/stats/models").then(json<{ models: LMStudioModel[]; error: string | null }>),
+  providers: () => fetch("/api/providers").then(json<{ providers: ProviderInfo[] }>),
+  providerModels: (providerId: string) =>
+    fetch(`/api/providers/${providerId}/models`).then(
+      json<{ models: ProviderModel[]; error: string | null }>
+    ),
   usage: (agentId: string) =>
     fetch(withSession(`/api/stats/usage/${agentId}`)).then(
       json<{ requests: number; input_tokens: number; output_tokens: number }>
@@ -174,4 +179,22 @@ export interface LMStudioModel {
   max_context_length?: number;
   loaded_context_length?: number;
   capabilities?: string[];
+}
+
+// A model backend (LM Studio, DeepSeek, ...) as described by /api/providers.
+export interface ProviderInfo {
+  id: string;
+  label: string;
+  default_model: string;
+  configured: boolean;
+  hint: string; // what's missing when not configured (e.g. the config.yml key)
+  thinking: { toggleable: boolean; efforts: string[] };
+}
+
+// One model offered by a backend. tool_use: false = cannot function-call
+// (useless as an agent); null/undefined = unknown.
+export interface ProviderModel {
+  id: string;
+  label: string;
+  tool_use?: boolean | null;
 }

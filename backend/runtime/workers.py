@@ -28,7 +28,7 @@ from pydantic_ai.models import Model
 from ..agents.a2a import Delegator, MessageLog
 from ..agents.factory import build_agent
 from .gateway import GatedModel
-from ..providers.registry import resolve_model
+from ..providers.registry import resolve_model, thinking_settings
 from ..domain.models import AgentLifecycle, AgentSpec
 from .streaming import run_agent_streamed
 from ..agents.todos import AgentDeps
@@ -80,8 +80,14 @@ class RunningAgent:
         self._run_lock = asyncio.Lock()
 
         # Route this agent's model calls through the session gateway (serial on
-        # low-spec machines, pass-through otherwise).
-        self.agent = build_agent(spec, model=GatedModel(model, session.gateway), dev_tools=self._dev_tools(spec))
+        # low-spec machines, pass-through otherwise). The spec's thinking
+        # preference rides along as backend-specific model settings.
+        self.agent = build_agent(
+            spec,
+            model=GatedModel(model, session.gateway),
+            dev_tools=self._dev_tools(spec),
+            model_settings=thinking_settings(spec.model, spec.thinking, spec.thinking_effort),
+        )
 
         # A delegator lets this agent (and its delegation targets) consult
         # neighbors via ask_agent. Targets are real RunningAgents obtained from

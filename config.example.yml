@@ -1,0 +1,18 @@
+# Agent Graphs local configuration.
+#
+# Copy this file to `config.yml` (which is gitignored — NEVER commit real keys)
+# and fill in your own values. Every setting can also be supplied via the
+# environment variable named next to it; the environment wins over this file.
+#
+#   cp config.example.yml config.yml
+
+providers:
+  lmstudio:
+    # OpenAI-compatible endpoint of your local LM Studio server.
+    # Env override: AGENT_GRAPHS_LMSTUDIO_URL
+    base_url: http://127.0.0.1:1234/v1
+
+  deepseek:
+    # Your DeepSeek API key from https://platform.deepseek.com
+    # Env override: DEEPSEEK_API_KEY
+    api_key: ""
