@@ -77,3 +77,41 @@ async def test_read_only_agent_cannot_write(repo):
     result = await agent.run("write a file", deps=AgentDeps())
     assert not (repo / "x.py").exists()
     assert "could not write" in result.output
+
+
+async def test_stale_edit_hash_nudges_the_model_instead_of_killing_the_run(repo):
+    """A recoverable tool error (stale/bogus edit hash) must surface as a
+    retry prompt the model can act on — NOT a fatal exception. This is the
+    bug that made every delegated edit take the target agent down."""
+    (repo / "game.py").write_text("a\nb\nc\n")
+    model = make_sequence_model(
+        [
+            # turn 1: edit with a hash someone else dictated (always stale)
+            [ToolCallPart("edit_file", {"path": "game.py", "start_line": 1, "end_line": 1,
+                                        "new_content": "x", "lines_hash": "deadbeef0000"})],
+            # turn 2 (after the retry nudge): recover by re-reading
+            [ToolCallPart("read_file", {"path": "game.py"})],
+            # turn 3: report
+            [TextPart("recovered after re-reading")],
+        ]
+    )
+    dev = DevTools(repo, Capabilities.from_level("read-write"))
+    agent = build_agent(AgentSpec(id="a", name="A"), model=model, dev_tools=dev)
+
+    result = await agent.run("fix game.py", deps=AgentDeps())
+    assert "recovered after re-reading" in result.output  # the run SURVIVED
+
+
+async def test_sandbox_violation_is_also_a_nudge(repo):
+    model = make_sequence_model(
+        [
+            [ToolCallPart("read_file", {"path": "../outside.txt"})],
+            [TextPart("staying inside the repo")],
+        ]
+    )
+    agent = build_agent(
+        AgentSpec(id="a", name="A"), model=model,
+        dev_tools=DevTools(repo, Capabilities.from_level("read")),
+    )
+    result = await agent.run("read something", deps=AgentDeps())
+    assert "staying inside the repo" in result.output

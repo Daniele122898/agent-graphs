@@ -90,6 +90,7 @@ async def run_agent_streamed(
         if usage is not None
         else (0, 0, 0)
     )
+    run = None
     try:
         async with agent.iter(
             prompt, deps=deps, message_history=message_history, usage=usage, usage_limits=usage_limits
@@ -142,6 +143,14 @@ async def run_agent_streamed(
         bus.publish("agent_done", {"agent_id": agent_id, "output": str(output)})
         return str(output)
     except Exception as e:  # noqa: BLE001 — surface, don't swallow
+        # A failed run must still keep its transcript: hand back whatever
+        # messages accumulated before the failure, or the UI (which reloads
+        # from persisted history) shows an empty window after every error.
+        if history_out is not None and run is not None:
+            try:
+                history_out[:] = list(run.ctx.state.message_history)
+            except Exception:  # noqa: BLE001 — best effort, never mask `e`
+                pass
         registry.set_lifecycle(agent_id, "blocked")
         bus.publish("agent_error", {"agent_id": agent_id, "error": str(e)})
         raise

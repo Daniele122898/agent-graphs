@@ -651,3 +651,30 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   loaded against a dead backend self-heals when the backend returns.
 - **Also:** `useEvents` no longer opens `/events` without a session id (was
   a guaranteed 400 on every pre-reconcile boot).
+
+### 2026-06-11 — Delegated edits always died: stale-hash errors were FATAL (user report)
+
+- **What:** "lead asks the implementer, its window stays empty, nothing
+  happens." The message log showed every consult failing identically:
+  `[consultation failed: stale: the targeted lines changed…]`. Two compounding
+  bugs + one prompt gap:
+  1. **Tool errors killed runs.** `edit_file`'s stale rejection (and sandbox/
+     access/regex errors) raised plain `ValueError` — pydantic-ai treats
+     anything but `ModelRetry` as fatal, so the "re-read and retry" nudge the
+     message was WRITTEN to be never reached the model; the target's whole run
+     died and the asker got a dead consult. Fixed at the agent boundary
+     (`capabilities._self_correcting` wraps every dev tool, ValueError →
+     ModelRetry; DevTools stays framework-free) + `retries=3` per agent.
+  2. **Failed runs persisted no history** (history_out only filled from
+     run.result), so the post-error history refetch wiped the transcript —
+     the user literally watched "a message appear, then everything
+     disappears". The error path now hands back the partial message history
+     and both run paths adopt it in `finally`.
+  3. **The lead dictated edit hashes** ("Hash de8…") that are stale by
+     definition for another agent. TOOL_GUIDANCE now says edit tokens are
+     personal — read before editing, describe (don't dictate) delegated edits.
+- **Not context overfill** (user's hypothesis): compaction caps history at 40
+  messages; the failures were deterministic, on the first tool call.
+- **Tests:** stale-hash + sandbox nudges at agent level, failed-run transcript
+  persistence at runtime level, and the full delegation-recovery scenario at
+  a2a level (the exact reported flow).

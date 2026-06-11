@@ -169,3 +169,44 @@ async def test_full_tool_flow_lead_delegates_to_react(conn, fake_clock, repo):
     msgs = log.for_session(session.id)
     assert any(m["from_agent"] == "lead" and m["to_agent"] == "react" and m["kind"] == "question" for m in msgs)
     assert any(m["from_agent"] == "react" and m["to_agent"] == "lead" and m["kind"] == "reply" for m in msgs)
+
+
+async def test_delegated_edit_with_stale_hash_recovers_and_replies(conn, fake_clock, repo):
+    """The user-reported failure: lead delegates an edit, the target uses a
+    stale/dictated hash. The stale rejection must be a retry nudge inside the
+    TARGET's run — which then recovers and replies — never a dead consult
+    ('[consultation failed: stale: ...]')."""
+    (repo / "rps.py").write_text("choices = ['rock']\n")
+    graph = TeamGraph(
+        nodes=[
+            GraphNode(spec=_spec("lead", entry=True)),
+            GraphNode(spec=AgentSpec(id="impl", name="Implementer",
+                                     capabilities=Capabilities.from_level("read-write"))),
+        ],
+        edges=[GraphEdge(id="e1", source="lead", target="impl", label="implements code")],
+    )
+    session = _session(conn, fake_clock, repo, graph)
+
+    impl_model = make_sequence_model([
+        # turn 1: edit with the hash the lead dictated — always stale
+        [ToolCallPart("edit_file", {"path": "rps.py", "start_line": 1, "end_line": 1,
+                                    "new_content": "choices = ['r']", "lines_hash": "de8badbadbad"})],
+        # turn 2 (after the retry nudge): re-read for a fresh token
+        [ToolCallPart("read_file", {"path": "rps.py"})],
+        # turn 3: report back to the asker
+        [TextPart("re-read the file and fixed it properly")],
+    ])
+
+    async def provider(spec):
+        return await obtain_worker(session, spec, model_resolver=lambda _m: impl_model)
+
+    delegator = Delegator(session, provider, message_log=MessageLog(conn, clock=fake_clock))
+    answer = await delegator.ask(
+        asker_id="lead", target_id="impl",
+        question="Fix rps.py line 1. Hash de8badbadbad.", usage=RunUsage(), chain=[],
+    )
+    assert "fixed it properly" in answer  # the consult SUCCEEDED
+
+    # and the target kept its transcript (visible in its Agent window)
+    impl = session.registry.running("impl")
+    assert impl is not None and impl.messages, "target lost its run history"

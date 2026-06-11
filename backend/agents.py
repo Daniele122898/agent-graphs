@@ -37,6 +37,9 @@ def build_agent(spec: AgentSpec, *, model: Model, dev_tools: DevTools) -> Agent[
         toolsets=[make_dev_toolset(dev_tools)],
         tools=[write_todos, ask_agent, ask_user],
         capabilities=[compaction_capability()],
+        # Small local models need a few self-correction rounds (stale edit
+        # hash → re-read → retry); the default of 1 kills runs too eagerly.
+        retries=3,
     )
 
     @agent.instructions

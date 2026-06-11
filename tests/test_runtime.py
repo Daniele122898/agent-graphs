@@ -127,3 +127,29 @@ async def test_stop_cancels_an_inflight_run_once(conn, fake_clock, repo):
     with pytest.raises(asyncio.CancelledError):
         await run
     assert session.registry.lifecycle("a") == "idle"
+
+
+async def test_failed_run_still_persists_its_partial_transcript(conn, fake_clock, repo):
+    """A run that dies (model error, exhausted retries) must keep the messages
+    it accumulated — otherwise the UI reloads an EMPTY history after every
+    failure and the user sees the agent's work vanish."""
+    import pytest
+    from backend.agent_state import AgentStateStore
+
+    session, spec = _session(conn, fake_clock, repo)
+
+    def explode(messages, info):
+        raise RuntimeError("model exploded")
+
+    store = AgentStateStore(conn)
+    ra = RunningAgent(session=session, spec=spec, model=FunctionModel(explode), state_store=store)
+    session.registry.attach_running("a", ra)
+    with pytest.raises(RuntimeError):
+        await ra.run_once("do the thing")
+
+    # in-memory AND persisted history both keep the user's prompt
+    assert ra.messages, "failed run lost its transcript"
+    persisted = store.load_messages(session.id, "a")
+    assert persisted, "failed run persisted nothing"
+    texts = str(persisted[0])
+    assert "do the thing" in texts

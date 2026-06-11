@@ -168,13 +168,15 @@ class RunningAgent:
                     usage_limits=usage_limits,
                 )
             )
-            output = await self._current_run
-            if history_out:
-                self._messages = history_out
-            return output
+            return await self._current_run
         finally:
             self._current_run = None
             self._run_lock.release()
+            # Adopt the run's messages in finally so a FAILED run's partial
+            # transcript (filled by run_agent_streamed's error path) is kept
+            # and persisted too — not just successful runs.
+            if history_out:
+                self._messages = history_out
             self._persist()
             if self._inbox.empty():
                 self._set_lifecycle("idle")
@@ -248,13 +250,14 @@ class RunningAgent:
                         message_history=self._messages or None,
                         history_out=history_out,
                     )
-                if history_out:
-                    self._messages = history_out
             except asyncio.CancelledError:
                 raise  # stop() requested — leave the loop without marking blocked
             except Exception:  # noqa: BLE001 — already surfaced as agent_error
                 pass
             finally:
+                # in finally so a failed run's partial transcript survives too
+                if history_out:
+                    self._messages = history_out
                 self._persist()
             # Ready for the next task only if nothing is queued (queued work
             # keeps the agent visibly "running").

@@ -45,6 +45,10 @@ Editing files:
   from the token. Read precisely the lines you intend to replace.
 - If `edit_file` reports the edit is "stale", the file changed since you read it —
   re-read the range to get a fresh token, then retry. Do not guess the hash.
+- Edit tokens are yours alone: ALWAYS read the file yourself right before
+  editing. Never use a hash quoted by a teammate or remembered from earlier —
+  it will be stale. When delegating an edit, describe the change; do not
+  dictate line numbers or hashes.
 - `write_file(path, content)` creates or overwrites a whole file.
 
 Planning:

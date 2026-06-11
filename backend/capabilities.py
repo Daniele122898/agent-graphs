@@ -12,9 +12,40 @@ fakes.
 
 from __future__ import annotations
 
+import functools
+import inspect
+import re
+
+from pydantic_ai import ModelRetry
 from pydantic_ai.toolsets import FunctionToolset
 
 from .tools import DevTools
+
+
+def _self_correcting(fn):
+    """Surface recoverable tool errors (bad path, no access, stale edit hash,
+    bad regex) as ``ModelRetry`` — a nudge the model can act on — instead of a
+    plain exception, which pydantic-ai treats as FATAL and kills the whole run
+    (this is how every delegated edit with a stale hash used to take the
+    target agent down). The DevTools layer keeps raising ``ValueError`` so its
+    own tests and any non-agent callers stay framework-free; the conversion
+    happens here, at the agent boundary."""
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def async_wrapped(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except (ValueError, re.error) as e:
+                raise ModelRetry(str(e)) from e
+        return async_wrapped
+
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (ValueError, re.error) as e:
+            raise ModelRetry(str(e)) from e
+    return wrapped
 
 
 def make_dev_toolset(dev: DevTools) -> FunctionToolset:
@@ -23,14 +54,14 @@ def make_dev_toolset(dev: DevTools) -> FunctionToolset:
     caps = dev.caps
 
     if caps.can_read:
-        ts.add_function(dev.read_file)
-        ts.add_function(dev.list_dir)
-        ts.add_function(dev.grep)
+        ts.add_function(_self_correcting(dev.read_file))
+        ts.add_function(_self_correcting(dev.list_dir))
+        ts.add_function(_self_correcting(dev.grep))
     if caps.can_write:
-        ts.add_function(dev.write_file)
-        ts.add_function(dev.edit_file)
+        ts.add_function(_self_correcting(dev.write_file))
+        ts.add_function(_self_correcting(dev.edit_file))
     if caps.bash:
-        ts.add_function(dev.run_bash)
+        ts.add_function(_self_correcting(dev.run_bash))
 
     return ts
 
