@@ -4,7 +4,7 @@ import Onboarding from "./Onboarding";
 import Sidebar from "./Sidebar";
 import SessionSwitcher from "./SessionSwitcher";
 import TaskBoard from "./TaskBoard";
-import { api, setActiveSession, type TeamRow } from "./api";
+import { api, setActiveSession, withRetry, type TeamRow } from "./api";
 import { Button } from "./ui";
 import { useEvents } from "./useEvents";
 import { useTeamGraph } from "./useTeamGraph";
@@ -34,7 +34,7 @@ export default function App() {
   }, []);
 
   const refresh = useCallback(async () => {
-    const [t, s] = await Promise.all([api.listTeams(), api.listSessions()]);
+    const [t, s] = await withRetry(() => Promise.all([api.listTeams(), api.listSessions()]));
     setTeams(t.teams);
     setSessions(s.sessions);
     // Reconcile the active session against what actually exists.
@@ -52,7 +52,9 @@ export default function App() {
     refresh().catch(() => {});
   }, [refresh]);
 
-  // Load the active session's info + point the editor at its team.
+  // Load the active session's info + point the editor at its team. Retried:
+  // a one-shot failure here (e.g. the backend mid --reload restart) used to
+  // leave activeTeamId null forever — empty canvas until a manual refresh.
   useEffect(() => {
     if (!activeSessionId) {
       setSession(null);
@@ -60,13 +62,19 @@ export default function App() {
       return;
     }
     setActiveSession(activeSessionId);
-    api
-      .session()
+    let cancelled = false;
+    withRetry(() => api.session())
       .then((s) => {
+        if (cancelled) return;
         setSession(s);
         setActiveTeamId(s.team_id);
       })
-      .catch(() => setSession(null));
+      .catch(() => {
+        if (!cancelled) setSession(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [activeSessionId]);
 
   const saveAs = async () => {

@@ -50,8 +50,8 @@ export function useEvents(sessionId: string | null) {
     setEvents([]);
     setLifecycles({});
     setActiveEdges(new Set());
-    const url = sessionId ? `/events?session_id=${sessionId}` : "/events";
-    const es = new EventSource(url);
+    if (!sessionId) return; // nothing to subscribe to yet (boot/reconcile)
+    const es = new EventSource(`/events?session_id=${sessionId}`);
     esRef.current = es;
     const handler = (e: MessageEvent) => {
       try {

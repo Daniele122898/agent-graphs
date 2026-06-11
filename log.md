@@ -635,3 +635,19 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   the bend.
 - **Reversibility:** curve is one optional field with a safe default; the
   rendering change is contained in FloatingEdge/Canvas.
+
+### 2026-06-11 — Intermittent empty canvas/links on page load (user report)
+
+- **What:** "sometimes the links don't show until I refresh." Could not
+  reproduce via 70 reload loops (incl. 6× CPU throttle, real stack) — the
+  floating-edge rendering itself is sound. The actual hole: boot-critical
+  fetches had NO retry. `App`'s session load, `refresh()` (teams+sessions),
+  and `useTeamGraph`'s graph load each fire exactly once; if one fails —
+  trivially common here because the backend runs under `--reload` and
+  restarts whenever backend code changes — `activeTeamId` stays null and the
+  canvas (nodes AND links) stays empty until a manual refresh, with no
+  re-fire trigger. Fix: `withRetry` (6 × 700ms) around those three fetches,
+  with cancellation guards. Verified the exact scenario in-browser: page
+  loaded against a dead backend self-heals when the backend returns.
+- **Also:** `useEvents` no longer opens `/events` without a session id (was
+  a guaranteed 400 on every pre-reconcile boot).

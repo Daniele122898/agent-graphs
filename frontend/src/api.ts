@@ -27,6 +27,22 @@ function withSession(path: string): string {
   return path + (path.includes("?") ? "&" : "?") + `session_id=${currentSessionId}`;
 }
 
+// Boot-critical fetches retry briefly: the backend runs under --reload during
+// development, so a page load can race a restart window — without a retry the
+// app sits with an empty canvas (no nodes/links) until a manual refresh.
+export async function withRetry<T>(fn: () => Promise<T>, attempts = 6, delayMs = 700): Promise<T> {
+  let last: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      last = e;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw last;
+}
+
 export const api = {
   health: () => fetch("/health").then(json<{ status: string; tables: string[]; sessions: number }>),
   session: () => fetch(withSession("/api/session")).then(json<SessionInfo>),

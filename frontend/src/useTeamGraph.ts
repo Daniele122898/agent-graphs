@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { addEdge, useEdgesState, useNodesState, type Connection, type Edge, type Node } from "@xyflow/react";
-import { api } from "./api";
+import { api, withRetry } from "./api";
 import { fromReactFlow, toReactFlow, type RFNode } from "./graphMapping";
 import { defaultCapabilities, type AgentSpec } from "./types";
 
@@ -42,16 +42,24 @@ export function useTeamGraph(teamId: string | null) {
     if (!teamId) return;
     loaded.current = false;
     setStatus("loading…");
-    api
-      .getTeamGraph(teamId)
+    let cancelled = false;
+    // Retried so a page load racing a backend --reload restart doesn't leave
+    // the canvas empty (nodes AND links) until a manual refresh.
+    withRetry(() => api.getTeamGraph(teamId))
       .then((g) => {
+        if (cancelled) return;
         const { nodes: n, edges: e } = toReactFlow(g);
         setNodes(n);
         setEdges(e);
         loaded.current = true;
         setStatus("saved");
       })
-      .catch((err) => setStatus(`load error: ${err}`));
+      .catch((err) => {
+        if (!cancelled) setStatus(`load error: ${err}`);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [teamId, setNodes, setEdges]);
 
   useEffect(() => {
