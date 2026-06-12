@@ -102,7 +102,7 @@ Highlights from the `/doc` probe relevant to us:
 | Ours today | OpenCode equivalent | Fit |
 |---|---|---|
 | RunningAgent (long-lived worker, persistent history) | One session per team-agent; `prompt_async` + `session.idle`; `delivery: queue` = our interjection, `steer` is new | ✓ |
-| Persona assembly (sticky instructions) | Per-agent `prompt` — **REPLACES the entire built-in system prompt** (confirmed; no append mode). `{file:...}` refs supported | ✓ (good for small models) |
+| Persona assembly (sticky instructions) | Per-agent `prompt` — **REPLACES the entire built-in system prompt** (confirmed; no append mode). `{file:...}` refs supported | ✓ (good for small models) | EDIT: we should be careful with this and research this more and the opencode system prompt has had a lot of thought put into it and may be required!
 | Capabilities (read/write globs, bash on/off) | Per-agent/per-session permission rulesets (incl. `read` path globs, bash command patterns) + per-agent `tools: {name: bool}` | ✓ (stronger than ours) |
 | ask_agent + neighbor/cycle/depth guards | **Custom TS tool** calling back into our backend (see §4) — guards stay in Python; target runs on its persistent session | ✓ via callback |
 | ask_user / QuestionBoard / answer UI | Native question system (tool + endpoints + events) | ✓ near 1:1 |
