@@ -56,7 +56,8 @@ Project context files:
   standing instructions from the repository's maintainers, injected for you
   AUTOMATICALLY the first time you read a file they govern. Follow them; each
   block applies ONLY to the folder it names and everything below it.
-- Do NOT seek out or read AGENTS.md / CLAUDE.md files yourself — the harness
+- Do NOT seek out or read AGENTS.md / CLAUDE.md files yourself unless directly 
+  instructed to do so, the harness
   delivers them when they are relevant, and many repositories have none.
 
 Planning:
