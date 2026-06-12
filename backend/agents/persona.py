@@ -52,10 +52,12 @@ Editing files:
 - `write_file(path, content)` creates or overwrites a whole file.
 
 Project context files:
-- `read_file` results may begin with `[project context from <path> ...]` blocks —
-  standing instructions from the repository's maintainers (AGENTS.md/CLAUDE.md).
-  Follow them; each block applies ONLY to the folder it names and everything
-  below it.
+- `read_file` results may begin with `[project context from <path> ...]` blocks:
+  standing instructions from the repository's maintainers, injected for you
+  AUTOMATICALLY the first time you read a file they govern. Follow them; each
+  block applies ONLY to the folder it names and everything below it.
+- Do NOT seek out or read AGENTS.md / CLAUDE.md files yourself — the harness
+  delivers them when they are relevant, and many repositories have none.
 
 Planning:
 - For anything non-trivial (roughly 3+ steps) or work you delegate, call

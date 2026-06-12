@@ -43,7 +43,11 @@ transcript rendering), `context_files.py` (AGENTS.md/CLAUDE.md loading).
   scope. Once per conversation: the tracker lives on the `RunningAgent`
   (`project_context`) and resets on `replace_history` (clear/summarize) so the
   guidance can re-enter a fresh conversation. The edit-token must stay the LAST
-  line of a read result — blocks are prepended, never appended.
+  line of a read result — blocks are prepended, never appended. The persona
+  guidance about these blocks MUST keep its explicit "do NOT seek out or read
+  AGENTS.md/CLAUDE.md yourself" line — merely naming the files made a small
+  model proactively read them (failed reads on repos without them, seen live
+  2026-06-12); injection is harness-side only.
 - **Local-model prompt hygiene**: every tool needs a docstring (it becomes the
   OpenAI tool description — an empty one starves small models of guidance).
 - **Compaction** (`history.py`) only trims the conversation, never instructions,

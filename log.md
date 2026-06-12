@@ -768,3 +768,19 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   once-per-conversation dedup, self-read, reset, truncation, and an
   end-to-end RunningAgent run (inject → no repeat → clear → re-inject).
 - **Reversibility:** drop the `project_context` kwarg wiring and the module.
+
+### 2026-06-12 — Context-file guidance must forbid proactive reads (live fix)
+
+- **What:** the first live run after the AGENTS.md/CLAUDE.md feature showed the
+  implementer opening its turn with `read_file AGENTS.md` + `read_file
+  CLAUDE.md` in a repo that has neither ("not a file" retries). The harness
+  never forced those reads — naming the files in TOOL_GUIDANCE was enough for
+  qwen3.5-9b to seek them out (its thinking echoed the section heading).
+  Injection itself was always Python-side (DevTools.read_file) and working.
+- **Fix:** reworded the persona section — blocks are "injected for you
+  AUTOMATICALLY", plus an explicit "Do NOT seek out or read AGENTS.md /
+  CLAUDE.md files yourself". Recorded as an invariant in agents/CLAUDE.md.
+- **Considered & rejected:** emitting the guidance only when the repo actually
+  contains context files (needs a per-run rglob over the repo — costly on big
+  trees). Escalate to that only if the wording fix proves insufficient.
+- **Reversibility:** wording-only.
