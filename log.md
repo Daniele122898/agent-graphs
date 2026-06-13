@@ -915,3 +915,17 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   (OK). Build green. Full live opencode-via-UI run is a documented manual step
   (the badge is trivial conditional render; the backend opencode path is
   exhaustively tested).
+
+### 2026-06-13 — Phase 8a: OpenCode harness robustness (run timeout + reconfigure)
+
+- **Run never hangs**: run_to_completion now bounds the session.idle wait
+  (AGENT_GRAPHS_OPENCODE_RUN_TIMEOUT, default 900s); on timeout it aborts the
+  OpenCode run, publishes agent_error, and lands the agent blocked — never a
+  stuck awaiter if the server dies / the SSE stream drops.
+- **Graph edits take effect (parity with native's spec_changed rebuild)**:
+  _ensure compares the graph signature and, on change, reconfigures the server
+  (restart with new config) + drops the per-agent OpenCode sessions. Caveat: the
+  OpenCode-side conversation is lost on reconfigure (server restart), heavier
+  than native's history carry-forward — documented. An ensure-lock also fixes a
+  concurrent-first-run double-spawn race.
+- Tests: reconfigure-on-edit (and no-op on unchanged graph) via the fake. 150 green.

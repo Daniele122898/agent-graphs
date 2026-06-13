@@ -227,3 +227,30 @@ async def test_delegate_enforces_neighbor_guard(conn, fake_clock, repo):
     with pytest.raises(ModelRetry):  # edge is lead->expert only
         await session.harness.delegate(session, "expert", "lead", "reverse edge not allowed")
     await session.harness.shutdown(session)
+
+
+async def test_graph_edit_reconfigures_the_server(conn, fake_clock, repo):
+    from backend.domain.models import AgentSpec, Capabilities, GraphEdge, GraphNode, TeamGraph
+    client = FakeOpenCodeClient({"lead": [[text_part("v1")], [text_part("v2")]]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    await session.harness.run_to_completion(session, "lead", "go")
+    rt = session.harness._runtimes[session.id]
+    assert rt.conn.reconfigured == 0
+
+    # edit the lead's persona -> new graph signature -> reconfigure on next run
+    session.graph = TeamGraph(
+        nodes=[
+            GraphNode(spec=AgentSpec(id="lead", name="Lead", is_entry_point=True,
+                                     persona="EDITED persona", model="lmstudio:qwen/qwen3.5-9b",
+                                     capabilities=Capabilities.from_level("read-write"))),
+            GraphNode(spec=AgentSpec(id="expert", name="Expert", model="lmstudio:qwen/qwen3.5-9b",
+                                     capabilities=Capabilities.from_level("read"))),
+        ],
+        edges=[GraphEdge(id="e1", source="lead", target="expert", label="ask")],
+    )
+    await session.harness.run_to_completion(session, "lead", "go again")
+    assert rt.conn.reconfigured == 1, "graph edit should have reconfigured the server"
+    # an unchanged graph on the next run does NOT reconfigure again
+    await session.harness.run_to_completion(session, "lead", "go thrice")
+    assert rt.conn.reconfigured == 1
+    await session.harness.shutdown(session)

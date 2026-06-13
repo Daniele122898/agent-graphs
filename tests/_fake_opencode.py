@@ -136,12 +136,13 @@ class FakeConnection:
     def __init__(self, client: FakeOpenCodeClient):
         self.client = client
         self.running = True
+        self.reconfigured = 0
 
     async def start(self) -> None:
         self.running = True
 
     async def reconfigure(self, graph) -> None:
-        pass
+        self.reconfigured += 1
 
     async def aclose(self) -> None:
         self.running = False

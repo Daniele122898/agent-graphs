@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from ..base import Harness, HistoryView, find_spec
@@ -34,6 +35,11 @@ if TYPE_CHECKING:
     from ...storage.agent_state import AgentStateStore
 
 CONTINUATION_NUDGES = 2
+
+# A run must not await session.idle forever: if the server dies or the SSE
+# stream drops without a terminal event, the awaiter would hang. Generous (a
+# weak local model is slow) but finite — mirrors the native finite read timeout.
+OPENCODE_RUN_TIMEOUT = float(os.environ.get("AGENT_GRAPHS_OPENCODE_RUN_TIMEOUT", "900"))
 
 REVIEW_PROMPT = (
     "You are reviewing whether a task result fully satisfies the task. Reply with "
@@ -99,6 +105,9 @@ class _Runtime:
         self.agents: dict[str, _AgentState] = {}
         self.by_oc: dict[str, str] = {}
         self.listener: asyncio.Task | None = None
+        # signature of the graph the server was last configured with — a change
+        # (model/persona/capability/edge edit) triggers a reconfigure.
+        self.configured_sig: str = ""
         # Open ask_user questions, cached from question.asked SSE events
         # (keyed by OpenCode question id) so the sync list endpoint can read
         # them without an HTTP round-trip.
@@ -121,6 +130,7 @@ class OpenCodeHarness(Harness):
         self._connect = connect or _default_connect
         self._runtimes: dict[str, _Runtime] = {}
         self._tokens: dict[str, str] = {}
+        self._ensure_locks: dict[str, asyncio.Lock] = {}
 
     # --- connection / session lifecycle --------------------------------------
 
@@ -129,17 +139,44 @@ class OpenCodeHarness(Harness):
         return self._tokens.setdefault(session.id, new_id("octok_"))
 
     async def _ensure(self, session: "Session") -> _Runtime:
-        rt = self._runtimes.get(session.id)
-        if rt is not None and rt.conn.running:
+        # Serialize so concurrent first-runs don't spawn two servers and a graph
+        # change doesn't reconfigure mid-flight.
+        lock = self._ensure_locks.setdefault(session.id, asyncio.Lock())
+        async with lock:
+            sig = session.graph.model_dump_json()
+            rt = self._runtimes.get(session.id)
+            if rt is not None and rt.conn.running:
+                if rt.configured_sig != sig:
+                    await self._reconfigure(session, rt, sig)
+                return rt
+            conn = self._connect(session, self.token_for(session))
+            if asyncio.iscoroutine(conn):
+                conn = await conn
+            await conn.start()
+            rt = _Runtime(conn)
+            rt.configured_sig = sig
+            rt.listener = asyncio.create_task(self._listen(session, rt))
+            self._runtimes[session.id] = rt
             return rt
-        conn = self._connect(session, self.token_for(session))
-        if asyncio.iscoroutine(conn):
-            conn = await conn
-        await conn.start()
-        rt = _Runtime(conn)
+
+    async def _reconfigure(self, session: "Session", rt: _Runtime, sig: str) -> None:
+        """A graph/spec edit changed the config: restart the server with the new
+        config and drop the per-agent OpenCode sessions (they live in the old
+        server). The OpenCode-side conversation is lost on restart — the
+        edit-takes-effect-next-run guarantee, heavier than native's history
+        carry-forward; documented."""
+        if rt.listener is not None:
+            rt.listener.cancel()
+            try:
+                await rt.listener
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        await rt.conn.reconfigure(session.graph)
+        rt.agents.clear()
+        rt.by_oc.clear()
+        rt.open_questions.clear()
+        rt.configured_sig = sig
         rt.listener = asyncio.create_task(self._listen(session, rt))
-        self._runtimes[session.id] = rt
-        return rt
 
     async def _oc_session(self, rt: _Runtime, session: "Session", agent_id: str) -> _AgentState:
         st = rt.agents.setdefault(agent_id, _AgentState())
@@ -314,10 +351,16 @@ class OpenCodeHarness(Harness):
             await rt.conn.client.prompt_async(
                 st.oc_session_id, agent=agent_id, model=self._model_dict(spec.model), text=prompt
             )
-            if lock_timeout:
-                await asyncio.wait_for(st.idle.wait(), timeout=lock_timeout)
-            else:
-                await st.idle.wait()
+            try:
+                await asyncio.wait_for(st.idle.wait(), timeout=lock_timeout or OPENCODE_RUN_TIMEOUT)
+            except asyncio.TimeoutError:
+                # the run never signalled completion — abort it server-side and
+                # surface as an error so the agent lands blocked, never hung.
+                await rt.conn.client.abort(st.oc_session_id)
+                msg = f"run did not complete within {int(lock_timeout or OPENCODE_RUN_TIMEOUT)}s"
+                session.bus.publish("agent_error", {"agent_id": agent_id, "error": msg})
+                self._lifecycle(session, agent_id, "blocked")
+                raise RuntimeError(msg)
             if st.error:
                 raise RuntimeError(st.error)
             return st.last_output
