@@ -91,6 +91,8 @@ class _AgentState:
         self.idle = asyncio.Event()
         self.busy = False
         self.error: str | None = None
+        self.aborting = False  # set by stop() → run_to_completion raises CancelledError
+        self.chain: list[str] = []  # delegation chain of the in-flight run (for nested ask_agent)
         self.last_output = ""
         self.todos: list[dict] = []
         self.usage = {"requests": 0, "input_tokens": 0, "output_tokens": 0}
@@ -211,9 +213,16 @@ class OpenCodeHarness(Harness):
                 except Exception:  # noqa: BLE001 — never let one event kill the stream
                     pass
         except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 — stream closed (server shutdown)
+            raise  # shutdown/reconfigure cancelled us — agents torn down separately
+        except Exception:  # noqa: BLE001 — stream dropped (server crashed)
             pass
+        # Reached only on an UNEXPECTED stream end (clean close or crash), never
+        # on cancel (which re-raised above). Free any awaiter parked on st.idle so
+        # a run fails fast instead of hanging forever — mirrors session.error.
+        for st in rt.agents.values():
+            if not st.idle.is_set():
+                st.error = st.error or "[opencode event stream closed]"
+                st.idle.set()
 
     def _lifecycle(self, session: "Session", agent_id: str, lifecycle: str) -> None:
         session.registry.set_lifecycle(agent_id, lifecycle)  # type: ignore[arg-type]
@@ -252,10 +261,15 @@ class OpenCodeHarness(Harness):
             info = props.get("info", {}) or {}
             if info.get("role") == "assistant" and info.get("tokens"):
                 st._msg_tokens[info.get("id", "")] = info["tokens"]
+                toks = list(st._msg_tokens.values())
                 st.usage = {
-                    "requests": len(st._msg_tokens),
-                    "input_tokens": sum(int(t.get("input", 0)) for t in st._msg_tokens.values()),
-                    "output_tokens": sum(int(t.get("output", 0)) for t in st._msg_tokens.values()),
+                    "requests": len(toks),
+                    # input is the FULL prompt context per message (cumulative,
+                    # grows each turn) — report the latest, don't sum (summing
+                    # double-counts the re-sent context). output is per-message;
+                    # include reasoning tokens (dropped before) for thinking models.
+                    "input_tokens": int(toks[-1].get("input", 0)) if toks else 0,
+                    "output_tokens": sum(int(t.get("output", 0)) + int(t.get("reasoning", 0)) for t in toks),
                 }
         elif etype == "question.asked":
             self._on_question_asked(session, rt, agent_id, props)
@@ -270,9 +284,11 @@ class OpenCodeHarness(Harness):
             self._lifecycle(session, agent_id, "blocked")
             st.idle.set()
         elif etype == "session.idle":
-            # run complete: compute final text, announce, free awaiters.
+            # run complete: compute final text, announce, free awaiters. Skip
+            # agent_done when the run errored or was user-aborted (stop already
+            # set lifecycle idle in the abort case).
             st.last_output = await self._final_output(rt, st)
-            if st.error is None:
+            if st.error is None and not st.aborting:
                 bus.publish("agent_done", {"agent_id": agent_id, "output": st.last_output})
                 self._lifecycle(session, agent_id, "idle")
             st.idle.set()
@@ -344,8 +360,12 @@ class OpenCodeHarness(Harness):
         async with st.lock:
             st.idle.clear()
             st.error = None
+            st.aborting = False
             st.seen_tool_call.clear()
             st.seen_tool_result.clear()
+            # Record this run's delegation chain so a nested ask_agent callback
+            # for this agent can read + extend it (cross-hop cycle/depth guard).
+            st.chain = list(delegation_chain or [])
             session.bus.publish("user_message", {"agent_id": agent_id, "text": prompt})
             self._lifecycle(session, agent_id, "running")
             await rt.conn.client.prompt_async(
@@ -361,6 +381,15 @@ class OpenCodeHarness(Harness):
                 session.bus.publish("agent_error", {"agent_id": agent_id, "error": msg})
                 self._lifecycle(session, agent_id, "blocked")
                 raise RuntimeError(msg)
+            finally:
+                st.chain = []
+            if st.aborting:
+                # user pressed Stop mid-run — surface as a cancellation so the
+                # TaskRunner parks the task 'blocked' (Retry-able), matching
+                # native. Not an error (no agent_error / blocked-with-error).
+                # `aborting` is left set; the next run clears it at start, and
+                # the listener uses it to suppress a spurious agent_done.
+                raise asyncio.CancelledError()
             if st.error:
                 raise RuntimeError(st.error)
             return st.last_output
@@ -379,6 +408,8 @@ class OpenCodeHarness(Harness):
     async def _submit_bg(self, session: "Session", agent_id: str, prompt: str) -> None:
         try:
             await self.run_to_completion(session, agent_id, prompt)
+        except asyncio.CancelledError:
+            pass  # user stopped this run (deliberate abort signal, not a task cancel)
         except Exception:  # noqa: BLE001 — already surfaced via agent_error on the bus
             pass
 
@@ -416,10 +447,22 @@ class OpenCodeHarness(Harness):
             return
         st = rt.agents.get(agent_id)
         if st and st.oc_session_id:
+            # mark aborting so an in-flight run_to_completion raises
+            # CancelledError (→ task parks blocked, Retry-able) and the listener
+            # suppresses a spurious agent_done; then abort + free the awaiter.
+            st.aborting = True
             await rt.conn.client.abort(st.oc_session_id)
             self._lifecycle(session, agent_id, "idle")
-            st.error = None
             st.idle.set()
+
+    def current_chain(self, agent_id: str) -> list[str]:
+        """The delegation chain of the agent's in-flight run, so a nested
+        ask_agent callback can extend it (cross-hop cycle/depth guard)."""
+        for rt in self._runtimes.values():
+            st = rt.agents.get(agent_id)
+            if st is not None:
+                return list(st.chain)
+        return []
 
     def is_busy(self, session: "Session", agent_id: str) -> bool:
         rt = self._runtimes.get(session.id)
@@ -473,6 +516,9 @@ class OpenCodeHarness(Harness):
         rt = self._runtimes.get(session.id)
         if rt is None or question_id not in rt.open_questions:
             return False
+        expected = len(rt.open_questions[question_id].get("questions", []))
+        if expected and len(answers) != expected:
+            raise ValueError(f"expected {expected} answers, got {len(answers)}")
         # OpenCode wants one answer-array per question; our UI sends one string
         # per question, so wrap each as a single selection.
         ok = await rt.conn.client.reply_question(question_id, [[a] for a in answers])

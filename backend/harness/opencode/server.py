@@ -147,7 +147,14 @@ class OpenCodeServer:
                 stderr=log,
             )
             self._client = httpx.AsyncClient(base_url=self.base_url, timeout=30.0)
-            await self._await_ready(timeout)
+            try:
+                await self._await_ready(timeout)
+            except Exception:
+                # A failed boot (timeout / early exit) must not leak the spawned
+                # process, the log handle, the client, or the staged tool — the
+                # caller never gets a handle to shut us down.
+                await self.shutdown(cleanup=True)
+                raise
 
     async def _await_ready(self, timeout: float) -> None:
         deadline = asyncio.get_event_loop().time() + timeout

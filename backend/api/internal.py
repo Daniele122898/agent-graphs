@@ -28,9 +28,13 @@ def install(app: FastAPI) -> None:
         token_for = getattr(session.harness, "token_for", None)
         if token_for is None or x_ag_token != token_for(session):
             raise HTTPException(403, "invalid or missing callback token")
+        # Thread the asker's in-flight delegation chain so the cross-hop
+        # cycle/depth guards accumulate across HTTP callbacks (A→B→C…).
+        current = getattr(session.harness, "current_chain", None)
+        chain = current(body.asker_id) if current else None
         try:
             return await session.harness.delegate(
-                session, body.asker_id, body.target_id, body.question
+                session, body.asker_id, body.target_id, body.question, chain=chain
             )
         except ModelRetry as e:
             # guard violation / busy / consult failure → corrective message the

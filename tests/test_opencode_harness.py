@@ -254,3 +254,99 @@ async def test_graph_edit_reconfigures_the_server(conn, fake_clock, repo):
     await session.harness.run_to_completion(session, "lead", "go thrice")
     assert rt.conn.reconfigured == 1
     await session.harness.shutdown(session)
+
+
+async def test_session_error_blocks_and_does_not_announce_done(conn, fake_clock, repo):
+    client = FakeOpenCodeClient({"lead": [{"error": "Channel Error: worker crashed"}]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+    with pytest.raises(RuntimeError):
+        await session.harness.run_to_completion(session, "lead", "go")
+    await asyncio.sleep(0.05)
+    assert any(e["type"] == "agent_error" for e in events)
+    assert not any(e["type"] == "agent_done" for e in events)  # idle-after-error must not announce done
+    assert session.registry.lifecycle("lead") == "blocked"
+    await session.harness.shutdown(session)
+    sub.cancel()
+
+
+async def test_stop_mid_run_cancels_so_task_can_park_blocked(conn, fake_clock, repo):
+    # a parking run never idles; Stop must surface as CancelledError (so the
+    # TaskRunner parks the task blocked, matching native) — NOT a normal return.
+    client = FakeOpenCodeClient({"lead": [{"park": True}]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+    run = asyncio.create_task(session.harness.run_to_completion(session, "lead", "go"))
+    for _ in range(100):  # wait until it's running
+        if session.registry.lifecycle("lead") == "running":
+            break
+        await asyncio.sleep(0.02)
+    await session.harness.stop(session, "lead")
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    await asyncio.sleep(0.05)
+    assert not any(e["type"] == "agent_done" for e in events)  # no spurious done on abort
+    assert session.registry.lifecycle("lead") == "idle"
+    await session.harness.shutdown(session)
+    sub.cancel()
+
+
+async def test_listener_death_frees_a_parked_run(conn, fake_clock, repo):
+    client = FakeOpenCodeClient({"lead": [{"park": True}]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    run = asyncio.create_task(session.harness.run_to_completion(session, "lead", "go"))
+    for _ in range(100):
+        if session.registry.lifecycle("lead") == "running":
+            break
+        await asyncio.sleep(0.02)
+    # simulate the SSE stream dropping (server crash) — the listener exits and
+    # must free the awaiter instead of hanging forever
+    client.close()
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(run, timeout=2)
+    # runtime already torn down by the stream close path; shutdown is a no-op
+    await session.harness.shutdown(session)
+
+
+async def test_answer_count_mismatch_raises_valueerror(conn, fake_clock, repo):
+    client = FakeOpenCodeClient({
+        "lead": [{"question": {"question": "Pick", "header": "p", "options": [{"label": "a"}]}}],
+    })
+    session = _opencode_session(conn, fake_clock, repo, client)
+    run = asyncio.create_task(session.harness.run_to_completion(session, "lead", "ask"))
+    q = None
+    for _ in range(100):
+        qs = session.harness.list_questions(session)
+        if qs:
+            q = qs[0]; break
+        await asyncio.sleep(0.02)
+    assert q is not None
+    with pytest.raises(ValueError, match="expected 1 answers, got 2"):
+        await session.harness.answer_question(session, q["id"], ["a", "b"])
+    # answer correctly to let the run finish + clean up
+    await session.harness.answer_question(session, q["id"], ["a"])
+    await asyncio.wait_for(run, timeout=2)
+    await session.harness.shutdown(session)
+
+
+async def test_current_chain_exposed_during_delegated_run(conn, fake_clock, repo):
+    client = FakeOpenCodeClient({"expert": [{"park": True}]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    run = asyncio.create_task(
+        session.harness.run_to_completion(session, "expert", "q", delegation_chain=["lead", "mid"])
+    )
+    for _ in range(100):
+        if session.harness.current_chain("expert") == ["lead", "mid"]:
+            break
+        await asyncio.sleep(0.02)
+    assert session.harness.current_chain("expert") == ["lead", "mid"]
+    await session.harness.stop(session, "expert")
+    try:
+        await asyncio.wait_for(run, timeout=2)
+    except (asyncio.CancelledError, Exception):
+        pass
+    await session.harness.shutdown(session)

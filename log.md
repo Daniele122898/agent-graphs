@@ -929,3 +929,34 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   than native's history carry-forward — documented. An ensure-lock also fixes a
   concurrent-first-run double-spawn race.
 - Tests: reconfigure-on-edit (and no-op on unchanged graph) via the fake. 150 green.
+
+### 2026-06-13 — Phase 8b: adversarial-review fixes (19-agent review)
+
+A multi-agent review (parity/resources/security/correctness/coverage, with
+adversarial verification) confirmed real issues; fixed the substantive ones:
+- **Stop → CancelledError** (high): a stopped OpenCode task-run returned
+  normally, so the TaskRunner marked it done instead of parking blocked. stop()
+  now sets an `aborting` flag → run_to_completion raises CancelledError (Retry-
+  able), and the abort's session.idle is suppressed (no spurious agent_done).
+- **Listener-death frees awaiters** (high): if the SSE stream drops mid-run the
+  awaiter hung forever; the listener now sets st.error + idle for pending
+  agents on unexpected stream end. Plus the run timeout from 8a.
+- **Cross-hop delegation guard** (high): the chain wasn't threaded across the
+  ask_agent HTTP callback, so depth/cycle caps never accumulated (unbounded
+  A→B→C…). run_to_completion stashes the chain on _AgentState;
+  /internal/ask_agent reads it via current_chain() and passes it to delegate().
+- **Usage** (high): input was summed across messages (O(N²) double-count of the
+  re-sent context) and reasoning tokens were dropped — now input = latest
+  message's context, output += reasoning.
+- **Lifespan teardown** (resources): the lifespan only stopped native workers,
+  leaking OpenCode servers/temp dirs — now calls `harness.shutdown(session)`
+  for every session.
+- **Failed start() cleanup** (resources): a boot timeout leaked the subprocess/
+  client/log/staged tool — start() now tears down on failure before re-raising.
+- **answer_question count check** (low): raises ValueError on count mismatch
+  (→ 422), matching native/the ABC contract.
+- **DeepSeek model decl**: config now declares deepseek models under
+  provider.deepseek.models (best-effort registry fix; verify live).
+- Reconfigure-on-edit (8a) already addressed the review's "graph edit not
+  applied" finding. New tests: error path, stop-cancels, listener-death,
+  answer-count, current_chain. 155 green.

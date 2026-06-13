@@ -76,9 +76,14 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
         try:
             yield
         finally:
+            # Tear down each session's harness — native stops its RunningAgents,
+            # opencode kills its server process + cleans up. (The old loop only
+            # stopped native workers, leaking opencode servers/temp dirs.)
             for s in sessions.list():
-                for ra in s.registry.all_running():
-                    await ra.stop()
+                try:
+                    await s.harness.shutdown(s)
+                except Exception:  # noqa: BLE001 — best-effort teardown
+                    pass
             conn.close()
 
     app = FastAPI(title="Agent Graphs", lifespan=lifespan)

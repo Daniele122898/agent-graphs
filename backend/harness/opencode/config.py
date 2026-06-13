@@ -113,12 +113,18 @@ def _provider_block(graph: TeamGraph) -> dict:
             "models": {m: {} for m in sorted(used["lmstudio"])},
         }
     if "deepseek" in used:
-        # DeepSeek is a built-in OpenCode provider (models.dev); we only inject
-        # the key. Omit the block entirely if unconfigured (OpenCode will error
-        # clearly on use rather than us shipping an empty key).
+        # DeepSeek is a built-in OpenCode provider (models.dev); we inject the
+        # key and DECLARE the models we use — OpenCode's registry may not know
+        # newer ids (e.g. deepseek-v4-flash), and declaring them here registers
+        # them so prompt_async doesn't silently no-op on an unknown model.
+        # Omit the block entirely if unconfigured (OpenCode errors clearly on
+        # use rather than us shipping an empty key).
         key = deepseek_api_key()
         if key:
-            providers["deepseek"] = {"options": {"apiKey": key}}
+            providers["deepseek"] = {
+                "options": {"apiKey": key},
+                "models": {m: {} for m in sorted(used["deepseek"])},
+            }
     return providers
 
 

@@ -55,6 +55,19 @@ class FakeOpenCodeClient:
         self._turn[session_id] += 1
         turn = turns[min(idx, len(turns) - 1)] if turns else [text_part("ok")]
 
+        # A park turn goes busy and never idles (simulates a slow/hung run):
+        # for stop() and listener-death tests.
+        if isinstance(turn, dict) and turn.get("park"):
+            await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "busy"}}})
+            return
+
+        # An error turn goes busy then emits session.error (+ idle).
+        if isinstance(turn, dict) and "error" in turn:
+            await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "busy"}}})
+            await self._events.put({"type": "session.error", "properties": {"sessionID": session_id, "error": {"message": turn["error"]}}})
+            await self._events.put({"type": "session.idle", "properties": {"sessionID": session_id}})
+            return
+
         # A question turn parks: emit question.asked and DO NOT go idle until
         # reply_question() is called (which then continues + goes idle).
         if isinstance(turn, dict) and "question" in turn:
