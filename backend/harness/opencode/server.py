@@ -66,7 +66,16 @@ class OpenCodeServer:
         self._binary = binary or opencode_binary()
         self._callback_url = callback_url or callback_base_url()
         self._callback_token = callback_token
-        self._config_home: Path | None = None
+        self._config = build_opencode_config(graph, repo_root=self.repo_root)
+        self._log_dir: Path | None = None  # temp dir for serve.log (outside repo)
+        # Whether <repo>/.opencode existed BEFORE us. If we create it, we own it
+        # and remove it wholesale on shutdown (OpenCode installs the tool's deps
+        # into .opencode/node_modules); if it pre-existed (a user's own), we
+        # touch only our tool file.
+        self._opencode_dir = self.repo_root / ".opencode"
+        self._opencode_created = not self._opencode_dir.exists()
+        self._tool_file = self._opencode_dir / "tool" / "ask_agent.ts"
+        self._tool_created = False
         self._proc: asyncio.subprocess.Process | None = None
         self.port: int | None = None
         self.base_url: str | None = None
@@ -77,43 +86,62 @@ class OpenCodeServer:
     def running(self) -> bool:
         return self._proc is not None and self._proc.returncode is None
 
-    def write_config(self, graph: TeamGraph) -> Path:
-        """(Re)write opencode.json + the ask_agent tool into the config home.
-        Returns the config home dir. Called on start and on graph changes."""
-        if self._config_home is None:
-            self._config_home = Path(tempfile.mkdtemp(prefix=f"ag_oc_{self.session_id}_"))
-        home = self._config_home
-        (home / ".opencode" / "tool").mkdir(parents=True, exist_ok=True)
-        config = build_opencode_config(graph, repo_root=self.repo_root)
-        (home / "opencode.json").write_text(json.dumps(config, indent=2))
-        (home / ".opencode" / "tool" / "ask_agent.ts").write_text(ASK_AGENT_TOOL_TS)
+    def _stage(self, graph: TeamGraph) -> None:
+        """Prepare config + the custom tool.
+
+        The server's cwd is the REPO (OpenCode's ``prompt_async`` only runs when
+        the session directory matches the server's project — the config-home
+        approach silently no-ops, verified against 1.16.2). So the config is
+        passed inline via ``OPENCODE_CONFIG_CONTENT`` (no ``opencode.json`` file
+        in the repo), and only the ask_agent tool is written into
+        ``<repo>/.opencode/tool/`` — tracked and removed on shutdown. Existing
+        user files are never overwritten or deleted.
+        """
         self.graph = graph
-        return home
+        self._config = build_opencode_config(graph, repo_root=self.repo_root)
+        (self._opencode_dir / "tool").mkdir(parents=True, exist_ok=True)
+        if not self._tool_file.exists():
+            self._tool_file.write_text(ASK_AGENT_TOOL_TS)
+            self._tool_created = True
+
+    def _unstage(self) -> None:
+        # Full teardown of a .opencode we created (incl. the node_modules
+        # OpenCode installs for the tool); otherwise just our tool file.
+        try:
+            if self._opencode_created and self._opencode_dir.exists():
+                shutil.rmtree(self._opencode_dir, ignore_errors=True)
+            elif self._tool_created and self._tool_file.exists():
+                self._tool_file.unlink()
+        except OSError:
+            pass
 
     def _env(self) -> dict:
         env = dict(os.environ)
         env["AGENT_GRAPHS_CALLBACK_URL"] = self._callback_url
         env["AGENT_GRAPHS_CALLBACK_TOKEN"] = self._callback_token
         env["AGENT_GRAPHS_SESSION_ID"] = self.session_id
-        # Don't let the server pick up the user's own global opencode config /
-        # auto-update chatter; our config home is authoritative for this run.
+        # Our generated config is authoritative for this run (inline, so no file
+        # in the repo); suppress auto-update chatter.
+        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(self._config)
         env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
         return env
 
     async def start(self, *, timeout: float = 30.0) -> None:
-        """Boot the server (idempotent). Writes config, spawns the process, and
-        waits until ``/config`` answers."""
+        """Boot the server (idempotent): stage config+tool, spawn ``opencode
+        serve`` with cwd = the repo, wait until ``/config`` answers."""
         async with self._lock:
             if self.running:
                 return
-            home = self.write_config(self.graph)
+            self._stage(self.graph)
+            if self._log_dir is None:
+                self._log_dir = Path(tempfile.mkdtemp(prefix=f"ag_oc_{self.session_id}_"))
             self.port = _free_port()
             self.base_url = f"http://127.0.0.1:{self.port}"
-            log = open(home / "serve.log", "w")  # noqa: SIM115 — closed on shutdown
+            log = open(self._log_dir / "serve.log", "w")  # noqa: SIM115 — closed on shutdown
             self._log_file = log
             self._proc = await asyncio.create_subprocess_exec(
                 self._binary, "serve", "--port", str(self.port), "--hostname", "127.0.0.1",
-                cwd=str(home),
+                cwd=str(self.repo_root),
                 env=self._env(),
                 stdout=log,
                 stderr=log,
@@ -126,7 +154,7 @@ class OpenCodeServer:
         last_err: Exception | None = None
         while asyncio.get_event_loop().time() < deadline:
             if not self.running:
-                raise RuntimeError(f"opencode server exited early (see {self._config_home}/serve.log)")
+                raise RuntimeError(f"opencode server exited early (see {self._log_dir}/serve.log)")
             try:
                 r = await self._client.get("/config")
                 if r.status_code == 200:
@@ -142,14 +170,14 @@ class OpenCodeServer:
         return self._client
 
     async def reconfigure(self, graph: TeamGraph) -> None:
-        """Apply a graph/spec change: rewrite config and restart the server
+        """Apply a graph/spec change: re-stage config + restart the server
         (OpenCode reads config at boot). Sessions are recreated lazily after."""
         await self.shutdown(cleanup=False)
-        self.write_config(graph)
+        self._stage(graph)
         await self.start()
 
     async def shutdown(self, *, cleanup: bool = True) -> None:
-        """Terminate the process; optionally remove the config home."""
+        """Terminate the process; remove the staged tool file + temp log dir."""
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -164,6 +192,8 @@ class OpenCodeServer:
         if getattr(self, "_log_file", None) is not None:
             self._log_file.close()
             self._log_file = None
-        if cleanup and self._config_home is not None:
-            shutil.rmtree(self._config_home, ignore_errors=True)
-            self._config_home = None
+        if cleanup:
+            self._unstage()
+            if self._log_dir is not None:
+                shutil.rmtree(self._log_dir, ignore_errors=True)
+                self._log_dir = None

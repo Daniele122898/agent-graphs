@@ -475,3 +475,40 @@ sessions row (new nullable column, defaults native).
   runtime/system view, NOT the message transcript).
 - Live 1.16.2 emits the CLASSIC event family (message.part.updated/delta), not
   the spec's `session.next.*` V2 family — code against classic, tolerate both.
+
+---
+
+## B.6 Phase 3 live findings (2026-06-13) — the cwd gotcha (CRITICAL)
+
+Building + live-testing the harness surfaced THE load-bearing OpenCode gotcha,
+now fixed:
+
+- **`prompt_async` only starts a run when the server's working directory equals
+  the session's directory.** Proven on 1.16.2: cwd==dir → user+assistant
+  messages appear; cwd≠dir (server cwd = a separate config home, session via
+  `?directory=repo`) → `prompt_async` returns 204 but creates **zero messages**
+  and never runs. (This is the OpenCode multi-directory weakness, issue #12271.)
+  It silently looked like a hung model — it was not; a tiny model (qwen3-1.7b)
+  isolated it model-independently (no user message ever recorded).
+- **Fix (server.py):** run `opencode serve` with **cwd = the repo**. To keep the
+  repo clean, the config is passed inline via **`OPENCODE_CONFIG_CONTENT`** (no
+  `opencode.json` file), and only the ask_agent tool is written to
+  `<repo>/.opencode/tool/ask_agent.ts`. On shutdown a `.opencode` WE created is
+  removed wholesale (OpenCode `bun install`s the tool's `@opencode-ai/plugin`
+  dep into `.opencode/node_modules`); a pre-existing user `.opencode` is left
+  alone (only our tool file removed). Verified: live run creates `hello.txt`,
+  streams all bus events, and leaves the repo empty after shutdown.
+- **DeepSeek model id**: OpenCode's registry does NOT know
+  `deepseek-v4-flash` (its DeepSeek provider exposes models.dev ids like
+  `deepseek-chat`/`deepseek-reasoner`, plus its own gateway
+  `opencode/deepseek-v4-flash-free`). `prompt_async` silently no-ops on an
+  unknown model. So the OpenCode harness + DeepSeek needs a model id OpenCode
+  knows — TODO: map our `deepseek:deepseek-v4-flash` to a recognized id (or use
+  the opencode gateway model) in config gen. The NATIVE harness keeps using
+  `deepseek-v4-flash` directly (works). Local LM Studio models work on both.
+- **Known cost**: the tool's dep install runs per session on first server boot
+  (a few seconds). Future optimization: a persistent isolated tool dir via
+  `XDG_CONFIG_HOME` (probed; first-boot install made readiness flaky, deferred).
+- **Live-verified**: run_to_completion, SSE→bus (user_message/thinking/text/
+  tool_call/tool_result/agent_done), tool execution (write), history rows,
+  usage, clean teardown — all green against `opencode 1.16.2` + qwen3-1.7b.

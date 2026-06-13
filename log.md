@@ -845,3 +845,21 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   load with correct model/permissions, ask_agent registered, repo-scoped
   session created, clean shutdown. Full suite 138 green. Live server boot is
   manual (needs the binary) — not in the fast suite, like test_live_smoke.
+
+### 2026-06-13 — Phase 3 live fix: OpenCode prompt_async requires cwd == session dir
+
+- **What:** the OpenCodeHarness live run hung with 0 messages. Root cause
+  (proven, model-independent via qwen3-1.7b): OpenCode's `prompt_async` only
+  starts a run when the server's cwd equals the session directory; the
+  config-home-cwd + `?directory=repo` architecture silently no-ops (issue
+  #12271). NOT a model or harness-logic bug (fake-server tests were always
+  green).
+- **Fix:** server.py now runs `opencode serve` with cwd = the repo, config via
+  `OPENCODE_CONFIG_CONTENT` (no opencode.json in the repo), tool at
+  `<repo>/.opencode/tool/ask_agent.ts`, and removes a `.opencode` we created on
+  shutdown (incl. the bun-installed node_modules). Live-verified: hello.txt
+  created, all bus events streamed, repo clean after.
+- **Also found:** OpenCode doesn't know the `deepseek-v4-flash` id (only
+  models.dev ids / its gateway free model) — documented as a config-gen TODO
+  for the opencode harness + DeepSeek; native harness unaffected.
+- Full suite 144 green (fake-server tests unaffected by the server change).
