@@ -88,7 +88,7 @@ def main() -> int:
         # select lead, open Agent tab, send a message, confirm user bubble
         page.get_by_text("Lead", exact=True).first.click()
         page.wait_for_timeout(300)
-        page.get_by_role("button", name="Agent").click()
+        page.get_by_role("button", name="Agent", exact=True).click()
         page.wait_for_timeout(300)
         page.locator("textarea").fill("Say hello in one short sentence.")
         page.get_by_role("button", name="Run").click()
@@ -169,7 +169,7 @@ def main() -> int:
         page.locator("button.fab").wait_for(state="visible", timeout=10000)
         page.get_by_text("Lead", exact=True).first.click()
         page.wait_for_timeout(300)
-        page.get_by_role("button", name="Agent").click()
+        page.get_by_role("button", name="Agent", exact=True).click()
         page.wait_for_timeout(600)
         try:
             ctx = page.get_by_text("System context", exact=False).first
@@ -357,6 +357,34 @@ def main() -> int:
             else:
                 print("edge click → Links tab with editable link")
             page.screenshot(path=str(SHOTS / "14_edge_selected.png"))
+
+            # delete an agent via the red trash in the sidebar tab bar: it must
+            # remove the node AND every link to/from it, and persist.
+            nodes_before = page.locator(".react-flow__node").count()
+            page.locator(".react-flow__node", has_text="New Agent").first.click()
+            page.wait_for_timeout(300)
+            trash = page.get_by_role("button", name="Delete agent New Agent")
+            if not trash.is_visible():
+                failures.append("delete (trash) button not shown for the selected agent")
+            else:
+                trash.click()  # the page dialog handler auto-accepts the confirm
+                page.wait_for_timeout(900)  # debounced save
+                nodes_after = page.locator(".react-flow__node").count()
+                edges_after = page.locator(".react-flow__edge path.react-flow__edge-path").count()
+                if nodes_after != nodes_before - 1:
+                    failures.append(f"agent not removed: {nodes_before} -> {nodes_after} nodes")
+                if edges_after != 0:
+                    failures.append(f"links to the deleted agent remain: {edges_after} edges")
+                # persisted?
+                teams = json.load(urllib.request.urlopen(f"{API}/api/teams"))["teams"]
+                graph = json.load(urllib.request.urlopen(f"{API}/api/teams/{teams[0]['id']}/graph"))
+                if len(graph["nodes"]) != nodes_before - 1 or len(graph["edges"]) != 0:
+                    failures.append(
+                        f"delete not persisted: {len(graph['nodes'])} nodes / {len(graph['edges'])} edges"
+                    )
+                if not failures or "delete" not in failures[-1]:
+                    print("delete agent → node + all its links removed and persisted")
+            page.screenshot(path=str(SHOTS / "19_after_delete.png"))
         else:
             failures.append("could not locate nodes for the edge test")
 

@@ -69,7 +69,7 @@ def main() -> int:
         # run a real task on the lead agent
         page.get_by_text("Lead", exact=True).first.click()
         page.wait_for_timeout(300)
-        page.get_by_role("button", name="Agent").click()
+        page.get_by_role("button", name="Agent", exact=True).click()
         page.wait_for_timeout(300)
         page.locator("textarea").first.fill(
             "Create a file named hello.txt containing exactly the word: banana . Use the write tool, then stop."

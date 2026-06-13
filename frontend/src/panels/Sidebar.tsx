@@ -31,9 +31,31 @@ function initialWidth(): number {
   return Number.isFinite(v) && v >= MIN_W && v <= MAX_W ? v : 360;
 }
 
+function TrashIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
 export default function Sidebar({
   selected,
   onUpdate,
+  onDelete,
   events,
   lifecycles,
   edges,
@@ -43,6 +65,7 @@ export default function Sidebar({
 }: {
   selected: AgentSpec | null;
   onUpdate: (s: AgentSpec) => void;
+  onDelete: (agentId: string) => void;
   events: BusEvent[];
   lifecycles: Record<string, AgentLifecycle>;
   edges: Edge[];
@@ -111,6 +134,30 @@ export default function Sidebar({
             {t.label}
           </button>
         ))}
+        {selected && (
+          <button
+            className="tab"
+            title={`Delete agent "${selected.name}"`}
+            aria-label={`Delete agent ${selected.name}`}
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Delete agent "${selected.name}"?\n\nThis removes the agent and all links to and from it. This cannot be undone.`
+                )
+              ) {
+                onDelete(selected.id);
+              }
+            }}
+            style={{
+              marginLeft: "auto",
+              display: "flex",
+              alignItems: "center",
+              color: "var(--danger)",
+            }}
+          >
+            <TrashIcon />
+          </button>
+        )}
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>

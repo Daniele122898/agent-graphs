@@ -259,6 +259,7 @@ export default function App() {
           <Sidebar
             selected={graph.selectedSpec}
             onUpdate={graph.updateSpec}
+            onDelete={graph.deleteNode}
             events={events}
             lifecycles={lifecycles}
             edges={graph.edges}

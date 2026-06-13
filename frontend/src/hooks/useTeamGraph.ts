@@ -104,6 +104,19 @@ export function useTeamGraph(teamId: string | null) {
     [setNodes]
   );
 
+  // Remove an agent AND every link to/from it (from any agent), then let the
+  // debounced save persist — leaving a dangling edge would fail backend
+  // structural validation, so the edge cleanup is mandatory, not cosmetic.
+  const deleteNode = useCallback(
+    (agentId: string) => {
+      setNodes((nds) => nds.filter((n) => n.id !== agentId));
+      setEdges((eds) => eds.filter((e) => e.source !== agentId && e.target !== agentId));
+      setSelectedId((cur) => (cur === agentId ? null : cur));
+      setSelectedEdgeId(null);
+    },
+    [setNodes, setEdges]
+  );
+
   const updateEdgeLabel = useCallback(
     (edgeId: string, label: string) =>
       setEdges((eds) => eds.map((e) => (e.id === edgeId ? { ...e, label } : e))),
@@ -145,6 +158,7 @@ export function useTeamGraph(teamId: string | null) {
     onConnect,
     onSelectionChange,
     addNode,
+    deleteNode,
     updateSpec,
     updateEdgeLabel,
     updateEdgeCurve,
