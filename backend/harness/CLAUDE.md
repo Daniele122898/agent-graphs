@@ -41,6 +41,11 @@ no caller ever holds a harness-specific worker object. A `Session` owns one
   never accumulates across hops).
 
 ## OpenCode harness specifics (the *why*, hard-won)
+- **Custom tools ship as real `.ts` files** under `opencode/tools/` (e.g.
+  `tools/ask_agent.ts`), loaded at import via `config.ASK_AGENT_TOOL_TS` and
+  staged into `<repo>/.opencode/tool/` at runtime — not embedded as Python
+  strings. The standalone copy under `specs/opencode-smoke/` is an independent
+  reproducible spike, NOT used by the app.
 - **Server cwd = the repo** (not a config home): OpenCode's `prompt_async` only
   starts a run when the session directory matches the server's project. Config
   is injected via `OPENCODE_CONFIG_CONTENT` (no `opencode.json` in the repo);
