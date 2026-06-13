@@ -30,7 +30,8 @@ def install(app: FastAPI) -> None:
         existing = app.state.sessions.active_sessions_for_repo(body.repo_path)
         Path(body.repo_path).mkdir(parents=True, exist_ok=True)
         session = app.state.sessions.create_session(
-            team_id=team.id, repo_path=body.repo_path, graph=team.graph, mode=body.mode
+            team_id=team.id, repo_path=body.repo_path, graph=team.graph, mode=body.mode,
+            harness=body.harness,
         )
         info = session.info().model_dump()
         info["warning"] = (

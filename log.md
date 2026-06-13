@@ -875,3 +875,22 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
 - Verified via the fake: a parking `question` turn surfaces a listable question
   with mapped options + waiting-on-user, and answering it resumes the run to
   completion + clears it (user_question/user_question_done on the bus). 145 green.
+
+### 2026-06-13 — Phase 5: ask_agent delegation for OpenCode
+
+- The OpenCode-side ask_agent.ts tool POSTs to a new `POST /internal/ask_agent`
+  (api/internal.py): localhost callback authenticated by a per-session token the
+  harness injects into the server's env. The endpoint resolves the session,
+  verifies the token, and calls `Harness.delegate` — the shared base path
+  (check_delegation guards → waiting-on-agent + a2a_message → run the target on
+  its persistent OpenCode session → reply). Guard violations come back as 409
+  with the corrective message (the tool surfaces it to the model).
+- Per-session harness choice now flows from launch (`LaunchSessionRequest.harness`
+  → create_session) and persists.
+- Verified: opencode delegate() via fake (lead→expert, a2a_message + message log,
+  neighbor-guard rejection); the /internal/ask_agent endpoint via TestClient
+  (token 403, valid 200 with the target's answer, non-neighbor 409, unknown
+  session 404) — built through the real create_app path with the fake connection.
+  148 green. Full live ask_agent loop (model → ask_agent.ts → endpoint) is a
+  documented manual step (the tool→callback-with-identity leg was proven in the
+  earlier smoke test; endpoint→delegate→target is now unit+integration tested).

@@ -198,3 +198,32 @@ async def test_ask_user_parks_and_resumes_on_answer(conn, fake_clock, repo):
     assert session.harness.list_questions(session) == []  # cleared
     await session.harness.shutdown(session)
     sub.cancel()
+
+
+async def test_delegate_runs_target_and_logs(conn, fake_clock, repo):
+    # lead -> expert delegation through the harness's base delegate() path
+    client = FakeOpenCodeClient({"expert": [[text_part("call it result.txt")]]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+
+    answer = await session.harness.delegate(session, "lead", "expert", "what file name?")
+    assert "result.txt" in answer
+    await asyncio.sleep(0.05)  # let the bus drain task process the published events
+    assert any(e["type"] == "a2a_message" and e["data"]["kind"] == "question" for e in events)
+    assert any(e["type"] == "a2a_message" and e["data"]["kind"] == "reply" for e in events)
+    logged = session.harness.message_log.for_session(session.id)
+    assert any(m["from_agent"] == "lead" and m["to_agent"] == "expert" for m in logged)
+    await session.harness.shutdown(session)
+    sub.cancel()
+
+
+async def test_delegate_enforces_neighbor_guard(conn, fake_clock, repo):
+    import pytest
+    from pydantic_ai import ModelRetry
+    client = FakeOpenCodeClient({"lead": [[text_part("x")]]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    with pytest.raises(ModelRetry):  # edge is lead->expert only
+        await session.harness.delegate(session, "expert", "lead", "reverse edge not allowed")
+    await session.harness.shutdown(session)
