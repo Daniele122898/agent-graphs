@@ -92,6 +92,21 @@ Environment variables override the file (`DEEPSEEK_API_KEY`,
 `AGENT_GRAPHS_LMSTUDIO_URL`). Without a key the backend still runs; the
 DeepSeek entry in the UI just shows "not configured" with a hint.
 
+### Choosing the agent harness
+
+Pick the harness **per session at launch** — both the first-run "Launch a
+session" screen and the header's **"+ Session"** popover have an **"Agent
+harness"** dropdown (`native` | `opencode`). The choice is persisted per
+session, and a session on OpenCode shows an `opencode` chip in the header. To
+change the *default* for new sessions, set a top-level key in `config.yml`:
+
+```yaml
+harness: opencode   # default for new launches; omit/"native" uses the built-in engine
+```
+
+`opencode` requires the `opencode` binary installed (the harness runs it
+headless) and, for local-model agents, LM Studio running.
+
 ## Running
 
 Two terminals.

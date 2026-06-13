@@ -960,3 +960,15 @@ adversarial verification) confirmed real issues; fixed the substantive ones:
 - Reconfigure-on-edit (8a) already addressed the review's "graph edit not
   applied" finding. New tests: error path, stop-cancels, listener-death,
   answer-count, current_chain. 155 green.
+
+### 2026-06-13 — Fix: harness selector missing from the "+ Session" popover
+
+- The harness dropdown was only added to Onboarding (first-launch); the header's
+  "+ Session" flow is a SEPARATE component (SessionSwitcher) and launched without
+  a harness. Added the "Agent harness" select there too (calls launchSession with
+  it). frontend/CLAUDE.md now warns the two launch forms must stay in sync;
+  verify_ui asserts the "+ Session" popover carries the selector (browser-verified).
+- Doc sweep for the integration: api/CLAUDE.md now lists the providers + internal
+  endpoint modules; README gained a "Choosing the agent harness" section
+  (per-session dropdowns + config.yml `harness:` default); tests/CLAUDE.md
+  documents the opencode test suites + the fake server.

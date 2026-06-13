@@ -63,6 +63,18 @@ def main() -> int:
         page.wait_for_timeout(800)
         page.screenshot(path=str(SHOTS / "02_control_room.png"))
 
+        # the "+ Session" popover (SessionSwitcher) must ALSO carry the harness
+        # selector — distinct launch path from onboarding.
+        page.get_by_role("button", name="+ Session").click()
+        page.wait_for_timeout(300)
+        sw_harness = page.locator("label:has(span.field-label:text-is('Agent harness')) select")
+        if not sw_harness.is_visible():
+            failures.append("Agent harness selector missing from the '+ Session' popover")
+        else:
+            print("'+ Session' popover has the harness selector")
+        page.get_by_role("button", name="Cancel").click()
+        page.wait_for_timeout(200)
+
         # FAB bottom-left?
         box = page.locator("button.fab").bounding_box()
         vp = page.viewport_size
