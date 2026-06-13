@@ -972,3 +972,15 @@ adversarial verification) confirmed real issues; fixed the substantive ones:
   endpoint modules; README gained a "Choosing the agent harness" section
   (per-session dropdowns + config.yml `harness:` default); tests/CLAUDE.md
   documents the opencode test suites + the fake server.
+
+### 2026-06-13 — Live OpenCode harness browser E2E (capstone verification)
+
+- scripts/verify_opencode_ui.py drives the REAL UI against a backend wired to
+  the real OpenCode server + LM Studio (qwen3-1.7b): onboarding → launch an
+  OPENCODE session → run a task on the lead. PASSED: the "opencode harness" chip
+  showed, the agent's transcript rendered thinking → `write` tool call → "Wrote
+  file successfully" (translated from OpenCode SSE onto our bus, identical to
+  native), and hello.txt=banana was actually created. Screenshot:
+  /tmp/ag_shots/oc_02_after_run.png.
+- Confirmed clean teardown: no stray `opencode serve` processes after the E2E
+  backend exited (the lifespan harness.shutdown fix from Phase 8b held).

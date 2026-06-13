@@ -15,6 +15,15 @@ When you add UI worth checking, extend this script rather than eyeballing once.
 Keep it resilient: wait on elements, not fixed sleeps where avoidable, and never
 wait on `networkidle` (the SSE `/events` stream never goes idle).
 
+- `verify_opencode_ui.py` — the **live** OpenCode-harness browser E2E. Unlike
+  `verify_ui.py` (native, dead-model, structure-only), it needs LM Studio with a
+  small tool-capable model (qwen/qwen3-1.7b), the `opencode` binary, and a
+  backend started with `AGENT_GRAPHS_CALLBACK_URL` pointing at itself. It drives
+  the real UI (onboarding → launch an **opencode** session → run a task) and
+  asserts the agent did real work (created `hello.txt`) with the run visible in
+  the transcript + the "opencode harness" chip. Run a backend (real opencode
+  harness) + Vite, then `AG_UI_URL=… verify_opencode_ui.py`. Verified passing
+  2026-06-13 (qwen3-1.7b wrote the file via OpenCode's `write` tool).
 - `scripted_backend.py` — a backend whose agents run a scripted `FunctionModel`
   (no LM Studio needed). Use it to browser-verify agent *flows* — e.g. the
   ask_user question card — deterministically: start it on :8001, point Vite at
