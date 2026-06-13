@@ -136,7 +136,6 @@ export default function Sidebar({
         ))}
         {selected && (
           <button
-            className="tab"
             title={`Delete agent "${selected.name}"`}
             aria-label={`Delete agent ${selected.name}`}
             onClick={() => {
@@ -149,11 +148,25 @@ export default function Sidebar({
               }
             }}
             style={{
+              // compact icon button hugging the right edge — NOT a .tab (that's
+              // flex:1, which stretches it into a full column with dead space
+              // to the right of the icon).
               marginLeft: "auto",
+              flex: "0 0 auto",
+              alignSelf: "stretch",
               display: "flex",
               alignItems: "center",
+              justifyContent: "center",
+              padding: "0 4px",
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
               color: "var(--danger)",
+              opacity: 0.85,
+              transition: "opacity 0.13s ease",
             }}
+            onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+            onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.85")}
           >
             <TrashIcon />
           </button>
