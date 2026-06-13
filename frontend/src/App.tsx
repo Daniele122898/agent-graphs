@@ -12,6 +12,26 @@ import type { SessionInfo } from "./lib/types";
 
 const LS_KEY = "ag.activeSessionId";
 
+// A crisp circled-"i" cue that a chip has an explanatory tooltip on hover.
+// (The unicode ⓘ glyph renders too thin/faint; this SVG uses currentColor so it
+// picks up the chip's text color and stays legible.)
+function InfoIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+      style={{ marginLeft: 5, verticalAlign: "-2px", opacity: 0.8, flexShrink: 0 }}
+    >
+      <circle cx="8" cy="8" r="6.6" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="8" cy="5" r="1" fill="currentColor" />
+      <rect x="7.25" y="7" width="1.5" height="4.4" rx="0.75" fill="currentColor" />
+    </svg>
+  );
+}
+
 // The control room. Session-centric: you launch a session (a team bound to a
 // repo) and operate it. Nothing is auto-created — when there are no sessions,
 // the onboarding flow guides you through creating a team and launching one.
@@ -143,7 +163,7 @@ export default function App() {
                 style={{ cursor: "pointer" }}
               >
                 {session.mode}
-                <span aria-hidden style={{ marginLeft: 5, opacity: 0.5, fontSize: 11 }}>ⓘ</span>
+                <InfoIcon />
               </button>
               <span
                 className={(session.harness ?? "native") === "opencode" ? "chip chip-primary" : "chip"}
@@ -155,7 +175,7 @@ export default function App() {
                 style={{ cursor: "help" }}
               >
                 {session.harness ?? "native"} harness
-                <span aria-hidden style={{ marginLeft: 5, opacity: 0.5, fontSize: 11 }}>ⓘ</span>
+                <InfoIcon />
               </span>
               {/* sliding-pill segmented toggle between the canvas + task board */}
               <div
