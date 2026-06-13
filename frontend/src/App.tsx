@@ -128,7 +128,14 @@ export default function App() {
               </Button>
               <button
                 className="chip"
-                title="LLM execution gateway — serial runs one model call at a time (low-spec)"
+                title={
+                  "Execution mode (click to toggle) — parallel: model calls run "
+                  + "concurrently; serial: one model call at a time, for low-spec "
+                  + "machines / a single local model."
+                  + (session.harness === "opencode"
+                      ? " (Applies to the native harness; OpenCode manages its own concurrency.)"
+                      : "")
+                }
                 onClick={() => {
                   const next = session.mode === "serial" ? "parallel" : "serial";
                   api.setMode(next).then(setSession);
@@ -137,21 +144,59 @@ export default function App() {
               >
                 {session.mode}
               </button>
-              {session.harness === "opencode" && (
-                <span
-                  className="chip chip-primary"
-                  title="This session runs on a headless OpenCode server (not the native engine)"
-                >
-                  opencode
-                </span>
-              )}
-              <div style={{ display: "flex", background: "var(--surface-2)", borderRadius: "var(--r-sm)", padding: 2 }}>
+              <span
+                className={(session.harness ?? "native") === "opencode" ? "chip chip-primary" : "chip"}
+                title={
+                  (session.harness ?? "native") === "opencode"
+                    ? "OpenCode harness — this session's agents run on a headless OpenCode server"
+                    : "Native harness — this session's agents run on the built-in Pydantic AI engine"
+                }
+              >
+                {session.harness ?? "native"} harness
+              </span>
+              {/* sliding-pill segmented toggle between the canvas + task board */}
+              <div
+                style={{
+                  position: "relative",
+                  display: "flex",
+                  background: "var(--surface-2)",
+                  borderRadius: 999,
+                  padding: 3,
+                  width: 188,
+                  border: "1px solid var(--border)",
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 3,
+                    bottom: 3,
+                    left: 3,
+                    width: "calc(50% - 3px)",
+                    borderRadius: 999,
+                    background: "var(--primary)",
+                    boxShadow: "var(--shadow-sm)",
+                    transform: view === "board" ? "translateX(100%)" : "translateX(0)",
+                    transition: "transform 0.18s cubic-bezier(0.4, 0, 0.2, 1)",
+                  }}
+                />
                 {(["canvas", "board"] as const).map((v) => (
                   <button
                     key={v}
                     onClick={() => setView(v)}
-                    className={view === v ? "btn btn-sm btn-primary" : "btn btn-sm btn-ghost"}
-                    style={{ boxShadow: "none" }}
+                    style={{
+                      position: "relative",
+                      zIndex: 1,
+                      flex: 1,
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      fontWeight: 600,
+                      fontSize: 13,
+                      padding: "6px 0",
+                      color: view === v ? "#fff" : "var(--text-muted)",
+                      transition: "color 0.18s ease",
+                    }}
                   >
                     {v === "canvas" ? "Canvas" : "Tasks"}
                   </button>
