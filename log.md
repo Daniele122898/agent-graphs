@@ -894,3 +894,13 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   148 green. Full live ask_agent loop (model → ask_agent.ts → endpoint) is a
   documented manual step (the tool→callback-with-identity leg was proven in the
   earlier smoke test; endpoint→delegate→target is now unit+integration tested).
+
+### 2026-06-13 — Phase 6: mocked E2E parity for OpenCode (no LLM/server)
+
+- tests/_fake_opencode.py (deterministic in-process fake) + suites covering the
+  OpenCode harness at every level: run/submit/history/usage/stop/reviewer/nudge
+  + ask_user park-resume + delegate (test_opencode_harness.py), the
+  /internal/ask_agent endpoint (test_internal.py), and a full API-level task run
+  through create_app (test_opencode_e2e.py: launch opencode session → task →
+  done → history rows + usage via the same HTTP surface as native). 149 green,
+  deterministic, no model or subprocess.
