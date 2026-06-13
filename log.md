@@ -817,3 +817,31 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   full stack; migration proven idempotent on a copy of the real db.sqlite.
 - **Reversibility:** additive; the native path is the old code behind a thin
   interface.
+
+### 2026-06-13 — Phase 2: OpenCode config generation + server lifecycle
+
+- **What:** `backend/harness/opencode/` — `config.py` builds `opencode.json`
+  from a TeamGraph (one OpenCode agent per AgentSpec, model id translation,
+  capability→permission mapping, OpenCode-flavored prompt, the ask_agent.ts
+  delegation tool); `server.py` (`OpenCodeServer`) spawns one `opencode serve`
+  per session, waits for readiness, supports reconfigure (restart on graph
+  change) + clean shutdown.
+- **Key decisions:**
+  - **Don't litter the user's repo**: the server's cwd is a dedicated temp
+    *config home* (opencode.json + .opencode/tool/ live there); agent SESSIONS
+    are scoped to the repo via `POST /session?directory=<repo>`. Verified live:
+    file ops happen in the repo, config stays out of it.
+  - Can't reuse `build_instructions` verbatim — its tool guidance names native
+    tools (ask_user/write_file/edit-tokens) that don't exist in OpenCode. A
+    separate `build_opencode_prompt` reuses the shared identity (persona, team
+    context, capability summary, neighbors, environment) + OpenCode-specific
+    tool guidance (read/edit/write/bash/`question`/`ask_agent`).
+  - Permission mapping sets **`question: allow`** (OpenCode defaults DENY → would
+    kill ask_user) and **`task: deny`** (we delegate via our own ask_agent, not
+    OpenCode subagents); webfetch/websearch denied to match native.
+  - ask_agent.ts reads its callback wiring (URL, token, our session id) from env
+    the server injects; passes `ctx.agent` (our agent id) as the asker.
+- **Verified:** 9 pure config-gen unit tests; LIVE boot confirmed both agents
+  load with correct model/permissions, ask_agent registered, repo-scoped
+  session created, clean shutdown. Full suite 138 green. Live server boot is
+  manual (needs the binary) — not in the fast suite, like test_live_smoke.
