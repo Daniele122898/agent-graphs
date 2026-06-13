@@ -863,3 +863,15 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   models.dev ids / its gateway free model) — documented as a config-gen TODO
   for the opencode harness + DeepSeek; native harness unaffected.
 - Full suite 144 green (fake-server tests unaffected by the server change).
+
+### 2026-06-13 — Phase 4: ask_user (questions) for OpenCode
+
+- Translate OpenCode question events: `question.asked` → cache + `user_question`
+  bus event + waiting-on-user lifecycle; `question.replied`/`.rejected` →
+  `user_question_done` + back to running. `list_questions` reads the cache (sync,
+  no round-trip); `answer_question` (now async across the Harness interface →
+  the answer endpoint awaits it) maps our one-string-per-question to OpenCode's
+  `{answers: string[][]}` and POSTs the reply.
+- Verified via the fake: a parking `question` turn surfaces a listable question
+  with mapped options + waiting-on-user, and answering it resumes the run to
+  completion + clears it (user_question/user_question_done on the bus). 145 green.

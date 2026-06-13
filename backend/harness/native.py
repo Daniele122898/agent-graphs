@@ -252,7 +252,7 @@ class NativeHarness(Harness):
     def list_questions(self, session: "Session") -> list[dict]:
         return session.questions.list_open()
 
-    def answer_question(self, session: "Session", question_id: str, answers: list[str]) -> bool:
+    async def answer_question(self, session: "Session", question_id: str, answers: list[str]) -> bool:
         return session.questions.answer(question_id, answers)
 
     def usage(self, session: "Session", agent_id: str) -> dict:

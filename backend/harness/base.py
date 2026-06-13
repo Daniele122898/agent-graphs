@@ -163,7 +163,7 @@ class Harness(ABC):
         """All unanswered ask_user questions in the session."""
 
     @abstractmethod
-    def answer_question(self, session: "Session", question_id: str, answers: list[str]) -> bool:
+    async def answer_question(self, session: "Session", question_id: str, answers: list[str]) -> bool:
         """Resolve a pending question; False if unknown. Raises ValueError on a
         question/answer count mismatch."""
 

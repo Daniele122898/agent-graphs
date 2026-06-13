@@ -99,6 +99,10 @@ class _Runtime:
         self.agents: dict[str, _AgentState] = {}
         self.by_oc: dict[str, str] = {}
         self.listener: asyncio.Task | None = None
+        # Open ask_user questions, cached from question.asked SSE events
+        # (keyed by OpenCode question id) so the sync list endpoint can read
+        # them without an HTTP round-trip.
+        self.open_questions: dict[str, dict] = {}
 
 
 class OpenCodeHarness(Harness):
@@ -216,6 +220,13 @@ class OpenCodeHarness(Harness):
                     "input_tokens": sum(int(t.get("input", 0)) for t in st._msg_tokens.values()),
                     "output_tokens": sum(int(t.get("output", 0)) for t in st._msg_tokens.values()),
                 }
+        elif etype == "question.asked":
+            self._on_question_asked(session, rt, agent_id, props)
+        elif etype in ("question.replied", "question.rejected"):
+            qid = props.get("id") or props.get("requestID")
+            rt.open_questions.pop(qid, None)
+            session.bus.publish("user_question_done", {"id": qid, "agent_id": agent_id})
+            self._lifecycle(session, agent_id, "running")
         elif etype == "session.error":
             st.error = json.dumps(props.get("error", props))[:500]
             bus.publish("agent_error", {"agent_id": agent_id, "error": st.error})
@@ -228,6 +239,19 @@ class OpenCodeHarness(Harness):
                 bus.publish("agent_done", {"agent_id": agent_id, "output": st.last_output})
                 self._lifecycle(session, agent_id, "idle")
             st.idle.set()
+
+    def _on_question_asked(self, session: "Session", rt: _Runtime, agent_id: str, props: dict) -> None:
+        qid = props.get("id") or props.get("requestID")
+        if not qid:
+            return
+        questions = [
+            {"question": q.get("question", ""), "options": [o.get("label", "") for o in (q.get("options") or [])]}
+            for q in (props.get("questions") or [])
+        ]
+        payload = {"id": qid, "agent_id": agent_id, "questions": questions, "created_at": ""}
+        rt.open_questions[qid] = payload
+        session.bus.publish("user_question", payload)
+        self._lifecycle(session, agent_id, "waiting-on-user")
 
     def _emit_part(self, bus, st: _AgentState, agent_id: str, part: dict) -> None:
         ptype = part.get("type")
@@ -398,20 +422,20 @@ class OpenCodeHarness(Harness):
 
     def list_questions(self, session: "Session") -> list[dict]:
         rt = self._runtimes.get(session.id)
-        if rt is None or rt.conn.client is None:
+        if rt is None:
             return []
-        # client.list_questions is async; the endpoint is sync. We cache the
-        # latest open questions from the SSE listener instead — see _handle_event
-        # question.asked (Phase 4). For now return the cached list.
-        return getattr(rt, "open_questions", [])
+        return list(rt.open_questions.values())
 
-    def answer_question(self, session: "Session", question_id: str, answers: list[str]) -> bool:
-        # Bridged synchronously to the async client via the running loop (Phase 4).
+    async def answer_question(self, session: "Session", question_id: str, answers: list[str]) -> bool:
         rt = self._runtimes.get(session.id)
-        if rt is None or rt.conn.client is None:
+        if rt is None or question_id not in rt.open_questions:
             return False
-        fut = asyncio.ensure_future(rt.conn.client.reply_question(question_id, [[a] for a in answers]))
-        return True if fut else False
+        # OpenCode wants one answer-array per question; our UI sends one string
+        # per question, so wrap each as a single selection.
+        ok = await rt.conn.client.reply_question(question_id, [[a] for a in answers])
+        if ok:
+            rt.open_questions.pop(question_id, None)
+        return ok
 
     def usage(self, session: "Session", agent_id: str) -> dict:
         rt = self._runtimes.get(session.id)

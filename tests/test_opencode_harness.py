@@ -160,3 +160,41 @@ async def test_reviewer_parses_json_verdict(conn, fake_clock, repo):
     verdict = await session.harness.run_reviewer(session, "expert", "the task", "the result")
     assert verdict.approved is True and "good" in verdict.critique
     await session.harness.shutdown(session)
+
+
+async def test_ask_user_parks_and_resumes_on_answer(conn, fake_clock, repo):
+    client = FakeOpenCodeClient({
+        "lead": [{"question": {"question": "Which color?", "header": "color",
+                               "options": [{"label": "red"}, {"label": "blue"}]}}],
+    })
+    session = _opencode_session(conn, fake_clock, repo, client)
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+
+    # the run parks on the question — start it without awaiting
+    run = asyncio.create_task(session.harness.run_to_completion(session, "lead", "pick a color"))
+
+    # the question surfaces (cached, listable) + waiting-on-user lifecycle
+    q = None
+    for _ in range(100):
+        qs = session.harness.list_questions(session)
+        if qs:
+            q = qs[0]; break
+        await asyncio.sleep(0.02)
+    assert q is not None, "question never surfaced"
+    assert q["agent_id"] == "lead"
+    assert q["questions"][0]["question"] == "Which color?"
+    assert q["questions"][0]["options"] == ["red", "blue"]
+    assert any(e["type"] == "user_question" for e in events)
+    assert session.registry.lifecycle("lead") == "waiting-on-user"
+
+    # answer it → the parked run resumes and completes
+    ok = await session.harness.answer_question(session, q["id"], ["blue"])
+    assert ok
+    out = await asyncio.wait_for(run, timeout=2)
+    assert "blue" in out
+    assert any(e["type"] == "user_question_done" for e in events)
+    assert session.harness.list_questions(session) == []  # cleared
+    await session.harness.shutdown(session)
+    sub.cancel()

@@ -37,6 +37,7 @@ class FakeOpenCodeClient:
         self._agent_of: dict[str, str] = {}
         self._turn: dict[str, int] = defaultdict(int)
         self._questions: list[dict] = []
+        self._pending: dict[str, str] = {}  # qid -> session_id parked on it
         self.replied: list[tuple[str, list]] = []
         self._n = 0
         self._closed = False
@@ -53,6 +54,18 @@ class FakeOpenCodeClient:
         idx = self._turn[session_id]
         self._turn[session_id] += 1
         turn = turns[min(idx, len(turns) - 1)] if turns else [text_part("ok")]
+
+        # A question turn parks: emit question.asked and DO NOT go idle until
+        # reply_question() is called (which then continues + goes idle).
+        if isinstance(turn, dict) and "question" in turn:
+            await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "busy"}}})
+            self._n += 1
+            qid = f"que_fake{self._n}"
+            self._questions.append({"id": qid, "sessionID": session_id, "questions": [turn["question"]]})
+            self._pending[qid] = session_id
+            await self._events.put({"type": "question.asked", "properties": {"id": qid, "sessionID": session_id, "questions": [turn["question"]]}})
+            return
+
         parts = turn["parts"] if isinstance(turn, dict) else turn
         todos = turn.get("todos") if isinstance(turn, dict) else None
 
@@ -92,6 +105,19 @@ class FakeOpenCodeClient:
     async def reply_question(self, request_id: str, answers: list) -> bool:
         self.replied.append((request_id, answers))
         self._questions = [q for q in self._questions if q.get("id") != request_id]
+        sid = self._pending.pop(request_id, None)
+        if sid is None:
+            return True
+        # the run resumes: announce the reply, then complete with a final text
+        chosen = answers[0][0] if answers and answers[0] else ""
+        await self._events.put({"type": "question.replied", "properties": {"id": request_id, "sessionID": sid}})
+        assistant = {"info": {"role": "assistant", "id": f"msg_{sid}_q", "tokens": {"input": 5, "output": 3}},
+                     "parts": [text_part(f"proceeding with {chosen}")]}
+        self._messages[sid].append(assistant)
+        await self._events.put({"type": "message.part.updated", "properties": {"sessionID": sid, "part": assistant["parts"][0]}})
+        await self._events.put({"type": "message.updated", "properties": {"sessionID": sid, "info": assistant["info"]}})
+        await self._events.put({"type": "session.status", "properties": {"sessionID": sid, "status": {"type": "idle"}}})
+        await self._events.put({"type": "session.idle", "properties": {"sessionID": sid}})
         return True
 
     async def events(self):

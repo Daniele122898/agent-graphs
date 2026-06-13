@@ -17,12 +17,12 @@ def install(app: FastAPI) -> None:
         return {"questions": session.harness.list_questions(session)}
 
     @app.post("/api/questions/{question_id}/answer")
-    def answer_question(question_id: str, body: AnswerRequest, session_id: str | None = None) -> dict:
+    async def answer_question(question_id: str, body: AnswerRequest, session_id: str | None = None) -> dict:
         """Resolve a pending ask_user call; the parked run resumes with these
         answers as the tool result."""
         session = wiring.resolve_session(app, session_id)
         try:
-            ok = session.harness.answer_question(session, question_id, body.answers)
+            ok = await session.harness.answer_question(session, question_id, body.answers)
         except ValueError as e:
             raise HTTPException(422, str(e))
         if not ok:
