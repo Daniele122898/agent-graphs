@@ -784,3 +784,36 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   contains context files (needs a per-run rglob over the repo — costly on big
   trees). Escalate to that only if the wording fix proves insufficient.
 - **Reversibility:** wording-only.
+
+### 2026-06-13 — Phase 1: Harness abstraction + NativeHarness (OpenCode integration)
+
+- **What:** introduced `backend/harness/` — a `Harness` ABC keyed by `agent_id`
+  that every agent operation (run/interject, run-to-completion, stop, history/
+  clear/summarize, ask_user, usage, delegate) routes through. `NativeHarness`
+  wraps today's pydantic-ai machinery with ZERO behavior change; the API +
+  `wiring.make_task_runner` now call `session.harness.*`. `SessionManager`
+  builds the harness per session (persisted `sessions.harness` column, default
+  from config; additive non-destructive migration for existing DBs).
+- **Why:** the seam that lets a session run on either our harness or an
+  OpenCode-backed one, switchable per session, side by side.
+- **Key decisions:**
+  - Interface keyed by agent_id (no `RunningAgent` leaks) — OpenCode has no such
+    object.
+  - `session.bus` + `session.registry` stay UNIVERSAL (the event/lifecycle
+    contract both harnesses publish identically); `gateway/usage/questions`
+    become native-harness internals the OpenCode harness leaves idle. Kept them
+    on Session (unused-for-opencode) rather than moving, to minimize Phase-1
+    risk.
+  - `wiring.resolve_model` re-exported and resolved at call time by the native
+    harness, so the long-standing `monkeypatch.setattr(wiring,"resolve_model")`
+    test seam is unchanged — zero test churn beyond pointing one white-box test
+    (test_model_switch) at `session.harness._worker`.
+  - `Harness.delegate()` implemented once on the base (shared `check_delegation`
+    guards + run_to_completion) — native agents still use their in-process
+    ask_agent tool; this base path is what the OpenCode ask_agent callback will
+    reuse, so guard behavior is identical across harnesses.
+- **Verified:** 130 tests green (was 122 + 8 new harness-seam tests); live
+  backend reloaded clean, existing session reports harness=native through the
+  full stack; migration proven idempotent on a copy of the real db.sqlite.
+- **Reversibility:** additive; the native path is the old code behind a thin
+  interface.

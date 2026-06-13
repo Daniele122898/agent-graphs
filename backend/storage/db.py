@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     mode        TEXT NOT NULL DEFAULT 'parallel',  -- parallel | serial
     status      TEXT NOT NULL DEFAULT 'active',    -- active | paused | stopped
     created_at  TEXT NOT NULL DEFAULT '',
+    harness     TEXT NOT NULL DEFAULT 'native',    -- native | opencode
     FOREIGN KEY (team_id) REFERENCES teams (id)
 );
 
@@ -111,7 +112,19 @@ def connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     """Apply the schema idempotently. Safe to call on every startup."""
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive, non-destructive column migrations for existing databases.
+
+    ``CREATE TABLE IF NOT EXISTS`` never alters an existing table, so a new
+    column added to the schema above must also be back-filled here for the
+    user's pre-existing ``db.sqlite``. Each step is guarded by a column check.
+    """
+    if "harness" not in column_names(conn, "sessions"):
+        conn.execute("ALTER TABLE sessions ADD COLUMN harness TEXT NOT NULL DEFAULT 'native'")
 
 
 def table_names(conn: sqlite3.Connection) -> set[str]:

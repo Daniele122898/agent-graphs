@@ -21,4 +21,5 @@ def install(app: FastAPI) -> None:
 
     @app.get("/api/stats/usage/{agent_id}")
     def stats_usage(agent_id: str, session_id: str | None = None) -> dict:
-        return wiring.resolve_session(app, session_id).usage.get(agent_id)
+        session = wiring.resolve_session(app, session_id)
+        return session.harness.usage(session, agent_id)

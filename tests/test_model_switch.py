@@ -4,27 +4,18 @@ rebuild the worker when the spec changed — carrying history forward."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from pydantic_ai.messages import TextPart
 
 import backend.wiring as wiring
-from backend.storage.agent_state import AgentStateStore
-from backend.agents.a2a import MessageLog
 from backend.domain.models import AgentSpec, Capabilities, GraphNode, TeamGraph
 from backend.runtime.sessions import SessionManager
 from backend.storage.teams import TeamStore
 from tests.conftest import make_sequence_model
 
 
-def _fake_app(conn):
-    return SimpleNamespace(
-        state=SimpleNamespace(agent_state=AgentStateStore(conn), messages=MessageLog(conn))
-    )
-
-
 async def test_changing_model_rebuilds_worker(conn, fake_clock, repo, monkeypatch):
-    # every resolve_model call returns a fresh scripted model (id irrelevant here)
+    # every resolve_model call returns a fresh scripted model (id irrelevant
+    # here). The native harness resolves via wiring.resolve_model at call time.
     monkeypatch.setattr(wiring, "resolve_model", lambda s: make_sequence_model([[TextPart("ok")]]))
 
     graph = TeamGraph(nodes=[GraphNode(spec=AgentSpec(
@@ -33,13 +24,13 @@ async def test_changing_model_rebuilds_worker(conn, fake_clock, repo, monkeypatc
     team = TeamStore(conn, clock=fake_clock).create("T", graph)
     session = SessionManager(conn, clock=fake_clock).create_session(
         team_id=team.id, repo_path=repo, graph=graph)
-    app = _fake_app(conn)
+    harness = session.harness  # the NativeHarness; _worker is the get-or-create path
 
-    ra1 = await wiring.get_or_create_running(app, session, "lead")
+    ra1 = await harness._worker(session, "lead")
     assert ra1.spec.model == "lmstudio:model-a"
 
     # unchanged spec → same worker reused
-    ra_same = await wiring.get_or_create_running(app, session, "lead")
+    ra_same = await harness._worker(session, "lead")
     assert ra_same is ra1
 
     # the user switches the model (mimic _apply_team_graph swapping the graph)
@@ -48,7 +39,7 @@ async def test_changing_model_rebuilds_worker(conn, fake_clock, repo, monkeypatc
         capabilities=Capabilities.from_level("read")))])
     session.graph = new_graph
 
-    ra2 = await wiring.get_or_create_running(app, session, "lead")
+    ra2 = await harness._worker(session, "lead")
     assert ra2 is not ra1, "worker was not rebuilt after model change"
     assert ra2.spec.model == "lmstudio:model-b"
 

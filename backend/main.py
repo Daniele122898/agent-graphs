@@ -39,13 +39,17 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
         conn = db_module.connect(db_path)
         db_module.init_db(conn)
         teams = TeamStore(conn)
-        sessions = SessionManager(conn)
+        agent_state = AgentStateStore(conn)
+        messages = MessageLog(conn)
+        # The harness persists agent history/usage through these stores, so the
+        # SessionManager shares the very instances the rest of the app uses.
+        sessions = SessionManager(conn, state_store=agent_state, message_log=messages)
 
         app.state.conn = conn
         app.state.teams = teams
         app.state.sessions = sessions
-        app.state.agent_state = AgentStateStore(conn)
-        app.state.messages = MessageLog(conn)
+        app.state.agent_state = agent_state
+        app.state.messages = messages
         app.state.tasks = TaskStore(conn)
         app.state.task_runs = set()
 

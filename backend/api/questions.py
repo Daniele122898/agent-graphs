@@ -14,7 +14,7 @@ def install(app: FastAPI) -> None:
         """All unanswered ask_user questions in this session (for page loads;
         live arrivals come over SSE as `user_question` events)."""
         session = wiring.resolve_session(app, session_id)
-        return {"questions": session.questions.list_open()}
+        return {"questions": session.harness.list_questions(session)}
 
     @app.post("/api/questions/{question_id}/answer")
     def answer_question(question_id: str, body: AnswerRequest, session_id: str | None = None) -> dict:
@@ -22,7 +22,7 @@ def install(app: FastAPI) -> None:
         answers as the tool result."""
         session = wiring.resolve_session(app, session_id)
         try:
-            ok = session.questions.answer(question_id, body.answers)
+            ok = session.harness.answer_question(session, question_id, body.answers)
         except ValueError as e:
             raise HTTPException(422, str(e))
         if not ok:
