@@ -1,0 +1,25 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "lmstudio": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LM Studio (local)",
+      "options": { "baseURL": "http://127.0.0.1:1234/v1" },
+      "models": {
+        "qwen/qwen3.5-9b": { "name": "Qwen3.5 9B (local)" }
+      }
+    }
+  },
+  "agent": {
+    "smoke": {
+      "mode": "primary",
+      "model": "lmstudio/qwen/qwen3.5-9b",
+      "prompt": "You are a focused software agent in a smoke test. Use your tools to do exactly what is asked, then stop. When you need a teammate's expertise, call the ask_agent tool with their id and your question.",
+      "tools": {
+        "task": false,
+        "webfetch": false,
+        "websearch": false
+      }
+    }
+  }
+}

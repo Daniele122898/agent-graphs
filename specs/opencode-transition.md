@@ -239,3 +239,88 @@ instead (permission rulesets, steer/queue delivery, json_schema gates).
 { "tokens": {"input": n, "output": n, "reasoning": n,
              "cache": {"read": n, "write": n}}, "cost": n, … }
 ```
+
+---
+
+## 9. Smoke test results — 2026-06-13 (branch `opencode-harness`)
+
+A live throwaway spike (under `/tmp/oc_smoke`, all artifacts disposable) ran the
+spike plan from §7 against `opencode 1.16.2` + LM Studio `qwen/qwen3.5-9b`. The
+setup: an `opencode.json` with the LM Studio openai-compatible provider + one
+`smoke` agent (replaced prompt, `task`/`webfetch`/`websearch` disabled), a
+custom `.opencode/tool/ask_agent.ts` that `fetch()`es a local Python stub, and
+the stub logging every call. **Verdict: the core feasibility is PROVEN.** Each
+finding below was observed directly, not inferred.
+
+### PASS — the make-or-break results
+- **Config + provider wiring loads clean.** `GET /config` showed the `lmstudio`
+  provider and `smoke` agent; serve log: `pkg=@ai-sdk/openai-compatible using
+  bundled provider` — the openai-compatible npm provider is **bundled**, no
+  `npm install` needed.
+- **The small local model tool-calls reliably inside opencode's loop.** Prompt
+  "create hello.txt with banana" → the model called the native `write` tool,
+  opencode executed it, the file appeared. (Sanity-checked the model in
+  isolation too: a direct LM Studio `/v1/chat/completions` with a tool returned
+  a clean `tool_calls` response.) This was the #1 risk in §6 — **retired.**
+- **Custom-tool callback (the `ask_agent` enabler) works end to end WITH
+  identity.** The model called our `ask_agent.ts`; it called back into the
+  Python stub; the stub received `{"target_id": "reviewer", "question": "...",
+  "sessionID": "ses_...", "agent": "smoke"}` — i.e. the calling **session and
+  agent identity are available to the tool** (from `ctx`), exactly what our
+  neighbor/cycle/depth guards + persistent-target driving need. The model then
+  relayed the stub's answer. Custom tool registered without `npm install`
+  (serve log: `service=tool.registry status=completed ask_agent`).
+- **Per-agent prompt replacement + tool disabling loads** (agent's `prompt` came
+  back replaced; `task`/`webfetch`/`websearch` set false in config).
+
+### How to actually drive a run (API gotchas — cost real time to find)
+- **Use `POST /session/{id}/prompt_async` (fire-and-forget) or the synchronous
+  `POST /session/{id}/message`.** Both reliably start a run on a fresh session.
+  - `prompt_async` returns an **empty body** (don't JSON-parse it) and runs in
+    the background; poll `GET /session/{id}/message` or the SSE bus for results.
+    A trivial prompt produced assistant text in ~3s. **This is the production
+    path** for our streaming control room.
+  - `/session/{id}/message` blocks until the whole run finishes and returns the
+    AssistantMessage (the maintained SDK's `chat`). Fine for scripts, wrong for
+    a streaming UI.
+  - Body shape that worked: `{"providerID":"lmstudio","modelID":"qwen/qwen3.5-9b",
+    "agent":"smoke","parts":[{"type":"text","text":"..."}]}`.
+- **DO NOT use `POST /api/session/{id}/prompt` to START a run.** It returns 200
+  with `{admittedSeq, delivery:"steer"}` but on a *fresh* session it produced
+  **zero messages / no run** — `delivery:"steer"` steers an *in-flight* run; it
+  is not how you kick one off. This silently ate the first test (looked like a
+  hung model; was actually nothing running).
+- Session create that worked: `POST /session?directory=/tmp/oc_smoke`
+  `{"title":"...","agent":"smoke"}` (the `?directory=` query scopes it).
+- The SSE bus is at `GET /event` (server.connected + periodic
+  `server.heartbeat`; real per-session events arrive there too once a run is
+  actually running). `/experimental/tool` needs a `?provider=` query (returns a
+  `Missing key at ["provider"]` query-rejection otherwise); the flat
+  `GET /experimental/tool/ids` is the easy way to confirm a custom tool loaded.
+
+### CAVEAT — native `question` tool (our `ask_user`) needs prompt work
+- Prompted to ask the user a multiple-choice question via the native `question`
+  tool, the 9B model **did not pick it reliably**: it ran `bash` (hunting for a
+  config file), then mis-called `ask_agent`, then **ended its turn with a
+  plain-text question** — the exact anti-pattern our current harness's prompt
+  guidance ("NEVER end your turn with plain-text questions") exists to kill.
+- So: the native question system (tool + `GET /question` +
+  `POST /question/{id}/reply {answers:[[label]]}` + events) is present and the
+  API is verified, but **reliable small-model adoption requires carrying over
+  our prompt engineering** — not a free win, but a solved problem on our side.
+  (Run-parking-on-a-question wasn't reached because the tool was never invoked;
+  re-test once the agent prompt nudges the right tool.)
+
+### Performance notes (weak laptop, qwen3.5-9b w/ reasoning)
+- Cold model load ~10s (via `lms load`); **first model step ~38s**; warm steps
+  ~8-9s. Tool tasks completed in 8-9s warm. Budget generous first-call timeouts.
+
+### Net
+The two hardest unknowns (small-model tool-calling in-loop; the custom-tool
+delegation callback with identity) **both pass**. The remaining work is
+integration plumbing (async-drive + SSE translation, carry our ask_user prompt
+guidance, the serial-gateway gap from §6) — not a feasibility question. The
+recommendation stands: this is a viable harness swap. Reusable spike artifacts
+left in `/tmp/oc_smoke` (`opencode.json`, `.opencode/tool/ask_agent.ts`,
+`stub.py`, `drive_sync.py`, `drive_question.py`) — `/tmp` is ephemeral, copy
+them into the repo if continuing.
