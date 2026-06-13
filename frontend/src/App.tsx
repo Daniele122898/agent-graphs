@@ -143,6 +143,7 @@ export default function App() {
                 style={{ cursor: "pointer" }}
               >
                 {session.mode}
+                <span aria-hidden style={{ marginLeft: 5, opacity: 0.5, fontSize: 11 }}>ⓘ</span>
               </button>
               <span
                 className={(session.harness ?? "native") === "opencode" ? "chip chip-primary" : "chip"}
@@ -151,8 +152,10 @@ export default function App() {
                     ? "OpenCode harness — this session's agents run on a headless OpenCode server"
                     : "Native harness — this session's agents run on the built-in Pydantic AI engine"
                 }
+                style={{ cursor: "help" }}
               >
                 {session.harness ?? "native"} harness
+                <span aria-hidden style={{ marginLeft: 5, opacity: 0.5, fontSize: 11 }}>ⓘ</span>
               </span>
               {/* sliding-pill segmented toggle between the canvas + task board */}
               <div
