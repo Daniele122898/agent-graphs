@@ -137,6 +137,14 @@ export default function App() {
               >
                 {session.mode}
               </button>
+              {session.harness === "opencode" && (
+                <span
+                  className="chip chip-primary"
+                  title="This session runs on a headless OpenCode server (not the native engine)"
+                >
+                  opencode
+                </span>
+              )}
               <div style={{ display: "flex", background: "var(--surface-2)", borderRadius: "var(--r-sm)", padding: 2 }}>
                 {(["canvas", "board"] as const).map((v) => (
                   <button

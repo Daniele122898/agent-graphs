@@ -47,6 +47,15 @@ def main() -> int:
         # fill repo + launch
         page.get_by_placeholder("/Users/you/code/my-project").fill(REPO)
         page.wait_for_timeout(200)
+        # the harness selector must be present (native | opencode); we launch
+        # native (default) so the rest of the flow is harness-independent.
+        harness_sel = page.locator("label:has(span.field-label:text-is('Agent harness')) select")
+        if not harness_sel.is_visible():
+            failures.append("Agent harness selector missing from onboarding")
+        else:
+            opts = harness_sel.locator("option").all_inner_texts()
+            if not any("opencode" in o for o in opts) or not any("native" in o for o in opts):
+                failures.append(f"harness options missing native/opencode: {opts}")
         page.get_by_role("button", name="Launch session").click()
 
         # control room: the add-agent FAB should appear

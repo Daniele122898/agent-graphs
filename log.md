@@ -904,3 +904,14 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   through create_app (test_opencode_e2e.py: launch opencode session → task →
   done → history rows + usage via the same HTTP surface as native). 149 green,
   deterministic, no model or subprocess.
+
+### 2026-06-13 — Phase 7: frontend harness toggle
+
+- Onboarding gains an "Agent harness" select (native | opencode) → launchSession
+  passes it; SessionInfo carries `harness`; the header shows an "opencode" chip
+  for non-native sessions. The control room is harness-agnostic (both publish
+  identical bus event shapes), so no render special-casing. verify_ui asserts
+  the selector renders with both options and the native launch flow stays green
+  (OK). Build green. Full live opencode-via-UI run is a documented manual step
+  (the badge is trivial conditional render; the backend opencode path is
+  exhaustively tested).
