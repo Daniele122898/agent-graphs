@@ -1,33 +1,27 @@
-"""Wiring: the glue that turns injected-callable abstractions into real runs.
+"""Wiring: harness-independent glue behind the HTTP surface.
 
-``api/`` owns the HTTP surface (``main.py`` boots the app); this module owns the non-trivial wiring
-behind it — resolving sessions/specs, building (and rebuilding) ``RunningAgent``
-workers, constructing the ``TaskRunner`` with real effect callables, and syncing
-team-graph edits into the bound session. Split out so the orchestration logic is
-reviewable and testable apart from the endpoint plumbing.
+``api/`` owns the HTTP surface (``main.py`` boots the app); this module owns the
+non-trivial glue that is NOT specific to any agent harness — resolving
+sessions/specs, validating + syncing team-graph edits, and constructing the
+``TaskRunner`` whose effectful steps delegate to ``session.harness``. All
+agent-execution logic (running, history, questions, usage, delegation) lives
+behind the harness interface (``backend/harness/``); the per-harness
+implementations are ``NativeHarness`` and ``OpenCodeHarness``.
+
+``resolve_model`` is re-exported here on purpose: it is the long-standing test
+seam (``monkeypatch.setattr(wiring, "resolve_model", ...)``) and the native
+harness resolves models through ``wiring.resolve_model`` at call time.
 """
 
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
-from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
 
-from .agents.a2a import neighbor_instructions
-from .runtime.gateway import GatedModel
 from .domain.graph import validate_structure
-from .providers.registry import resolve_model, thinking_settings
+from .providers.registry import resolve_model  # noqa: F401 — re-exported test seam
 from .domain.models import AgentSpec, Capabilities, GraphNode, TeamGraph
-from .agents.persona import build_instructions, environment_instructions
-from .runtime.workers import RunningAgent, obtain_worker
 from .runtime.sessions import Session
 from .runtime.tasks import ReviewVerdict, TaskRunner, run_check
-
-REVIEW_GUIDANCE = (
-    "\n\nYou are acting as a reviewer. Decide whether the result fully satisfies "
-    "the task. Approve only if it does; otherwise reject with a concrete, "
-    "actionable critique of what is missing or wrong."
-)
 
 
 def starter_team_graph() -> TeamGraph:
@@ -91,49 +85,17 @@ def apply_team_graph(app: FastAPI, team_id: str, graph: TeamGraph) -> dict:
     return team.graph.model_dump()
 
 
-CONTINUATION_NUDGES = 2
-"""How many times a task run that stops with unfinished todos gets re-prompted.
-Small local models drift into ending their turn mid-plan; the nudge converts
-"accidentally stopped" into "kept working" without risking an infinite loop."""
-
-
 def make_task_runner(app: FastAPI, session: Session) -> TaskRunner:
-    """Build a TaskRunner whose effectful steps run real agents/checks against
-    the session: the assigned agent via its RunningAgent, a reviewer agent with
-    structured ReviewVerdict output, and a shell check in the repo root."""
+    """Build a TaskRunner whose effectful steps delegate to the session's
+    harness: the assigned agent's task run (with the open-todos continuation
+    nudge), a reviewer agent with structured ReviewVerdict output, and a shell
+    check in the repo root. Harness-agnostic — works for native and opencode."""
 
     async def run_agent(agent_id: str, prompt: str) -> str:
-        ra = await get_or_create_running(app, session, agent_id)
-        output = await ra.run_once(prompt)
-        # Anti-stall: a run that ends while its own checklist has open items
-        # either forgot to finish or forgot to update the list — both deserve
-        # a nudge rather than silently calling the task complete.
-        for _ in range(CONTINUATION_NUDGES):
-            open_items = [t for t in ra.todos if t.status != "completed"]
-            if not open_items:
-                break
-            bullet = "\n".join(f"- [{t.status}] {t.content}" for t in open_items)
-            output = await ra.run_once(
-                "Your run ended but your todo list still has open items:\n"
-                f"{bullet}\n\n"
-                "Continue working through them now. If an item is genuinely done, "
-                "mark it completed via write_todos. If you need the user, call "
-                "ask_user. If something blocks you, state exactly what."
-            )
-        return output
+        return await session.harness.run_for_task(session, agent_id, prompt)
 
     async def run_reviewer(reviewer_id: str, task_prompt: str, result: str) -> ReviewVerdict:
-        spec = find_spec(session, reviewer_id)
-        if spec is None:
-            return ReviewVerdict(approved=True, critique=f"(no reviewer '{reviewer_id}'; auto-approved)")
-        reviewer = Agent(
-            model=GatedModel(resolve_model(spec.model), session.gateway),
-            output_type=ReviewVerdict,
-            instructions=(spec.persona or f"You are {spec.name}.") + REVIEW_GUIDANCE,
-            model_settings=thinking_settings(spec.model, spec.thinking, spec.thinking_effort),
-        )
-        r = await reviewer.run(f"Task:\n{task_prompt}\n\nResult to review:\n{result}")
-        return r.output
+        return await session.harness.run_reviewer(session, reviewer_id, task_prompt, result)
 
     return TaskRunner(
         app.state.tasks,
@@ -141,87 +103,4 @@ def make_task_runner(app: FastAPI, session: Session) -> TaskRunner:
         run_reviewer=run_reviewer,
         run_check=lambda cmd: run_check(cmd, session.repo_root),
         publish=session.bus.publish,
-    )
-
-
-def agent_context_sections(session: Session, spec: AgentSpec) -> list[str]:
-    """The system context an agent's model request carries — static persona/
-    capability instructions plus the dynamic fragments (named neighbors, then
-    environment last), in the order they are sent. For the control room's
-    "what does the model actually see" view."""
-    sections = [
-        build_instructions(spec),
-        neighbor_instructions(session.graph, spec.id),
-        environment_instructions(spec, session.repo_root),
-    ]
-    return [s for s in sections if s]
-
-
-def agent_messages(app: FastAPI, session: Session, agent_id: str) -> list[ModelMessage]:
-    """The agent's current conversation: the live worker's in-memory history if
-    one exists, else the persisted snapshot."""
-    ra = session.registry.running(agent_id)
-    if ra is not None:
-        return list(ra.messages)
-    return app.state.agent_state.load_messages(session.id, agent_id)
-
-
-def set_agent_history(app: FastAPI, session: Session, agent_id: str, messages: list[ModelMessage]) -> None:
-    """Replace the agent's conversation (clear / summarize-compact), keeping the
-    live worker and the persisted snapshot in agreement."""
-    ra = session.registry.running(agent_id)
-    if ra is not None:
-        ra.replace_history(messages)  # persists via the worker
-    else:
-        app.state.agent_state.save(
-            session.id,
-            agent_id,
-            messages=messages,
-            lifecycle=session.registry.lifecycle(agent_id) or "idle",
-            usage=session.usage.get(agent_id),
-        )
-
-
-SUMMARIZE_PROMPT = (
-    "Summarize this entire conversation into a compact briefing for yourself: "
-    "what was asked, what you did (files created or changed, key decisions, "
-    "results), and any open follow-ups. Write it so you could continue the "
-    "work from the summary alone. Reply with ONLY the summary."
-)
-
-
-async def summarize_agent_history(
-    session: Session, spec: AgentSpec, messages: list[ModelMessage]
-) -> list[ModelMessage]:
-    """Compress an agent's conversation: one model call to summarize it, then a
-    fresh two-message history carrying just the summary. Instructions are sticky
-    (rebuilt every request), so the persona/capability context is unaffected."""
-    summarizer = Agent(
-        model=GatedModel(resolve_model(spec.model), session.gateway),
-        instructions=spec.persona or f"You are {spec.name}.",
-        model_settings=thinking_settings(spec.model, spec.thinking, spec.thinking_effort),
-    )
-    r = await summarizer.run(SUMMARIZE_PROMPT, message_history=messages)
-    summary = str(r.output).strip()
-    return [
-        ModelRequest(parts=[UserPromptPart(content=(
-            "[Conversation compacted — summary of all prior work]\n\n" + summary
-        ))]),
-        ModelResponse(parts=[TextPart(content="Understood — I'll continue from this summary.")]),
-    ]
-
-
-async def get_or_create_running(app: FastAPI, session: Session, agent_id: str) -> RunningAgent:
-    """HTTP-facing get-or-create: resolve the spec, then defer to the shared
-    ``obtain_worker`` path (also used by delegation), which reuses a live worker
-    unless its spec changed and otherwise rebuilds carrying history forward."""
-    spec = find_spec(session, agent_id)
-    if spec is None:
-        raise HTTPException(404, f"no agent '{agent_id}' in this session")
-    return await obtain_worker(
-        session,
-        spec,
-        state_store=app.state.agent_state,
-        message_log=app.state.messages,
-        model_resolver=resolve_model,
     )

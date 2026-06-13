@@ -56,6 +56,7 @@ export interface SessionInfo {
   repo_path: string;
   mode: SessionMode;
   status: string;
+  harness?: string; // native | opencode
 }
 
 export function defaultCapabilities(): Capabilities {

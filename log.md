@@ -784,3 +784,203 @@ Format: `YYYY-MM-DD — decision — rationale — reversibility`.
   contains context files (needs a per-run rglob over the repo — costly on big
   trees). Escalate to that only if the wording fix proves insufficient.
 - **Reversibility:** wording-only.
+
+### 2026-06-13 — Phase 1: Harness abstraction + NativeHarness (OpenCode integration)
+
+- **What:** introduced `backend/harness/` — a `Harness` ABC keyed by `agent_id`
+  that every agent operation (run/interject, run-to-completion, stop, history/
+  clear/summarize, ask_user, usage, delegate) routes through. `NativeHarness`
+  wraps today's pydantic-ai machinery with ZERO behavior change; the API +
+  `wiring.make_task_runner` now call `session.harness.*`. `SessionManager`
+  builds the harness per session (persisted `sessions.harness` column, default
+  from config; additive non-destructive migration for existing DBs).
+- **Why:** the seam that lets a session run on either our harness or an
+  OpenCode-backed one, switchable per session, side by side.
+- **Key decisions:**
+  - Interface keyed by agent_id (no `RunningAgent` leaks) — OpenCode has no such
+    object.
+  - `session.bus` + `session.registry` stay UNIVERSAL (the event/lifecycle
+    contract both harnesses publish identically); `gateway/usage/questions`
+    become native-harness internals the OpenCode harness leaves idle. Kept them
+    on Session (unused-for-opencode) rather than moving, to minimize Phase-1
+    risk.
+  - `wiring.resolve_model` re-exported and resolved at call time by the native
+    harness, so the long-standing `monkeypatch.setattr(wiring,"resolve_model")`
+    test seam is unchanged — zero test churn beyond pointing one white-box test
+    (test_model_switch) at `session.harness._worker`.
+  - `Harness.delegate()` implemented once on the base (shared `check_delegation`
+    guards + run_to_completion) — native agents still use their in-process
+    ask_agent tool; this base path is what the OpenCode ask_agent callback will
+    reuse, so guard behavior is identical across harnesses.
+- **Verified:** 130 tests green (was 122 + 8 new harness-seam tests); live
+  backend reloaded clean, existing session reports harness=native through the
+  full stack; migration proven idempotent on a copy of the real db.sqlite.
+- **Reversibility:** additive; the native path is the old code behind a thin
+  interface.
+
+### 2026-06-13 — Phase 2: OpenCode config generation + server lifecycle
+
+- **What:** `backend/harness/opencode/` — `config.py` builds `opencode.json`
+  from a TeamGraph (one OpenCode agent per AgentSpec, model id translation,
+  capability→permission mapping, OpenCode-flavored prompt, the ask_agent.ts
+  delegation tool); `server.py` (`OpenCodeServer`) spawns one `opencode serve`
+  per session, waits for readiness, supports reconfigure (restart on graph
+  change) + clean shutdown.
+- **Key decisions:**
+  - **Don't litter the user's repo**: the server's cwd is a dedicated temp
+    *config home* (opencode.json + .opencode/tool/ live there); agent SESSIONS
+    are scoped to the repo via `POST /session?directory=<repo>`. Verified live:
+    file ops happen in the repo, config stays out of it.
+  - Can't reuse `build_instructions` verbatim — its tool guidance names native
+    tools (ask_user/write_file/edit-tokens) that don't exist in OpenCode. A
+    separate `build_opencode_prompt` reuses the shared identity (persona, team
+    context, capability summary, neighbors, environment) + OpenCode-specific
+    tool guidance (read/edit/write/bash/`question`/`ask_agent`).
+  - Permission mapping sets **`question: allow`** (OpenCode defaults DENY → would
+    kill ask_user) and **`task: deny`** (we delegate via our own ask_agent, not
+    OpenCode subagents); webfetch/websearch denied to match native.
+  - ask_agent.ts reads its callback wiring (URL, token, our session id) from env
+    the server injects; passes `ctx.agent` (our agent id) as the asker.
+- **Verified:** 9 pure config-gen unit tests; LIVE boot confirmed both agents
+  load with correct model/permissions, ask_agent registered, repo-scoped
+  session created, clean shutdown. Full suite 138 green. Live server boot is
+  manual (needs the binary) — not in the fast suite, like test_live_smoke.
+
+### 2026-06-13 — Phase 3 live fix: OpenCode prompt_async requires cwd == session dir
+
+- **What:** the OpenCodeHarness live run hung with 0 messages. Root cause
+  (proven, model-independent via qwen3-1.7b): OpenCode's `prompt_async` only
+  starts a run when the server's cwd equals the session directory; the
+  config-home-cwd + `?directory=repo` architecture silently no-ops (issue
+  #12271). NOT a model or harness-logic bug (fake-server tests were always
+  green).
+- **Fix:** server.py now runs `opencode serve` with cwd = the repo, config via
+  `OPENCODE_CONFIG_CONTENT` (no opencode.json in the repo), tool at
+  `<repo>/.opencode/tool/ask_agent.ts`, and removes a `.opencode` we created on
+  shutdown (incl. the bun-installed node_modules). Live-verified: hello.txt
+  created, all bus events streamed, repo clean after.
+- **Also found:** OpenCode doesn't know the `deepseek-v4-flash` id (only
+  models.dev ids / its gateway free model) — documented as a config-gen TODO
+  for the opencode harness + DeepSeek; native harness unaffected.
+- Full suite 144 green (fake-server tests unaffected by the server change).
+
+### 2026-06-13 — Phase 4: ask_user (questions) for OpenCode
+
+- Translate OpenCode question events: `question.asked` → cache + `user_question`
+  bus event + waiting-on-user lifecycle; `question.replied`/`.rejected` →
+  `user_question_done` + back to running. `list_questions` reads the cache (sync,
+  no round-trip); `answer_question` (now async across the Harness interface →
+  the answer endpoint awaits it) maps our one-string-per-question to OpenCode's
+  `{answers: string[][]}` and POSTs the reply.
+- Verified via the fake: a parking `question` turn surfaces a listable question
+  with mapped options + waiting-on-user, and answering it resumes the run to
+  completion + clears it (user_question/user_question_done on the bus). 145 green.
+
+### 2026-06-13 — Phase 5: ask_agent delegation for OpenCode
+
+- The OpenCode-side ask_agent.ts tool POSTs to a new `POST /internal/ask_agent`
+  (api/internal.py): localhost callback authenticated by a per-session token the
+  harness injects into the server's env. The endpoint resolves the session,
+  verifies the token, and calls `Harness.delegate` — the shared base path
+  (check_delegation guards → waiting-on-agent + a2a_message → run the target on
+  its persistent OpenCode session → reply). Guard violations come back as 409
+  with the corrective message (the tool surfaces it to the model).
+- Per-session harness choice now flows from launch (`LaunchSessionRequest.harness`
+  → create_session) and persists.
+- Verified: opencode delegate() via fake (lead→expert, a2a_message + message log,
+  neighbor-guard rejection); the /internal/ask_agent endpoint via TestClient
+  (token 403, valid 200 with the target's answer, non-neighbor 409, unknown
+  session 404) — built through the real create_app path with the fake connection.
+  148 green. Full live ask_agent loop (model → ask_agent.ts → endpoint) is a
+  documented manual step (the tool→callback-with-identity leg was proven in the
+  earlier smoke test; endpoint→delegate→target is now unit+integration tested).
+
+### 2026-06-13 — Phase 6: mocked E2E parity for OpenCode (no LLM/server)
+
+- tests/_fake_opencode.py (deterministic in-process fake) + suites covering the
+  OpenCode harness at every level: run/submit/history/usage/stop/reviewer/nudge
+  + ask_user park-resume + delegate (test_opencode_harness.py), the
+  /internal/ask_agent endpoint (test_internal.py), and a full API-level task run
+  through create_app (test_opencode_e2e.py: launch opencode session → task →
+  done → history rows + usage via the same HTTP surface as native). 149 green,
+  deterministic, no model or subprocess.
+
+### 2026-06-13 — Phase 7: frontend harness toggle
+
+- Onboarding gains an "Agent harness" select (native | opencode) → launchSession
+  passes it; SessionInfo carries `harness`; the header shows an "opencode" chip
+  for non-native sessions. The control room is harness-agnostic (both publish
+  identical bus event shapes), so no render special-casing. verify_ui asserts
+  the selector renders with both options and the native launch flow stays green
+  (OK). Build green. Full live opencode-via-UI run is a documented manual step
+  (the badge is trivial conditional render; the backend opencode path is
+  exhaustively tested).
+
+### 2026-06-13 — Phase 8a: OpenCode harness robustness (run timeout + reconfigure)
+
+- **Run never hangs**: run_to_completion now bounds the session.idle wait
+  (AGENT_GRAPHS_OPENCODE_RUN_TIMEOUT, default 900s); on timeout it aborts the
+  OpenCode run, publishes agent_error, and lands the agent blocked — never a
+  stuck awaiter if the server dies / the SSE stream drops.
+- **Graph edits take effect (parity with native's spec_changed rebuild)**:
+  _ensure compares the graph signature and, on change, reconfigures the server
+  (restart with new config) + drops the per-agent OpenCode sessions. Caveat: the
+  OpenCode-side conversation is lost on reconfigure (server restart), heavier
+  than native's history carry-forward — documented. An ensure-lock also fixes a
+  concurrent-first-run double-spawn race.
+- Tests: reconfigure-on-edit (and no-op on unchanged graph) via the fake. 150 green.
+
+### 2026-06-13 — Phase 8b: adversarial-review fixes (19-agent review)
+
+A multi-agent review (parity/resources/security/correctness/coverage, with
+adversarial verification) confirmed real issues; fixed the substantive ones:
+- **Stop → CancelledError** (high): a stopped OpenCode task-run returned
+  normally, so the TaskRunner marked it done instead of parking blocked. stop()
+  now sets an `aborting` flag → run_to_completion raises CancelledError (Retry-
+  able), and the abort's session.idle is suppressed (no spurious agent_done).
+- **Listener-death frees awaiters** (high): if the SSE stream drops mid-run the
+  awaiter hung forever; the listener now sets st.error + idle for pending
+  agents on unexpected stream end. Plus the run timeout from 8a.
+- **Cross-hop delegation guard** (high): the chain wasn't threaded across the
+  ask_agent HTTP callback, so depth/cycle caps never accumulated (unbounded
+  A→B→C…). run_to_completion stashes the chain on _AgentState;
+  /internal/ask_agent reads it via current_chain() and passes it to delegate().
+- **Usage** (high): input was summed across messages (O(N²) double-count of the
+  re-sent context) and reasoning tokens were dropped — now input = latest
+  message's context, output += reasoning.
+- **Lifespan teardown** (resources): the lifespan only stopped native workers,
+  leaking OpenCode servers/temp dirs — now calls `harness.shutdown(session)`
+  for every session.
+- **Failed start() cleanup** (resources): a boot timeout leaked the subprocess/
+  client/log/staged tool — start() now tears down on failure before re-raising.
+- **answer_question count check** (low): raises ValueError on count mismatch
+  (→ 422), matching native/the ABC contract.
+- **DeepSeek model decl**: config now declares deepseek models under
+  provider.deepseek.models (best-effort registry fix; verify live).
+- Reconfigure-on-edit (8a) already addressed the review's "graph edit not
+  applied" finding. New tests: error path, stop-cancels, listener-death,
+  answer-count, current_chain. 155 green.
+
+### 2026-06-13 — Fix: harness selector missing from the "+ Session" popover
+
+- The harness dropdown was only added to Onboarding (first-launch); the header's
+  "+ Session" flow is a SEPARATE component (SessionSwitcher) and launched without
+  a harness. Added the "Agent harness" select there too (calls launchSession with
+  it). frontend/CLAUDE.md now warns the two launch forms must stay in sync;
+  verify_ui asserts the "+ Session" popover carries the selector (browser-verified).
+- Doc sweep for the integration: api/CLAUDE.md now lists the providers + internal
+  endpoint modules; README gained a "Choosing the agent harness" section
+  (per-session dropdowns + config.yml `harness:` default); tests/CLAUDE.md
+  documents the opencode test suites + the fake server.
+
+### 2026-06-13 — Live OpenCode harness browser E2E (capstone verification)
+
+- scripts/verify_opencode_ui.py drives the REAL UI against a backend wired to
+  the real OpenCode server + LM Studio (qwen3-1.7b): onboarding → launch an
+  OPENCODE session → run a task on the lead. PASSED: the "opencode harness" chip
+  showed, the agent's transcript rendered thinking → `write` tool call → "Wrote
+  file successfully" (translated from OpenCode SSE onto our bus, identical to
+  native), and hello.txt=banana was actually created. Screenshot:
+  /tmp/ag_shots/oc_02_after_run.png.
+- Confirmed clean teardown: no stray `opencode serve` processes after the E2E
+  backend exited (the lifespan harness.shutdown fix from Phase 8b held).

@@ -15,6 +15,7 @@ subsystem's invariants — read it before editing there.
 - `runtime/` — the live machinery a session owns: `sessions.py` (Session/SessionManager), `workers.py` (RunningAgent), `gateway.py`, `bus.py`, `streaming.py`, `tasks.py` (store + TaskRunner), `stats.py` (UsageTally).
 - `agents/` — everything that builds one agent: `factory.py` (build_agent), `persona.py`, `capabilities.py`, `tools.py` (DevTools), `todos.py`, `a2a.py` (delegation), `questions.py` (ask_user), `history.py` (compaction + rendering).
 - `providers/` — model backends behind one `ModelBackend` abstraction: `base.py`, `lmstudio.py`, `deepseek.py`, `registry.py` (model string → Pydantic AI model; thinking preference → ModelSettings).
+- `harness/` — the **agent-execution abstraction** (native | opencode). `base.py` (the `Harness` ABC + shared delegation guards), `native.py` (our pydantic-ai harness), `opencode/` (OpenCode-backed). Every agent operation routes through `session.harness`. See `harness/CLAUDE.md`.
 - `storage/` — `db.py` (SQLite schema + connections; `DEFAULT_DB_PATH` stays `backend/db.sqlite` — the user's data), `teams.py`, `agent_state.py`. Table CRUD otherwise lives with the component that owns the table (e.g. tasks, message log).
 
 ## Cross-cutting invariants (the *why*)
@@ -23,6 +24,7 @@ subsystem's invariants — read it before editing there.
 - **No auto-create**: the lifespan rehydrates persisted sessions only; `resolve_session` requires an explicit `session_id`. There are no default-team endpoints — edit graphs via `/api/teams/{id}/graph`. Never reintroduce a hidden default team/session.
 - **Anti-stall is two-layered**: prompt guidance (never end a turn with plain-text questions — call `ask_user`; keep working until done/blocked, see agents/persona.py) plus a mechanical check — `wiring.run_agent` re-prompts a task run that ended with open todos, capped at `CONTINUATION_NUDGES`.
 - **Changing an agent's model/persona/caps must take effect on the next run.** `RunningAgent` snapshots its built spec (`spec_changed()`); `runtime.obtain_worker` rebuilds the cached worker (carrying history) when it changed. Do not cache the agent without this check.
+- **Every agent operation goes through `session.harness`** (the `Harness` ABC), never directly to RunningAgent/QuestionBoard from the API/wiring — that's the seam that lets a session run on either the native or the OpenCode harness. `session.bus` + `session.registry` (lifecycle map) are the UNIVERSAL contract both harnesses publish the same event names/shapes to; `gateway`/`usage`/`questions` are native-harness internals the OpenCode harness leaves idle. `wiring.resolve_model` is re-exported as the model test seam and the native harness resolves through it at call time — keep it.
 
 ## Testing this folder
 `pytest` from the repo root. Tests are deterministic via `FunctionModel` /

@@ -35,6 +35,17 @@ class LaunchSessionRequest(BaseModel):
     team_id: str
     repo_path: str
     mode: SessionMode = "parallel"
+    harness: str | None = None  # native | opencode (default from config)
+
+
+class AskAgentInternalRequest(BaseModel):
+    """Body of the OpenCode ask_agent callback (see harness/opencode/config.py).
+    Localhost-only, authenticated by a per-session token header."""
+
+    session_id: str
+    asker_id: str
+    target_id: str
+    question: str
 
 
 class RunRequest(BaseModel):

@@ -22,6 +22,8 @@ needs no model server** — it MUST stay that way and stay green.
 - `test_questions` — ask_user end-to-end over the HTTP API (run parks, answer resumes it, answers reach the model) + the open-todos continuation nudge.
 - `test_runtime` / `test_a2a` / `test_gateway` / `test_history` / `test_streaming` / `test_resume` / `test_multisession` / `test_model_switch` / `test_teams` / `test_graph` / `test_db` / `test_sessions` / `test_main`.
 - Endpoint tests that need a real (scripted) agent run monkeypatch `backend.wiring.resolve_model` with `make_sequence_model` and poll via `TestClient` (the lifespan portal runs background tasks).
+- `test_harness` / `test_providers` / `test_opencode_config` — the harness abstraction seam, the model-backend providers, and OpenCode config generation (pure).
+- `test_opencode_harness` / `test_internal` / `test_opencode_e2e` — the OpenCode harness driven by **`_fake_opencode.py`**, a deterministic in-process fake server (NO LLM, NO subprocess): scripted "turns" emit SSE parts ending in `session.idle`, plus park/error/question turns. Covers run/stream/history/usage/stop/nudge/reviewer, ask_user park-resume, delegation + guards, the `/internal/ask_agent` endpoint, reconfigure-on-edit, error/abort/stream-death paths, and a full API-level task run. The OpenCode harness has no live tier in the fast suite; live verification is manual (the binary + a model), like `test_live_smoke`.
 
 ## Live tier (off by default)
 `test_live_smoke.py` is gated by `AGENT_GRAPHS_LIVE=1` and hits the real local

@@ -39,13 +39,17 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
         conn = db_module.connect(db_path)
         db_module.init_db(conn)
         teams = TeamStore(conn)
-        sessions = SessionManager(conn)
+        agent_state = AgentStateStore(conn)
+        messages = MessageLog(conn)
+        # The harness persists agent history/usage through these stores, so the
+        # SessionManager shares the very instances the rest of the app uses.
+        sessions = SessionManager(conn, state_store=agent_state, message_log=messages)
 
         app.state.conn = conn
         app.state.teams = teams
         app.state.sessions = sessions
-        app.state.agent_state = AgentStateStore(conn)
-        app.state.messages = MessageLog(conn)
+        app.state.agent_state = agent_state
+        app.state.messages = messages
         app.state.tasks = TaskStore(conn)
         app.state.task_runs = set()
 
@@ -72,9 +76,14 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
         try:
             yield
         finally:
+            # Tear down each session's harness — native stops its RunningAgents,
+            # opencode kills its server process + cleans up. (The old loop only
+            # stopped native workers, leaking opencode servers/temp dirs.)
             for s in sessions.list():
-                for ra in s.registry.all_running():
-                    await ra.stop()
+                try:
+                    await s.harness.shutdown(s)
+                except Exception:  # noqa: BLE001 — best-effort teardown
+                    pass
             conn.close()
 
     app = FastAPI(title="Agent Graphs", lifespan=lifespan)

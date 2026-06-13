@@ -12,6 +12,26 @@ import type { SessionInfo } from "./lib/types";
 
 const LS_KEY = "ag.activeSessionId";
 
+// A crisp circled-"i" cue that a chip has an explanatory tooltip on hover.
+// (The unicode ⓘ glyph renders too thin/faint; this SVG uses currentColor so it
+// picks up the chip's text color and stays legible.)
+function InfoIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+      style={{ marginLeft: 5, verticalAlign: "-2px", opacity: 0.8, flexShrink: 0 }}
+    >
+      <circle cx="8" cy="8" r="6.6" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="8" cy="5" r="1" fill="currentColor" />
+      <rect x="7.25" y="7" width="1.5" height="4.4" rx="0.75" fill="currentColor" />
+    </svg>
+  );
+}
+
 // The control room. Session-centric: you launch a session (a team bound to a
 // repo) and operate it. Nothing is auto-created — when there are no sessions,
 // the onboarding flow guides you through creating a team and launching one.
@@ -128,7 +148,14 @@ export default function App() {
               </Button>
               <button
                 className="chip"
-                title="LLM execution gateway — serial runs one model call at a time (low-spec)"
+                title={
+                  "Execution mode (click to toggle) — parallel: model calls run "
+                  + "concurrently; serial: one model call at a time, for low-spec "
+                  + "machines / a single local model."
+                  + (session.harness === "opencode"
+                      ? " (Applies to the native harness; OpenCode manages its own concurrency.)"
+                      : "")
+                }
                 onClick={() => {
                   const next = session.mode === "serial" ? "parallel" : "serial";
                   api.setMode(next).then(setSession);
@@ -136,14 +163,63 @@ export default function App() {
                 style={{ cursor: "pointer" }}
               >
                 {session.mode}
+                <InfoIcon />
               </button>
-              <div style={{ display: "flex", background: "var(--surface-2)", borderRadius: "var(--r-sm)", padding: 2 }}>
+              <span
+                className={(session.harness ?? "native") === "opencode" ? "chip chip-primary" : "chip"}
+                title={
+                  (session.harness ?? "native") === "opencode"
+                    ? "OpenCode harness — this session's agents run on a headless OpenCode server"
+                    : "Native harness — this session's agents run on the built-in Pydantic AI engine"
+                }
+                style={{ cursor: "help" }}
+              >
+                {session.harness ?? "native"} harness
+                <InfoIcon />
+              </span>
+              {/* sliding-pill segmented toggle between the canvas + task board */}
+              <div
+                style={{
+                  position: "relative",
+                  display: "flex",
+                  background: "var(--surface-2)",
+                  borderRadius: 999,
+                  padding: 3,
+                  width: 188,
+                  border: "1px solid var(--border)",
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 3,
+                    bottom: 3,
+                    left: 3,
+                    width: "calc(50% - 3px)",
+                    borderRadius: 999,
+                    background: "var(--primary)",
+                    boxShadow: "var(--shadow-sm)",
+                    transform: view === "board" ? "translateX(100%)" : "translateX(0)",
+                    transition: "transform 0.18s cubic-bezier(0.4, 0, 0.2, 1)",
+                  }}
+                />
                 {(["canvas", "board"] as const).map((v) => (
                   <button
                     key={v}
                     onClick={() => setView(v)}
-                    className={view === v ? "btn btn-sm btn-primary" : "btn btn-sm btn-ghost"}
-                    style={{ boxShadow: "none" }}
+                    style={{
+                      position: "relative",
+                      zIndex: 1,
+                      flex: 1,
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      fontWeight: 600,
+                      fontSize: 13,
+                      padding: "6px 0",
+                      color: view === v ? "#fff" : "var(--text-muted)",
+                      transition: "color 0.18s ease",
+                    }}
                   >
                     {v === "canvas" ? "Canvas" : "Tasks"}
                   </button>

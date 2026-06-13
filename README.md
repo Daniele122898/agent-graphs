@@ -34,6 +34,13 @@ Built incrementally, phase by phase. Current progress is tracked in `plan.md`.
   where the backend supports it — a thinking on/off toggle and a thinking
   effort level (DeepSeek: high/max). Adding another API is one small backend
   class.
+- **Pluggable agent harness** (native | OpenCode): a session runs on either the
+  built-in Pydantic AI engine or a headless [OpenCode](https://opencode.ai)
+  server, chosen at launch — switchable side by side. Both expose the same
+  operations (run, delegate via `ask_agent`, `ask_user`, history, todos,
+  lifecycle, usage) and publish the same events, so the control room is
+  identical regardless. OpenCode is pinned as a submodule (`vendor/opencode`,
+  v1.16.2); the harness runs the installed `opencode` binary by default.
 - **Capability-scoped tools**: read-only agents literally have no write
   tools; a hash-guarded line-range edit tool keeps weak local models from
   corrupting files.
@@ -84,6 +91,21 @@ cp config.example.yml config.yml
 Environment variables override the file (`DEEPSEEK_API_KEY`,
 `AGENT_GRAPHS_LMSTUDIO_URL`). Without a key the backend still runs; the
 DeepSeek entry in the UI just shows "not configured" with a hint.
+
+### Choosing the agent harness
+
+Pick the harness **per session at launch** — both the first-run "Launch a
+session" screen and the header's **"+ Session"** popover have an **"Agent
+harness"** dropdown (`native` | `opencode`). The choice is persisted per
+session, and a session on OpenCode shows an `opencode` chip in the header. To
+change the *default* for new sessions, set a top-level key in `config.yml`:
+
+```yaml
+harness: opencode   # default for new launches; omit/"native" uses the built-in engine
+```
+
+`opencode` requires the `opencode` binary installed (the harness runs it
+headless) and, for local-model agents, LM Studio running.
 
 ## Running
 
@@ -144,6 +166,7 @@ backend/        FastAPI app + Pydantic AI agent harness
                   streaming, task store + runner, usage tally
   agents/         building one agent: persona, capability-scoped tools,
                   todos, ask_agent delegation, ask_user, history compaction
+  harness/        agent-execution abstraction: native (Pydantic AI) | opencode
   providers/      model backends (LM Studio, ...) + model-string resolution
   storage/        SQLite schema/connections, team + agent-state stores
 frontend/       Vite + React + TypeScript control room

@@ -17,6 +17,7 @@ export default function Onboarding({
   const [teamId, setTeamId] = useState("");
   const [repo, setRepo] = useState("");
   const [mode, setMode] = useState<"parallel" | "serial">("parallel");
+  const [harness, setHarness] = useState<"native" | "opencode">("native");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,7 +38,7 @@ export default function Onboarding({
     setBusy(true);
     setError(null);
     try {
-      const s = await api.launchSession(teamId, repo.trim(), mode);
+      const s = await api.launchSession(teamId, repo.trim(), mode, harness);
       onLaunched(s.id);
     } catch (e) {
       setError(String(e));
@@ -89,6 +90,13 @@ export default function Onboarding({
               <Select value={mode} onChange={(e) => setMode(e.target.value as "parallel" | "serial")}>
                 <option value="parallel">parallel — model calls run concurrently</option>
                 <option value="serial">serial — one model call at a time (low-spec)</option>
+              </Select>
+            </Field>
+
+            <Field label="Agent harness">
+              <Select value={harness} onChange={(e) => setHarness(e.target.value as "native" | "opencode")}>
+                <option value="native">native — built-in Pydantic AI engine</option>
+                <option value="opencode">opencode — drive a headless OpenCode server</option>
               </Select>
             </Field>
 

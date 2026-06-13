@@ -177,6 +177,7 @@ class SessionInfo(BaseModel):
     mode: SessionMode = "parallel"
     status: SessionStatus = "active"
     created_at: str = ""
+    harness: str = "native"  # agent-execution backend: native | opencode
 
 
 # --- tasks ------------------------------------------------------------------

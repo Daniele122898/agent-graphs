@@ -29,6 +29,7 @@ own `CLAUDE.md` with subsystem detail (loaded when you open files there).
 - **Tasks are first-class** with a status lifecycle and per-task completion gate (self-reported / reviewer agent / `check:` command). Code-level caps (turn/depth/revision) prevent runaway loops.
 - **The LLM execution gateway is separate from the task system**: tasks = *what work exists*; gateway = *how model calls dispatch against compute* (serial on low-spec, else parallel). Don't conflate them.
 - **Models are per-agent, provider-agnostic, and injected** (never constructed in place) so tests use a scripted fake model.
+- **The agent harness is pluggable per session** (`backend/harness/`): `native` (our Pydantic AI engine) or `opencode` (a headless OpenCode server, pinned at `vendor/opencode`). Every agent operation routes through `session.harness`; both publish the SAME bus events + lifecycle, so the product (tasks, delegation, ask_user, control room) is harness-agnostic. See `backend/harness/CLAUDE.md`.
 - **Agents must never stall silently**: an agent needing the human calls the `ask_user` tool (run parks on `waiting-on-user`, the UI renders an answer card, the run resumes with the answers); a task run that ends with open todos gets a capped continuation nudge.
 
 ## Flow (IMPORTANT — changed from the early MVP)

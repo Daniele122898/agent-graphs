@@ -48,11 +48,16 @@ export const api = {
   session: () => fetch(withSession("/api/session")).then(json<SessionInfo>),
   listSessions: () =>
     fetch("/api/sessions").then(json<{ sessions: SessionInfo[]; default_session_id: string }>),
-  launchSession: (team_id: string, repo_path: string, mode: "parallel" | "serial") =>
+  launchSession: (
+    team_id: string,
+    repo_path: string,
+    mode: "parallel" | "serial",
+    harness: "native" | "opencode" = "native",
+  ) =>
     fetch("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ team_id, repo_path, mode }),
+      body: JSON.stringify({ team_id, repo_path, mode, harness }),
     }).then(json<SessionInfo & { warning: string | null }>),
   setMode: (mode: "parallel" | "serial") =>
     fetch(withSession("/api/session/mode"), {

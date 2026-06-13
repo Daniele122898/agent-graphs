@@ -88,6 +88,7 @@ class Session:
         mode: SessionMode = "parallel",
         status: SessionStatus = "active",
         created_at: str = "",
+        harness=None,
     ):
         self.id = session_id
         self.team_id = team_id
@@ -95,6 +96,12 @@ class Session:
         self.graph = graph
         self.status = status
         self.created_at = created_at
+        # The agent-execution harness backing this session (native | opencode).
+        # All agent operations route through it; the bus + registry below are
+        # the universal event/lifecycle contract every harness publishes to.
+        # gateway/usage/questions are used by the native harness; the opencode
+        # harness keeps its own equivalents and leaves these idle.
+        self.harness = harness
 
         # Per-session infrastructure — NOT global singletons.
         self.write_lock = asyncio.Lock()
@@ -129,16 +136,61 @@ class Session:
             mode=self.mode,
             status=self.status,
             created_at=self.created_at,
+            harness=getattr(self.harness, "id", "native"),
         )
 
 
 class SessionManager:
-    """Holds the live sessions and creates them from team definitions."""
+    """Holds the live sessions and creates them from team definitions.
 
-    def __init__(self, conn: sqlite3.Connection, *, clock: Callable[[], str] = iso_now):
+    Builds each session's ``Harness`` (the native one is stateless per session
+    and shared; opencode builds per session). ``state_store``/``message_log``
+    default to fresh stores over ``conn`` when not injected — the native harness
+    persists agent history/usage through them.
+    """
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        clock: Callable[[], str] = iso_now,
+        state_store=None,
+        message_log=None,
+        default_harness: str | None = None,
+    ):
         self._conn = conn
         self._now = clock
         self._sessions: dict[str, Session] = {}
+
+        from .. import config as _config
+        from ..agents.a2a import MessageLog
+        from ..harness import DEFAULT_HARNESS, make_harness
+        from ..storage.agent_state import AgentStateStore
+
+        self._state_store = state_store or AgentStateStore(conn, clock=clock)
+        self._message_log = message_log or MessageLog(conn, clock=clock)
+        # Default harness: explicit arg > config.yml `harness:` > "native".
+        self._default_harness = (
+            default_harness
+            or _config.load_config().get("harness")
+            or DEFAULT_HARNESS
+        )
+        # Native harness is stateless per session → one shared instance.
+        self._native_harness = make_harness(
+            "native", state_store=self._state_store, message_log=self._message_log
+        )
+
+    def _build_harness(self, harness_id: str, repo_root: Path):
+        if harness_id in ("native", "", None):
+            return self._native_harness
+        from ..harness import make_harness
+
+        return make_harness(
+            harness_id,
+            state_store=self._state_store,
+            message_log=self._message_log,
+            repo_root=repo_root,
+        )
 
     def create_session(
         self,
@@ -147,19 +199,23 @@ class SessionManager:
         repo_path: str | Path,
         graph: TeamGraph,
         mode: SessionMode = "parallel",
+        harness: str | None = None,
     ) -> Session:
         """Launch a session: persist a row and build the live ``Session``.
 
         The graph is passed in (the caller pins the team definition at launch —
-        editing the template later must not mutate a running session).
+        editing the template later must not mutate a running session). ``harness``
+        selects the agent-execution backend (default from config); persisted so
+        a resumed session keeps the same backend.
         """
         session_id = new_id("sess_")
         created_at = self._now()
         repo_root = Path(repo_path).resolve()
+        harness_id = harness or self._default_harness
         self._conn.execute(
-            "INSERT INTO sessions (id, team_id, repo_path, mode, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, team_id, str(repo_root), mode, "active", created_at),
+            "INSERT INTO sessions (id, team_id, repo_path, mode, status, created_at, harness) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, team_id, str(repo_root), mode, "active", created_at, harness_id),
         )
         self._conn.commit()
         session = Session(
@@ -169,19 +225,24 @@ class SessionManager:
             graph=graph,
             mode=mode,
             created_at=created_at,
+            harness=self._build_harness(harness_id, repo_root),
         )
         self._sessions[session_id] = session
         return session
 
     def _row_to_session(self, row: sqlite3.Row, graph: TeamGraph) -> Session:
+        keys = row.keys()
+        harness_id = row["harness"] if "harness" in keys else self._default_harness
+        repo_root = Path(row["repo_path"])
         return Session(
             session_id=row["id"],
             team_id=row["team_id"],
-            repo_root=Path(row["repo_path"]),
+            repo_root=repo_root,
             graph=graph,
             mode=row["mode"],
             status=row["status"],
             created_at=row["created_at"],
+            harness=self._build_harness(harness_id, repo_root),
         )
 
     def resume_session(self, session_id: str, graph: TeamGraph) -> Session | None:

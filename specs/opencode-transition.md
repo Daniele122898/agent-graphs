@@ -239,3 +239,276 @@ instead (permission rulesets, steer/queue delivery, json_schema gates).
 { "tokens": {"input": n, "output": n, "reasoning": n,
              "cache": {"read": n, "write": n}}, "cost": n, … }
 ```
+
+---
+
+## 9. Smoke test results — 2026-06-13 (branch `opencode-harness`)
+
+A live throwaway spike (under `/tmp/oc_smoke`, all artifacts disposable) ran the
+spike plan from §7 against `opencode 1.16.2` + LM Studio `qwen/qwen3.5-9b`. The
+setup: an `opencode.json` with the LM Studio openai-compatible provider + one
+`smoke` agent (replaced prompt, `task`/`webfetch`/`websearch` disabled), a
+custom `.opencode/tool/ask_agent.ts` that `fetch()`es a local Python stub, and
+the stub logging every call. **Verdict: the core feasibility is PROVEN.** Each
+finding below was observed directly, not inferred.
+
+### PASS — the make-or-break results
+- **Config + provider wiring loads clean.** `GET /config` showed the `lmstudio`
+  provider and `smoke` agent; serve log: `pkg=@ai-sdk/openai-compatible using
+  bundled provider` — the openai-compatible npm provider is **bundled**, no
+  `npm install` needed.
+- **The small local model tool-calls reliably inside opencode's loop.** Prompt
+  "create hello.txt with banana" → the model called the native `write` tool,
+  opencode executed it, the file appeared. (Sanity-checked the model in
+  isolation too: a direct LM Studio `/v1/chat/completions` with a tool returned
+  a clean `tool_calls` response.) This was the #1 risk in §6 — **retired.**
+- **Custom-tool callback (the `ask_agent` enabler) works end to end WITH
+  identity.** The model called our `ask_agent.ts`; it called back into the
+  Python stub; the stub received `{"target_id": "reviewer", "question": "...",
+  "sessionID": "ses_...", "agent": "smoke"}` — i.e. the calling **session and
+  agent identity are available to the tool** (from `ctx`), exactly what our
+  neighbor/cycle/depth guards + persistent-target driving need. The model then
+  relayed the stub's answer. Custom tool registered without `npm install`
+  (serve log: `service=tool.registry status=completed ask_agent`).
+- **Per-agent prompt replacement + tool disabling loads** (agent's `prompt` came
+  back replaced; `task`/`webfetch`/`websearch` set false in config).
+
+### How to actually drive a run (API gotchas — cost real time to find)
+- **Use `POST /session/{id}/prompt_async` (fire-and-forget) or the synchronous
+  `POST /session/{id}/message`.** Both reliably start a run on a fresh session.
+  - `prompt_async` returns an **empty body** (don't JSON-parse it) and runs in
+    the background; poll `GET /session/{id}/message` or the SSE bus for results.
+    A trivial prompt produced assistant text in ~3s. **This is the production
+    path** for our streaming control room.
+  - `/session/{id}/message` blocks until the whole run finishes and returns the
+    AssistantMessage (the maintained SDK's `chat`). Fine for scripts, wrong for
+    a streaming UI.
+  - Body shape that worked: `{"providerID":"lmstudio","modelID":"qwen/qwen3.5-9b",
+    "agent":"smoke","parts":[{"type":"text","text":"..."}]}`.
+- **DO NOT use `POST /api/session/{id}/prompt` to START a run.** It returns 200
+  with `{admittedSeq, delivery:"steer"}` but on a *fresh* session it produced
+  **zero messages / no run** — `delivery:"steer"` steers an *in-flight* run; it
+  is not how you kick one off. This silently ate the first test (looked like a
+  hung model; was actually nothing running).
+- Session create that worked: `POST /session?directory=/tmp/oc_smoke`
+  `{"title":"...","agent":"smoke"}` (the `?directory=` query scopes it).
+- The SSE bus is at `GET /event` (server.connected + periodic
+  `server.heartbeat`; real per-session events arrive there too once a run is
+  actually running). `/experimental/tool` needs a `?provider=` query (returns a
+  `Missing key at ["provider"]` query-rejection otherwise); the flat
+  `GET /experimental/tool/ids` is the easy way to confirm a custom tool loaded.
+
+### CAVEAT — native `question` tool (our `ask_user`) needs prompt work
+- Prompted to ask the user a multiple-choice question via the native `question`
+  tool, the 9B model **did not pick it reliably**: it ran `bash` (hunting for a
+  config file), then mis-called `ask_agent`, then **ended its turn with a
+  plain-text question** — the exact anti-pattern our current harness's prompt
+  guidance ("NEVER end your turn with plain-text questions") exists to kill.
+- So: the native question system (tool + `GET /question` +
+  `POST /question/{id}/reply {answers:[[label]]}` + events) is present and the
+  API is verified, but **reliable small-model adoption requires carrying over
+  our prompt engineering** — not a free win, but a solved problem on our side.
+  (Run-parking-on-a-question wasn't reached because the tool was never invoked;
+  re-test once the agent prompt nudges the right tool.)
+
+### Performance notes (weak laptop, qwen3.5-9b w/ reasoning)
+- Cold model load ~10s (via `lms load`); **first model step ~38s**; warm steps
+  ~8-9s. Tool tasks completed in 8-9s warm. Budget generous first-call timeouts.
+
+### Net
+The two hardest unknowns (small-model tool-calling in-loop; the custom-tool
+delegation callback with identity) **both pass**. The remaining work is
+integration plumbing (async-drive + SSE translation, carry our ask_user prompt
+guidance, the serial-gateway gap from §6) — not a feasibility question. The
+recommendation stands: this is a viable harness swap. Reusable spike artifacts
+left in `/tmp/oc_smoke` (`opencode.json`, `.opencode/tool/ask_agent.ts`,
+`stub.py`, `drive_sync.py`, `drive_question.py`) — `/tmp` is ephemeral, copy
+them into the repo if continuing.
+
+---
+
+# PART B — Full integration plan (2026-06-13, branch `opencode-harness`)
+
+Goal: run the product on EITHER our pydantic-ai harness ("native") OR an
+OpenCode-backed harness, switchable per session, with 100% feature parity
+(tasks, run/interject, stop, history/clear/summarize, ask_user, ask_agent
+delegation+guards, lifecycle badges, todos, usage, SSE control room). The
+abstraction is intentionally shallow: one `Harness` interface keyed by
+`agent_id`; everything the product needs from "an agent" goes through it.
+
+## B.1 Architecture / the abstraction
+
+New package `backend/harness/`:
+- `base.py` — `Harness` ABC + shared data shapes (`HistoryView`) + the shared
+  delegation guard `check_delegation(graph, asker, target, chain)`.
+- `native.py` — `NativeHarness`: thin wrapper over today's code
+  (obtain_worker/RunningAgent, QuestionBoard, UsageTally, Delegator,
+  agent_state, gateway, wiring helpers). ZERO behavior change.
+- `opencode/` — the OpenCode-backed harness (server mgr, config gen, client,
+  event translator, the harness itself).
+- `__init__.py` — `make_harness(harness_id, ...) -> Harness` factory.
+
+`Session` (runtime/sessions.py) gains `self.harness: Harness`, chosen at
+creation. KEEP on Session as UNIVERSAL: id, team_id, repo_root, graph, status,
+created_at, **bus** (the SSE sink both harnesses publish to), **registry** (the
+lifecycle-badge map both harnesses update; native also stashes live workers in
+it). MOVE behind the harness: gateway, write_lock, UsageTally, QuestionBoard
+(native-only internals; OpenCode has its own).
+
+### The `Harness` interface (keyed by agent_id; no RunningAgent leaks out)
+```
+id: ClassVar[str]                        # "native" | "opencode"
+async start(session)                     # optional bring-up (opencode: spawn server)
+async shutdown(session)                  # teardown (stop workers / kill server)
+async submit(session, agent_id, prompt)              # run + interject (queued; streams to bus)
+async run_to_completion(session, agent_id, prompt, *, usage=None,
+                        delegation_chain=None, lock_timeout=None) -> str   # task + delegation
+async stop(session, agent_id)
+is_busy(session, agent_id) -> bool
+async history(session, agent_id) -> HistoryView      # {instructions:[str], rows:[dict], message_count:int}
+async clear_history(session, agent_id)
+async summarize_history(session, agent_id) -> list[dict]   # rendered rows
+list_questions(session) -> list[dict]
+answer_question(session, question_id, answers) -> bool     # ValueError on count mismatch
+usage(session, agent_id) -> dict
+async delegate(session, asker_id, target_id, question, *, usage=None, chain=None) -> str
+async run_reviewer(session, reviewer_id, task_prompt, result) -> ReviewVerdict
+```
+`HistoryView` rows reuse the EXACT shapes `history.render_messages` emits, so
+the frontend renders both harnesses identically. `delegate` is concrete on the
+base class (shared guards + bus a2a_message + waiting-on-agent + run_to_completion);
+subclasses only differ in run_to_completion. The bus event names/shapes are the
+fixed contract (user_message, agent_lifecycle, model_request, thinking, text,
+tool_call, tool_result, todos, agent_done, agent_error, a2a_message,
+user_question, user_question_done, task_status, model_wait).
+
+### Selection
+`config.yml` `harness: native` (default) + env `AGENT_GRAPHS_HARNESS`; plus a
+per-session override in the launch request (`LaunchSessionRequest.harness`), so
+you can run one native + one opencode session side by side. Persisted on the
+sessions row (new nullable column, defaults native).
+
+## B.2 OpenCode-backed harness design
+
+- **Server lifecycle**: one `opencode serve` per agent-graphs session (clean
+  isolation; matches per-session ownership). `OpenCodeServer` picks a free
+  port, writes a generated config dir, spawns the binary (path configurable,
+  default the installed `opencode`; submodule build optional), waits for
+  `/config` to answer, and is killed on `session` shutdown / app lifespan exit.
+- **Config generation** (from TeamGraph): provider block from our config.py
+  (lmstudio + deepseek), and one opencode agent per AgentSpec with: `prompt` =
+  our `build_instructions(spec)` + neighbor + environment fragments (same
+  persona text the native harness uses — see Part A prompt-replace finding);
+  `model` {providerID, modelID} from spec.model; `permission` ruleset from
+  Capabilities (read/edit/bash globs) PLUS **`question: allow`** (default is
+  deny!) and `task: deny` (we use our own ask_agent, not opencode subagents);
+  tool toggles to disable webfetch/websearch. Plus `.opencode/tool/ask_agent.ts`
+  (the delegation callback). Regenerated + server restarted when the graph/spec
+  changes (mirrors native's spec_changed rebuild).
+- **One opencode session per team agent** (persistent peer; created lazily,
+  id cached per agent_id). `run_to_completion`/`submit` drive via
+  `POST /session/{id}/prompt_async` then await our translated `session.idle`.
+- **Event translation** (`OpenCode SSE /event` → our bus): subscribe once per
+  opencode server; demux by `properties.sessionID` → our agent_id; map
+  `message.part.updated` (tool parts by state.status → tool_call/tool_result;
+  text/reasoning parts → text/thinking), `message.part.delta` (optional token
+  text), `session.status` busy/idle → running/idle lifecycle, `session.idle`
+  → agent_done, `question.asked/replied` → user_question/user_question_done,
+  `todo.updated` → todos. Update `session.registry` lifecycle badges.
+- **history**: GET /session/{id}/message → render parts into our row shapes;
+  instructions from GET /agent (resolved prompt) + /api/session/{id}/context.
+  clear = delete+recreate the opencode session (or fork from empty). summarize
+  = native `POST /session/{id}/summarize`.
+- **ask_user**: opencode's native question tool fires `question.asked`; we
+  translate to user_question, the UI answers via our endpoint →
+  `POST /question/{id}/reply {answers:[[label]]}`. Inject our "use the question
+  tool; never end a turn with a plain-text question" guidance into agent.prompt
+  (smoke test showed small models need it).
+- **ask_agent**: `.opencode/tool/ask_agent.ts` → `POST /internal/ask_agent`
+  (localhost, token-guarded) → shared `check_delegation` guards →
+  `harness.run_to_completion(target)` on the target's persistent opencode
+  session → a2a_message + waiting-on-agent. Same guard semantics as native.
+- **usage**: sum per-message `tokens` from message.updated events into a tally.
+
+## B.3 Testing (no real LLM, no real opencode server)
+- Native suite stays as-is (must remain green through the refactor).
+- OpenCode harness: a **fake in-process opencode server** (FastAPI ASGI app via
+  httpx ASGITransport, injected as the harness's HTTP client base) implementing
+  the subset we use: POST /session, POST /session/{id}/prompt_async (drives a
+  scripted parts script + emits SSE), GET /event (SSE), GET /session/{id}/message,
+  GET /agent, /question + reply, abort, /config. The script is a sequence of
+  "turns" (tool/text parts) like make_sequence_model, so the same deterministic
+  style drives opencode-harness E2E tests: task→tool_call→done, ask_user
+  park+resume, ask_agent A→B+guards, history/clear/summarize, lifecycle+usage.
+  The OpenCodeServer process-spawn is bypassed in tests (inject base_url + skip
+  spawn). Live verification stays manual (local model first, deepseek fallback).
+
+## B.4 Phases & verifiable gates (todos #18–#25)
+1. Harness ABC + NativeHarness + route api/wiring through session.harness.
+   GATE: all 122 tests green; behavior identical.
+2. OpenCode server mgr + config gen from TeamGraph.
+   GATE: server boots, GET /agent reflects our agents+perms, ask_agent.ts loaded.
+3. OpenCodeHarness run/stop/history/usage + event translation.
+   GATE: mocked E2E run→tool_call→bus events→done; one LIVE local-model write task.
+4. ask_user translation. GATE: mocked park+resume; live question round-trip.
+5. ask_agent delegation + guards. GATE: mocked A→B + cycle/depth reject; live A→B.
+6. Full mocked E2E parity suite. GATE: green, deterministic, mirrors native spine.
+7. Frontend harness toggle + verify_ui both harnesses. GATE: browser-verified.
+8. Docs + adversarial review. GATE: parity/race/leak review clean.
+
+## B.5 Gotchas (live-verified on 1.16.2 — code against these)
+- `prompt_async` → HTTP 204, empty body. Drive completion off SSE `session.idle`.
+- SSE: each frame is `data: {id,type,properties}\n\n` (no `event:` line); type is
+  inside JSON; `sessionID` is inside `properties`. One global stream per server.
+- Tool lifecycle streams via `message.part.updated` carrying the full `tool`
+  part each transition; key by `part.callID`, diff `part.state.status`
+  (pending→running→completed|error). Text via `message.part.delta {field,delta}`.
+- Two `model` key conventions: create-session uses `{id, providerID}`;
+  prompt/message/agent use `{modelID, providerID}`.
+- `question` permission DEFAULTS TO `deny` on agents — must set `allow` or
+  ask_user never fires. `.env` reads default `ask`/deny; `external_directory`
+  and `doom_loop` default `ask`.
+- Custom tool dir is `.opencode/tool/` (SINGULAR) on 1.16.2.
+- `agent.prompt`, if set, REPLACES the built-in system prompt entirely
+  (`packages/opencode/src/session/llm/request.ts:60`).
+- `/context` is `/api/`-prefixed only; returns `{data:[SessionMessage]}` (a
+  runtime/system view, NOT the message transcript).
+- Live 1.16.2 emits the CLASSIC event family (message.part.updated/delta), not
+  the spec's `session.next.*` V2 family — code against classic, tolerate both.
+
+---
+
+## B.6 Phase 3 live findings (2026-06-13) — the cwd gotcha (CRITICAL)
+
+Building + live-testing the harness surfaced THE load-bearing OpenCode gotcha,
+now fixed:
+
+- **`prompt_async` only starts a run when the server's working directory equals
+  the session's directory.** Proven on 1.16.2: cwd==dir → user+assistant
+  messages appear; cwd≠dir (server cwd = a separate config home, session via
+  `?directory=repo`) → `prompt_async` returns 204 but creates **zero messages**
+  and never runs. (This is the OpenCode multi-directory weakness, issue #12271.)
+  It silently looked like a hung model — it was not; a tiny model (qwen3-1.7b)
+  isolated it model-independently (no user message ever recorded).
+- **Fix (server.py):** run `opencode serve` with **cwd = the repo**. To keep the
+  repo clean, the config is passed inline via **`OPENCODE_CONFIG_CONTENT`** (no
+  `opencode.json` file), and only the ask_agent tool is written to
+  `<repo>/.opencode/tool/ask_agent.ts`. On shutdown a `.opencode` WE created is
+  removed wholesale (OpenCode `bun install`s the tool's `@opencode-ai/plugin`
+  dep into `.opencode/node_modules`); a pre-existing user `.opencode` is left
+  alone (only our tool file removed). Verified: live run creates `hello.txt`,
+  streams all bus events, and leaves the repo empty after shutdown.
+- **DeepSeek model id**: OpenCode's registry does NOT know
+  `deepseek-v4-flash` (its DeepSeek provider exposes models.dev ids like
+  `deepseek-chat`/`deepseek-reasoner`, plus its own gateway
+  `opencode/deepseek-v4-flash-free`). `prompt_async` silently no-ops on an
+  unknown model. So the OpenCode harness + DeepSeek needs a model id OpenCode
+  knows — TODO: map our `deepseek:deepseek-v4-flash` to a recognized id (or use
+  the opencode gateway model) in config gen. The NATIVE harness keeps using
+  `deepseek-v4-flash` directly (works). Local LM Studio models work on both.
+- **Known cost**: the tool's dep install runs per session on first server boot
+  (a few seconds). Future optimization: a persistent isolated tool dir via
+  `XDG_CONFIG_HOME` (probed; first-boot install made readiness flaky, deferred).
+- **Live-verified**: run_to_completion, SSE→bus (user_message/thinking/text/
+  tool_call/tool_result/agent_done), tool execution (write), history rows,
+  usage, clean teardown — all green against `opencode 1.16.2` + qwen3-1.7b.

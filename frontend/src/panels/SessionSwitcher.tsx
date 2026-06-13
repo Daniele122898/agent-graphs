@@ -22,6 +22,7 @@ export default function SessionSwitcher({
   const [teamId, setTeamId] = useState("");
   const [repo, setRepo] = useState("");
   const [mode, setMode] = useState<"parallel" | "serial">("parallel");
+  const [harness, setHarness] = useState<"native" | "opencode">("native");
   const [error, setError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
 
@@ -36,7 +37,7 @@ export default function SessionSwitcher({
     setLaunching(true);
     setError(null);
     try {
-      const s = await api.launchSession(teamId, repo.trim(), mode);
+      const s = await api.launchSession(teamId, repo.trim(), mode, harness);
       if (s.warning) window.alert(s.warning);
       setOpen(false);
       setRepo("");
@@ -85,6 +86,12 @@ export default function SessionSwitcher({
             <Select value={mode} onChange={(e) => setMode(e.target.value as "parallel" | "serial")}>
               <option value="parallel">parallel</option>
               <option value="serial">serial</option>
+            </Select>
+          </Field>
+          <Field label="Agent harness">
+            <Select value={harness} onChange={(e) => setHarness(e.target.value as "native" | "opencode")}>
+              <option value="native">native (Pydantic AI)</option>
+              <option value="opencode">opencode</option>
             </Select>
           </Field>
           {error && (

@@ -1,9 +1,18 @@
 # backend/api/ — the HTTP/SSE surface
 
 One module per resource (`sessions`, `teams`, `agents`, `questions`, `stats`,
-`tasks`), each exposing `install(app)`; `install_routes` in `__init__.py`
-registers them all and `main.create_app` calls it after the lifespan/CORS
-setup.
+`tasks`, `providers`, `internal`), each exposing `install(app)`; `install_routes`
+in `__init__.py` registers them all and `main.create_app` calls it after the
+lifespan/CORS setup.
+
+- `providers.py` — `GET /api/providers` + `GET /api/providers/{id}/models`
+  (the Capabilities tab's backend + model pickers).
+- `internal.py` — `POST /internal/ask_agent`, the localhost callback the
+  OpenCode `ask_agent` tool POSTs to. Authenticated by a per-session token
+  (`x-ag-token` vs `session.harness.token_for(session)`); routes through
+  `Harness.delegate` (shared graph guards), threading the asker's delegation
+  chain via `current_chain` so cross-hop cycle/depth caps accumulate. NOT used
+  by the native harness (its `ask_agent` is in-process).
 
 - **Handlers are closures over `app`** reaching state via `app.state.*` —
   never module globals — so tests can run many isolated apps side by side.

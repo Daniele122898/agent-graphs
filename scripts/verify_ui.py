@@ -47,12 +47,33 @@ def main() -> int:
         # fill repo + launch
         page.get_by_placeholder("/Users/you/code/my-project").fill(REPO)
         page.wait_for_timeout(200)
+        # the harness selector must be present (native | opencode); we launch
+        # native (default) so the rest of the flow is harness-independent.
+        harness_sel = page.locator("label:has(span.field-label:text-is('Agent harness')) select")
+        if not harness_sel.is_visible():
+            failures.append("Agent harness selector missing from onboarding")
+        else:
+            opts = harness_sel.locator("option").all_inner_texts()
+            if not any("opencode" in o for o in opts) or not any("native" in o for o in opts):
+                failures.append(f"harness options missing native/opencode: {opts}")
         page.get_by_role("button", name="Launch session").click()
 
         # control room: the add-agent FAB should appear
         page.locator("button.fab").wait_for(state="visible", timeout=10000)
         page.wait_for_timeout(800)
         page.screenshot(path=str(SHOTS / "02_control_room.png"))
+
+        # the "+ Session" popover (SessionSwitcher) must ALSO carry the harness
+        # selector — distinct launch path from onboarding.
+        page.get_by_role("button", name="+ Session").click()
+        page.wait_for_timeout(300)
+        sw_harness = page.locator("label:has(span.field-label:text-is('Agent harness')) select")
+        if not sw_harness.is_visible():
+            failures.append("Agent harness selector missing from the '+ Session' popover")
+        else:
+            print("'+ Session' popover has the harness selector")
+        page.get_by_role("button", name="Cancel").click()
+        page.wait_for_timeout(200)
 
         # FAB bottom-left?
         box = page.locator("button.fab").bounding_box()
