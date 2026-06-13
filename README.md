@@ -34,6 +34,13 @@ Built incrementally, phase by phase. Current progress is tracked in `plan.md`.
   where the backend supports it — a thinking on/off toggle and a thinking
   effort level (DeepSeek: high/max). Adding another API is one small backend
   class.
+- **Pluggable agent harness** (native | OpenCode): a session runs on either the
+  built-in Pydantic AI engine or a headless [OpenCode](https://opencode.ai)
+  server, chosen at launch — switchable side by side. Both expose the same
+  operations (run, delegate via `ask_agent`, `ask_user`, history, todos,
+  lifecycle, usage) and publish the same events, so the control room is
+  identical regardless. OpenCode is pinned as a submodule (`vendor/opencode`,
+  v1.16.2); the harness runs the installed `opencode` binary by default.
 - **Capability-scoped tools**: read-only agents literally have no write
   tools; a hash-guarded line-range edit tool keeps weak local models from
   corrupting files.
@@ -144,6 +151,7 @@ backend/        FastAPI app + Pydantic AI agent harness
                   streaming, task store + runner, usage tally
   agents/         building one agent: persona, capability-scoped tools,
                   todos, ask_agent delegation, ask_user, history compaction
+  harness/        agent-execution abstraction: native (Pydantic AI) | opencode
   providers/      model backends (LM Studio, ...) + model-string resolution
   storage/        SQLite schema/connections, team + agent-state stores
 frontend/       Vite + React + TypeScript control room
