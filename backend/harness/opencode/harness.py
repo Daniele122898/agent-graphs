@@ -208,10 +208,29 @@ class OpenCodeHarness(Harness):
     async def _oc_session(self, rt: _Runtime, session: "Session", agent_id: str) -> _AgentState:
         st = rt.agents.setdefault(agent_id, _AgentState())
         if st.oc_session_id is None:
-            sid = await rt.conn.client.create_session(agent=agent_id, directory=str(session.repo_root))
-            st.oc_session_id = sid
-            rt.by_oc[sid] = agent_id
+            # Reattach: a persisted OC session id from a previous process still
+            # resolves against OpenCode's on-disk store (the re-spawned server has
+            # the same repo cwd), so the transcript + conversation survive a
+            # restart. Verify it still resolves; otherwise create a fresh session.
+            persisted = self._state.get_oc_session(session.id, agent_id)
+            if persisted and await self._session_resolves(rt, persisted):
+                st.oc_session_id = persisted
+            else:
+                sid = await rt.conn.client.create_session(agent=agent_id, directory=str(session.repo_root))
+                st.oc_session_id = sid
+                self._state.set_oc_session(session.id, agent_id, sid)
+            rt.by_oc[st.oc_session_id] = agent_id
         return st
+
+    async def _session_resolves(self, rt: _Runtime, oc_session_id: str) -> bool:
+        """True if the OC session id still exists on the server (a GET succeeds).
+        A persisted id from a prior process may be gone if OpenCode's store was
+        cleared — degrade to a fresh session rather than breaking the run."""
+        try:
+            await rt.conn.client.messages(oc_session_id)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     async def start(self, session: "Session") -> None:
         await self._ensure(session)
@@ -539,8 +558,18 @@ class OpenCodeHarness(Harness):
         rt = self._runtimes.get(session.id)
         st = rt.agents.get(agent_id) if rt else None
         if st is None or st.oc_session_id is None:
+            # Not live in memory (e.g. just after a backend restart). Reattach the
+            # transcript ONLY if this agent has a persisted OC session from a prior
+            # run — spin up the server to read it. If it never ran, there's nothing
+            # to show, so don't spawn a server just to render an empty transcript.
+            if not self._state.get_oc_session(session.id, agent_id):
+                return HistoryView(instructions=instructions, rows=[], message_count=0)
+            rt = await self._ensure(session)
+            st = await self._oc_session(rt, session, agent_id)
+        try:
+            msgs = await rt.conn.client.messages(st.oc_session_id)
+        except Exception:  # noqa: BLE001 — a stale/unavailable session must not 500 the tab
             return HistoryView(instructions=instructions, rows=[], message_count=0)
-        msgs = await rt.conn.client.messages(st.oc_session_id)
         return HistoryView(instructions=instructions, rows=render_oc_messages(msgs), message_count=len(msgs))
 
     async def clear_history(self, session: "Session", agent_id: str) -> None:
@@ -550,6 +579,7 @@ class OpenCodeHarness(Harness):
             await rt.conn.client.delete_session(st.oc_session_id)
             rt.by_oc.pop(st.oc_session_id, None)
             rt.agents[agent_id] = _AgentState()  # fresh session created on next run
+            self._state.set_oc_session(session.id, agent_id, "")  # drop the stale reattach pointer
 
     async def summarize_history(self, session: "Session", agent_id: str) -> list[dict]:
         rt = self._runtimes.get(session.id)

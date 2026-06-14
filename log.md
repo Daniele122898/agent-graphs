@@ -1086,3 +1086,26 @@ a2a.py) stayed coherent.
   single-delegate behavior exactly). Caveat: on the single local model children
   serialize on the model regardless of `gather`; real speedup needs parallel mode
   / a hosted model. `MAX_FANOUT` guards the laptop.
+
+### 2026-06-14 — OpenCode transcript survives a restart (reattach)
+
+- **What:** persist each agent's OC session id (`agent_state.oc_session_id`, new
+  column + migration). `_oc_session` reattaches a persisted id (verifying it still
+  resolves, else creates fresh + re-persists); `history()` after a restart (no
+  live runtime) spins the server up and reattaches IF there's a persisted session
+  (else returns empty without spawning — nothing to show); `clear_history` drops
+  the pointer. `messages()` failures in `history()` now degrade to empty instead
+  of 500ing the tab.
+- **Why:** a backend/OpenCode-server restart (uvicorn --reload, a crash, the
+  reconfigure path) wiped the chat + statuses and orphaned the in-flight task —
+  the OC session id lived only in memory, so the re-spawned server made brand-new
+  sessions and `history()` had nothing to read, even though OpenCode persists its
+  own sessions to disk. (User chose "reattach" over a full DB transcript mirror.)
+- **Scope/known gaps (documented):** lifecycle/status still resets to idle on
+  restart (nothing is actually running then — lower value than the transcript);
+  reattach depends on OpenCode's on-disk session store surviving the respawn (the
+  `opencode.db` vs `opencode-local.db` channel detail still needs LIVE
+  confirmation — the deterministic test models the persisted store by carrying the
+  fake's message map across a simulated restart).
+- **Reversibility:** easy; additive column + lazy reattach with graceful fallback
+  to a fresh session.

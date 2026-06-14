@@ -161,6 +161,43 @@ async def test_interject_steers_busy_run(conn, fake_clock, repo):
     sub.cancel()
 
 
+async def test_transcript_reattaches_after_restart(conn, fake_clock, repo):
+    # Durability: after a backend restart the OpenCode transcript must come back.
+    # We persist the OC session id; a re-spawned server (same repo) still resolves
+    # it against OpenCode's on-disk store, so history() reattaches and reads it.
+    client = FakeOpenCodeClient({"lead": [[text_part("did the work")]]})
+    graph = _graph()
+    team = TeamStore(conn, clock=fake_clock).create("T", graph)
+    session = SessionManager(conn, clock=fake_clock).create_session(team_id=team.id, repo_path=repo, graph=graph)
+    state_store = AgentStateStore(conn, clock=fake_clock)
+    msglog = session.harness.message_log
+
+    h1 = OpenCodeHarness(state_store=state_store, message_log=msglog, connect=fake_connect(client))
+    session.harness = h1
+    await h1.run_to_completion(session, "lead", "do it")
+    view1 = await h1.history(session, "lead")
+    assert view1.message_count > 0 and any(r["kind"] == "text" for r in view1.rows)
+    oc_id = state_store.get_oc_session(session.id, "lead")
+    assert oc_id, "the OC session id must be persisted for reattach"
+    await h1.shutdown(session)
+
+    # Simulate a BACKEND RESTART: a brand-new harness (empty _runtimes), the SAME
+    # state store, and a fresh client that shares OpenCode's persisted store (its
+    # on-disk DB survives — modelled by carrying the messages dict forward).
+    client2 = FakeOpenCodeClient({"lead": [[text_part("more")]]})
+    client2._messages = client._messages
+    client2._agent_of = dict(client._agent_of)
+    h2 = OpenCodeHarness(state_store=state_store, message_log=msglog, connect=fake_connect(client2))
+    session.harness = h2
+
+    view2 = await h2.history(session, "lead")
+    assert view2.message_count == view1.message_count, "transcript should reattach after restart"
+    assert any(r["kind"] == "text" for r in view2.rows)
+    # and it reattached the SAME OC session (no fresh one created)
+    assert state_store.get_oc_session(session.id, "lead") == oc_id
+    await h2.shutdown(session)
+
+
 async def test_history_renders_transcript(conn, fake_clock, repo):
     client = FakeOpenCodeClient({"lead": [[tool_part("read", "c1", {"path": "x"}, "contents"), text_part("read it")]]})
     session = _opencode_session(conn, fake_clock, repo, client)

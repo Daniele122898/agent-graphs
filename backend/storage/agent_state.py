@@ -65,6 +65,28 @@ class AgentStateStore:
         )
         self._conn.commit()
 
+    def set_oc_session(self, session_id: str, agent_id: str, oc_session_id: str) -> None:
+        """Persist (or clear, with "") the OpenCode harness's OC session id for an
+        agent, so a re-spawned server can reattach the transcript across a restart.
+        Lightweight upsert — doesn't touch history/usage."""
+        self._conn.execute(
+            """
+            INSERT INTO agent_state (session_id, agent_id, oc_session_id, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (session_id, agent_id) DO UPDATE SET
+                oc_session_id = excluded.oc_session_id, updated_at = excluded.updated_at
+            """,
+            (session_id, agent_id, oc_session_id, self._now()),
+        )
+        self._conn.commit()
+
+    def get_oc_session(self, session_id: str, agent_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT oc_session_id FROM agent_state WHERE session_id = ? AND agent_id = ?",
+            (session_id, agent_id),
+        ).fetchone()
+        return (row["oc_session_id"] or None) if row else None
+
     def load_messages(self, session_id: str, agent_id: str) -> list[ModelMessage]:
         row = self._conn.execute(
             "SELECT history FROM agent_state WHERE session_id = ? AND agent_id = ?",
