@@ -7,12 +7,13 @@ lifespan/CORS setup.
 
 - `providers.py` — `GET /api/providers` + `GET /api/providers/{id}/models`
   (the Capabilities tab's backend + model pickers).
-- `internal.py` — `POST /internal/ask_agent`, the localhost callback the
-  OpenCode `ask_agent` tool POSTs to. Authenticated by a per-session token
-  (`x-ag-token` vs `session.harness.token_for(session)`); routes through
-  `Harness.delegate` (shared graph guards), threading the asker's delegation
-  chain via `current_chain` so cross-hop cycle/depth caps accumulate. NOT used
-  by the native harness (its `ask_agent` is in-process).
+- `internal.py` — `POST /internal/ask_agent` and `POST /internal/ask_team`, the
+  localhost callbacks the OpenCode `ask_agent`/`ask_team` tools POST to.
+  Authenticated by a per-session token (`x-ag-token` vs
+  `session.harness.token_for(session)`, shared `_authed_session` helper); route
+  through `Harness.delegate`/`delegate_many` (shared graph guards), threading the
+  asker's delegation chain via `current_chain` so cross-hop cycle/depth caps
+  accumulate. NOT used by the native harness (its delegation is in-process).
 
 - **Handlers are closures over `app`** reaching state via `app.state.*` —
   never module globals — so tests can run many isolated apps side by side.

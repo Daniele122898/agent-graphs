@@ -406,6 +406,12 @@ function toolSummary(tool: string, args: Record<string, unknown> | undefined): s
       return truncate(a("command"), 90);
     case "ask_agent":
       return `${a("target_id")} — ${truncate(a("question"), 90)}`;
+    case "ask_team": {
+      const list = args?.assignments;
+      if (!Array.isArray(list)) return "";
+      const who = list.map((x) => (x as Record<string, unknown>)?.target_id).filter(Boolean).join(", ");
+      return `${list.length} teammate${list.length === 1 ? "" : "s"}: ${who}`;
+    }
     case "write_todos": {
       const todos = args?.todos;
       return Array.isArray(todos) ? `${todos.length} item${todos.length === 1 ? "" : "s"}` : "";
@@ -423,6 +429,7 @@ const TOOL_ICON: Record<string, string> = {
   grep: "🔍",
   run_bash: "💻",
   ask_agent: "🤝",
+  ask_team: "👥",
   write_todos: "☑️",
 };
 

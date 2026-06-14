@@ -28,10 +28,17 @@ transcript rendering), `context_files.py` (AGENTS.md/CLAUDE.md loading).
   clears. Dynamic facts (neighbors, environment) are emitted per run by
   `@agent.instructions` fragments registered in `factory.py` — freshest context
   last, and graph/config edits take effect on the next run.
-- **Delegation guards live in code** (`a2a.py`): target must be a graph
-  neighbor, no cycles, depth capped — each raises `ModelRetry` so the model
-  self-corrects. Consultation failures publish a `[consultation failed: ...]`
-  reply so the message log shows WHY, not just a generic retries-exceeded.
+- **Delegation guards live in code** (`a2a.py` `Delegator`; the shared resolver +
+  guards in `harness/base.py`): target must be a graph neighbor, no cycles, depth
+  capped — each raises `ModelRetry` so the model self-corrects. Consultation
+  failures publish a `[consultation failed: ...]` reply so the message log shows
+  WHY, not just a generic retries-exceeded. **A target may be given by display
+  NAME or id** — `base.resolve_target` (trim/backticks/case-insensitive, scoped to
+  the asker's neighbors) canonicalizes BEFORE the cycle/depth checks; `Delegator`
+  splits into `_validate`/`_run_one` so single `ask` and parallel `ask_many` share
+  one path. **`ask_team`** (arg = list of `{target_id, task}`, registered in
+  `factory.py`) fans work out to several teammates at once via `asyncio.gather` —
+  the only way to actually parallelize on a model that emits one tool call/turn.
 - **ask_user lifecycle** (`questions.py`): the board parks the run on an
   asyncio Future, sets `waiting-on-user`, restores `running` after; answers
   must match the question count; a timeout returns a "proceed on your best
