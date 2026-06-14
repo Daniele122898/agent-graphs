@@ -59,6 +59,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ team_id, repo_path, mode, harness }),
     }).then(json<SessionInfo & { warning: string | null }>),
+  rebindSession: (sessionId: string, teamId: string) =>
+    fetch(`/api/sessions/${sessionId}/rebind`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ team_id: teamId }),
+    }).then(json<SessionInfo>),
   setMode: (mode: "parallel" | "serial") =>
     fetch(withSession("/api/session/mode"), {
       method: "POST",

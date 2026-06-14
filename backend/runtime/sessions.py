@@ -56,6 +56,11 @@ class AgentRegistry:
     def detach_running(self, agent_id: str) -> None:
         self._running.pop(agent_id, None)
 
+    def unregister(self, agent_id: str) -> None:
+        """Remove an agent entirely from the registry (lifecycle + running worker)."""
+        self._lifecycle.pop(agent_id, None)
+        self._running.pop(agent_id, None)
+
     def running(self, agent_id: str) -> "RunningAgent | None":
         return self._running.get(agent_id)
 
@@ -138,6 +143,25 @@ class Session:
             created_at=self.created_at,
             harness=getattr(self.harness, "id", "native"),
         )
+
+
+    def rebind(self, team_id: str, graph: TeamGraph) -> None:
+        """Rebind this session to a different team definition.
+        Updates the session's team_id and graph, re-seeds the registry
+        from the new graph. Existing agent histories for agents that
+        exist in both graphs are preserved; new agents start fresh;
+        removed agents are detached."""
+        old_ids = set(self.registry.agent_ids())
+        self.team_id = team_id
+        self.graph = graph
+        # Re-seed the registry: register new agents, keep existing ones
+        new_ids = {node.spec.id for node in graph.nodes}
+        for node in graph.nodes:
+            if node.spec.id not in old_ids:
+                self.registry.register(node.spec.id, "idle")
+        # Detach and unregister agents that no longer exist in the graph
+        for removed_id in old_ids - new_ids:
+            self.registry.unregister(removed_id)
 
 
 class SessionManager:

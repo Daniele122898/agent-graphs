@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 
 from .. import wiring
-from .schemas import LaunchSessionRequest, ModeRequest
+from .schemas import LaunchSessionRequest, ModeRequest, RebindSessionRequest
 
 
 def install(app: FastAPI) -> None:
@@ -67,4 +67,23 @@ def install(app: FastAPI) -> None:
         (default) or serial (low-spec, one model call at a time)."""
         session = wiring.resolve_session(app, session_id)
         session.gateway.set_mode(body.mode)
+        return session.info().model_dump()
+
+    @app.post("/api/sessions/{session_id}/rebind")
+    def rebind_session(session_id: str, body: RebindSessionRequest) -> dict:
+        """Rebind a session to a different team."""
+        team = app.state.teams.get(body.team_id)
+        if team is None:
+            raise HTTPException(404, f"no team '{body.team_id}'")
+        session = app.state.sessions.get(session_id)
+        if session is None:
+            raise HTTPException(404, f"no session '{session_id}'")
+        # Update in-memory
+        session.rebind(body.team_id, team.graph)
+        # Persist to DB
+        app.state.sessions._conn.execute(
+            "UPDATE sessions SET team_id = ? WHERE id = ?",
+            (body.team_id, session_id),
+        )
+        app.state.sessions._conn.commit()
         return session.info().model_dump()
