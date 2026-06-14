@@ -1109,3 +1109,22 @@ a2a.py) stayed coherent.
   fake's message map across a simulated restart).
 - **Reversibility:** easy; additive column + lazy reattach with graceful fallback
   to a fresh session.
+
+### 2026-06-14 — Live verification of the bug-cluster fixes
+
+- **Reattach (the headline bug), confirmed live two ways:** (1) `verify_oc_reattach.py`
+  — a real `opencode serve` respawned on the same repo still resolves a prior
+  session id (`messages()` 200; a gone/garbage id 404s, so `_session_resolves` is
+  a meaningful probe). (2) End-to-end through the running backend: created an
+  opencode session + transcript, restarted the backend on the same DB, re-fetched
+  `/api/agent/lead/history` → `message_count` + rows reattached identically (the
+  re-spawned server resolved the persisted `oc_session_id`). The user's "chat gone
+  on reload" is fixed.
+- **No regression, confirmed live:** the full browser E2E (`verify_opencode_ui.py`,
+  isolated stack on :8001/:5175, fresh temp DB — the user's :8000/:5173 + db.sqlite
+  untouched) passed with the real 9B model: opencode-harness chip shown, the agent
+  created `hello.txt`=`banana` via OpenCode's `write` tool, run rendered in the
+  transcript. A plain `prompt_async` run (PONG) also idled cleanly.
+- **Covered by the green deterministic suite (not separately live-driven, to spare
+  the laptop):** the stall fix (graph-edit-mid-run), interject steering, and
+  `ask_team` fan-out / name resolution — each has a fast-suite regression.
