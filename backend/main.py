@@ -18,6 +18,7 @@ isolated app against a temp DB. Run for real with::
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -77,12 +78,21 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
         try:
             yield
         finally:
+            # End every SSE /events stream first: those are infinite generators,
+            # so an open one makes uvicorn's graceful shutdown wait forever for the
+            # connection to close ("Waiting for connections to close"). Closing the
+            # bus pushes a sentinel that ends each subscriber. (The run entrypoint
+            # `python -m backend` also bakes in --timeout-graceful-shutdown as a
+            # backstop — see backend/__main__.py.)
+            for s in sessions.list():
+                s.bus.close()
             # Tear down each session's harness — native stops its RunningAgents,
-            # opencode kills its server process + cleans up. (The old loop only
-            # stopped native workers, leaking opencode servers/temp dirs.)
+            # opencode kills its server process + cleans up. Bounded so a wedged
+            # harness can't hang shutdown itself (the lifespan runs AFTER the
+            # connection wait, so a hang here is unbounded by the graceful cap).
             for s in sessions.list():
                 try:
-                    await s.harness.shutdown(s)
+                    await asyncio.wait_for(s.harness.shutdown(s), timeout=10)
                 except Exception:  # noqa: BLE001 — best-effort teardown
                     pass
             conn.close()

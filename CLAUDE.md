@@ -37,19 +37,21 @@ own `CLAUDE.md` with subsystem detail (loaded when you open files there).
 
 ## Run & test
 ```bash
-# backend (FastAPI :8000) — starts empty; create team + launch session in the UI
-# (the graceful-shutdown cap matters: open SSE /events streams never finish, so
-#  without it --reload wedges at "Waiting for connections to close" forever)
-./.venv/bin/python -m uvicorn backend.main:app --reload --port 8000 --timeout-graceful-shutdown 3
+# backend (FastAPI :8000) — starts empty; create team + launch session in the UI.
+# ALWAYS run via `python -m backend` (NOT raw `uvicorn backend.main:app`): the
+# entrypoint bakes in timeout_graceful_shutdown, without which an open SSE
+# /events stream wedges shutdown at "Waiting for connections to close" forever
+# (backend/__main__.py + runtime/bus.py explain why). --reload for dev.
+./.venv/bin/python -m backend --reload
 # frontend (Vite :5173, proxies /api /health /events)
 cd frontend && npm run dev
 # SINGLE-PROCESS (self-host) mode — for dogfooding the tool ON THIS REPO: build
 # the UI, then run the backend WITHOUT --reload; it serves the built frontend
-# from :8000 too (StaticFiles mount, added last so /api,/health,/events still
-# win). No Vite HMR + no --reload means an agent editing this repo can't
-# hot-swap code mid-run and kill the live session. Rebuild + restart for UI
-# changes (intentional). Skipped automatically if frontend/dist is absent.
-cd frontend && npm run build && cd .. && ./.venv/bin/python -m uvicorn backend.main:app --port 8000  # open :8000
+# from :8000 too (StaticFiles, added last so /api,/health,/events still win). No
+# Vite HMR + no --reload means an agent editing this repo can't hot-swap code
+# mid-run and kill the live session. Rebuild + restart for UI changes
+# (intentional). Skipped automatically if frontend/dist is absent.
+cd frontend && npm run build && cd .. && ./.venv/bin/python -m backend   # open :8000
 # backend tests — deterministic, token-free (FunctionModel); MUST be green
 ./.venv/bin/python -m pytest
 # frontend — type-check + build (no unit-test runner)
