@@ -20,7 +20,9 @@ import json
 import os
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from ..base import Harness, HistoryView, find_spec
+from pydantic_ai import ModelRetry
+
+from ..base import DELEGATION_BUSY_TIMEOUT, MAX_FANOUT, Harness, HistoryView, check_delegation, find_spec
 from ...providers.registry import split_model_string
 from ...runtime.tasks import ReviewVerdict
 from ...util import new_id
@@ -542,6 +544,100 @@ class OpenCodeHarness(Harness):
             # (timeout, session.error); this catches anything earlier (e.g. the
             # prompt_async POST) so a dropped submit is visible, never swallowed.
             session.bus.publish("agent_error", {"agent_id": agent_id, "error": str(e)})
+
+    # --- non-blocking delegation (opencode) ----------------------------------
+    # ask_agent/ask_team on the OpenCode harness DISPATCH: validate the guards
+    # synchronously (so a violation still 409s and the model self-corrects), run
+    # the target(s) in the BACKGROUND, and INJECT their reply into the asker's
+    # session as a follow-up when ready. So the asker's tool call returns
+    # immediately and a deep chain never holds nested HTTP fetches + per-agent
+    # locks open for the whole subtree (the blocking-delegation fragility that
+    # caused the Bun fetch "operation timed out" + orphaned subtrees). The native
+    # harness keeps the in-process blocking path (Delegator) — far less fragile.
+    #
+    # Cross-hop cycle/depth guard still holds: the chain is captured at dispatch
+    # and threaded into the target's run (delegation_chain → st.chain), so a
+    # target that itself dispatches reads its own in-flight chain via current_chain.
+
+    async def dispatch(self, session: "Session", asker_id: str, target_id: str, question: str, *, chain=None) -> str:
+        chain = list(chain or [])
+        spec = check_delegation(session.graph, asker_id, target_id, chain)  # raises ModelRetry → 409
+        self._record(session, asker_id, spec.id, "question", question)
+        self._spawn_delegation(session, asker_id, [(spec.id, question)], chain)
+        names = {n.spec.id: n.spec.name for n in session.graph.nodes}
+        return (
+            f"Delegated to {names.get(spec.id, spec.id)} (`{spec.id}`). Their reply will be delivered "
+            "to you as a follow-up message when ready — do NOT wait inline; continue with any "
+            "independent work or end your turn, and you'll be re-prompted with their answer."
+        )
+
+    async def dispatch_many(self, session: "Session", asker_id: str, requests: list, *, chain=None) -> str:
+        chain = list(chain or [])
+        if not requests:
+            raise ModelRetry("ask_team needs at least one (teammate, task) pair.")
+        if len(requests) > MAX_FANOUT:
+            raise ModelRetry(f"ask_team is capped at {MAX_FANOUT} teammates at once; split the work across turns.")
+        resolved: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for ref, q in requests:
+            spec = check_delegation(session.graph, asker_id, ref, chain)  # raises ModelRetry → 409
+            if spec.id in seen:
+                raise ModelRetry(f"'{spec.id}' is listed twice — one teammate does one thing at a time; ask them once.")
+            seen.add(spec.id)
+            resolved.append((spec.id, q))
+        for tid, q in resolved:
+            self._record(session, asker_id, tid, "question", q)
+        self._spawn_delegation(session, asker_id, resolved, chain)
+        names = {n.spec.id: n.spec.name for n in session.graph.nodes}
+        who = ", ".join(names.get(t, t) for t, _ in resolved)
+        return (
+            f"Delegated to {who}. Their replies will be delivered to you together as a follow-up "
+            "message when all are done — do NOT wait inline; continue with any independent work or "
+            "end your turn, and you'll be re-prompted with their answers."
+        )
+
+    def _spawn_delegation(self, session: "Session", asker_id: str, resolved: list, chain: list) -> None:
+        task = asyncio.create_task(self._run_delegation(session, asker_id, resolved, chain))
+        self._bg = getattr(self, "_bg", set())
+        self._bg.add(task)
+        task.add_done_callback(self._bg.discard)
+
+    async def _run_delegation(self, session: "Session", asker_id: str, resolved: list, chain: list) -> None:
+        """Run delegated target(s) to completion in the background (concurrently),
+        then inject their combined reply into the asker's session."""
+        child_chain = chain + [asker_id]
+
+        async def one(tid: str, q: str) -> tuple[str, str]:
+            try:
+                ans = await self.run_to_completion(
+                    session, tid, q, delegation_chain=child_chain, lock_timeout=DELEGATION_BUSY_TIMEOUT
+                )
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                ans = f"[{tid} was busy too long and didn't reply]"
+            except Exception as e:  # noqa: BLE001 — surfaced on the target as agent_error too
+                ans = f"[consulting {tid} failed: {e}]"
+            self._record(session, tid, asker_id, "reply", ans)
+            return tid, ans
+
+        try:
+            results = await asyncio.gather(*(one(tid, q) for tid, q in resolved))
+        except asyncio.CancelledError:
+            return  # session torn down mid-delegation; nothing to inject
+        names = {n.spec.id: n.spec.name for n in session.graph.nodes}
+        combined = "\n\n".join(f"From {names.get(tid, tid)} (`{tid}`):\n{ans}" for tid, ans in results)
+        header = (
+            "Reply from the teammate you delegated to:"
+            if len(results) == 1
+            else "Replies from the teammates you delegated to:"
+        )
+        try:
+            # Deliver into the asker's session: submit() steers a live run or
+            # starts a fresh one if the asker already ended its turn.
+            await self.submit(session, asker_id, f"{header}\n\n{combined}")
+        except Exception as e:  # noqa: BLE001 — never let injection failure crash the bg task
+            session.bus.publish("agent_error", {"agent_id": asker_id, "error": f"failed to deliver delegated replies: {e}"})
 
     async def run_for_task(self, session: "Session", agent_id: str, prompt: str) -> str:
         output = await self.run_to_completion(session, agent_id, prompt)

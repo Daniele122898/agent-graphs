@@ -1163,3 +1163,32 @@ per-hop and lock_timeout was overloaded as the run bound.
   asker parked inside the tool fetch for the whole subtree). Structural fix =
   non-blocking dispatch + steer-injection of results (reuses the interject path +
   _submit_bg); pending the user's blocking-vs-callback-vs-task-graph decision.
+
+### 2026-06-14 — Phase B: non-blocking (dispatch + steer-injection) delegation on opencode (shipped)
+
+- **What:** ask_agent/ask_team on the OpenCode harness are now NON-BLOCKING.
+  `/internal/ask_agent|ask_team` → `OpenCodeHarness.dispatch`/`dispatch_many`:
+  validate the guards synchronously (violation → 409, model self-corrects), record
+  the question, spawn a background task (`_run_delegation`) that runs the target(s)
+  concurrently via `run_to_completion`, and INJECT their combined reply into the
+  asker's session as a follow-up (`submit` → steer a live asker run, or a fresh
+  run if it already ended). The tool fetch returns an immediate ACK. The blocking
+  `delegate`/`delegate_many` stay as the shared primitive (native still uses the
+  in-process blocking `Delegator`, which is far less fragile).
+- **Why:** the structural fault behind the deep-chain failures (user's instinct):
+  blocking delegation parked the asker inside the tool fetch for the WHOLE nested
+  subtree, holding nested HTTP fetches + per-agent locks — so Bun's ~255s fetch
+  default fired ("operation timed out") and orphaned the subtree, and the per-hop
+  900s caps stacked. Non-blocking removes the held fetch entirely; each run keeps
+  its own budget; deep chains don't pin connections.
+- **Cross-hop guard preserved:** the chain is captured at dispatch and threaded
+  into the target's run (`delegation_chain`→`st.chain`); a target that itself
+  dispatches reads its own in-flight chain via `current_chain`. Verified by test.
+- **Contract change (documented in tool descriptions + prompt guidance):** a
+  delegated reply now arrives as a NEW message, not an inline tool return — the
+  model is told not to wait inline; it ends its turn and is re-prompted with the
+  reply. Risk: a model that ignores this and assumes an inline answer; mitigated
+  by explicit tool/prompt wording (to confirm with the live DeepSeek E2E).
+- **Reversibility:** moderate. `delegate`/`delegate_many` remain; reverting is
+  pointing `/internal` back at them. Native unaffected. Task-graph delegation
+  (the eventual model) deferred to the plan.md backlog.

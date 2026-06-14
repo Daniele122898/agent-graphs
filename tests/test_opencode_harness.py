@@ -340,6 +340,45 @@ async def test_delegate_many_rejects_overflow_and_duplicates(conn, fake_clock, r
     await session.harness.shutdown(session)
 
 
+async def test_dispatch_is_non_blocking_and_injects_reply(conn, fake_clock, repo):
+    # Non-blocking delegation: dispatch returns an ACK immediately (does not wait
+    # for the target); the target runs in the background and its reply is injected
+    # back into the ASKER's session as a follow-up.
+    client = FakeOpenCodeClient({"expert": [[text_part("the answer is 42")]], "lead": [[text_part("got it")]]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+
+    ack = await session.harness.dispatch(session, "lead", "expert", "what is the answer?")
+    assert "Delegated" in ack and "expert" in ack.lower()  # immediate ack, NOT the answer
+
+    # the target ran in the background and its reply was injected into the asker
+    for _ in range(100):
+        if any(e["type"] == "user_message" and e["data"]["agent_id"] == "lead"
+               and "the answer is 42" in str(e["data"].get("text", "")) for e in events):
+            break
+        await asyncio.sleep(0.02)
+    assert any(e["type"] == "user_message" and e["data"]["agent_id"] == "lead"
+               and "the answer is 42" in str(e["data"].get("text", "")) for e in events), "reply not injected into asker"
+    assert any(e["type"] == "a2a_message" and e["data"]["from"] == "expert"
+               and e["data"]["to"] == "lead" and e["data"]["kind"] == "reply" for e in events)
+    await session.harness.shutdown(session)
+    sub.cancel()
+
+
+async def test_dispatch_enforces_guards_synchronously(conn, fake_clock, repo):
+    # Guard violations must still fail synchronously (so the model self-corrects),
+    # before any background run is spawned.
+    client = FakeOpenCodeClient({"lead": [[text_part("x")]]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    with pytest.raises(ModelRetry):  # expert->lead is not an edge
+        await session.harness.dispatch(session, "expert", "lead", "reverse not allowed")
+    with pytest.raises(ModelRetry, match="capped"):
+        await session.harness.dispatch_many(session, "lead", [("expert", str(i)) for i in range(5)])
+    await session.harness.shutdown(session)
+
+
 async def test_delegate_enforces_neighbor_guard(conn, fake_clock, repo):
     import pytest
     from pydantic_ai import ModelRetry

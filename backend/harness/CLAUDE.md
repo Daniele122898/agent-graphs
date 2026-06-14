@@ -118,7 +118,20 @@ no caller ever holds a harness-specific worker object. A `Session` owns one
   final backstop; `lock_timeout` bounds only LOCK ACQUISITION (the busy-target
   deadlock backstop), no longer the whole run. The native harness uses DeepSeek
   directly and is unaffected.
-- **Delegation is still BLOCKING** (asker parked inside the `ask_agent`/`ask_team`
-  tool fetch for the whole nested subtree); the tool fetches set `timeout:false`
-  so Bun's ~255s default can't orphan a long subtree. Non-blocking/callback
-  delegation is the planned structural fix for deep chains (see `log.md`).
+- **Delegation is NON-BLOCKING on opencode** (`dispatch`/`dispatch_many`, used by
+  the `/internal/ask_agent`+`ask_team` callbacks). The tool call validates the
+  guards SYNCHRONOUSLY (a violation still 409s so the model self-corrects), then
+  runs the target(s) in a background task (`_run_delegation` via `run_to_completion`)
+  and INJECTS their combined reply back into the asker's session as a follow-up
+  (`submit` → steer if the asker is still running, else a fresh run). So the
+  asker's tool fetch returns immediately — a deep chain never holds nested fetches
+  + locks open for the whole subtree (the blocking fragility: Bun's ~255s fetch
+  timeout orphaning subtrees, per-hop 900s caps). Cross-hop cycle/depth guard
+  survives: the chain is captured at dispatch and threaded into the target's run
+  (`delegation_chain`→`st.chain`), and a target that itself dispatches reads its
+  own in-flight chain via `current_chain`. **Contract change:** a delegated reply
+  arrives as a NEW message, not an inline tool return — the tool descriptions +
+  prompt guidance tell the model not to wait inline. The `ask_*.ts` fetches keep
+  `timeout:false` as belt-and-suspenders. The blocking `delegate`/`delegate_many`
+  remain as the shared primitive (still used by the native harness via `Delegator`,
+  which keeps the in-process blocking path — far less fragile).
