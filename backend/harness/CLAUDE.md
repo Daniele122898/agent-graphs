@@ -31,21 +31,60 @@ no caller ever holds a harness-specific worker object. A `Session` owns one
   `"native"`); `make_harness(id, ...)` is the factory. The choice survives
   resume.
 - **Delegation parity**: native agents delegate through the in-process
-  `ask_agent` tool → `Delegator` (unchanged); `Harness.delegate()` is the
-  parallel path used by the OpenCode `ask_agent` callback — both enforce the
-  same `check_delegation` guards. The cross-hop cycle/depth guard requires the
+  `ask_agent`/`ask_team` tools → `Delegator` (`ask`/`ask_many`);
+  `Harness.delegate()`/`delegate_many()` are the parallel paths used by the
+  OpenCode `ask_agent`/`ask_team` callbacks — both enforce the same
+  `check_delegation` guards. The cross-hop cycle/depth guard requires the
   chain to be threaded across OpenCode's HTTP callback: `run_to_completion`
   stashes the in-flight `delegation_chain` on the agent's `_AgentState`, and
   `/internal/ask_agent` reads it via `OpenCodeHarness.current_chain(asker)` and
   passes it to `delegate()` so the chain accumulates A→B→C (without this the cap
   never accumulates across hops).
+- **Delegation accepts a teammate by display NAME or id** (`base.resolve_target`,
+  shared by both harnesses): instructions show `Name (\`id\`)`, so models reach
+  for the name. Resolution is scoped to the asker's neighbors (resolution set ==
+  guard set), trims/strips-backticks/case-insensitive, and runs BEFORE the
+  cycle/depth guards (which operate on the canonical id). `check_delegation`
+  returns the resolved spec; `delegate`/`Delegator.ask` use `spec.id`.
+- **Fan-out (`delegate_many` / `Delegator.ask_many`)**: one agent hands work to
+  several teammates AT ONCE (`asyncio.gather` over distinct targets — does NOT
+  rely on the model emitting concurrent tool calls, which the weak local model
+  won't). Guard violations (unknown/non-neighbor/cycle/duplicate/over-`MAX_FANOUT`)
+  fail the whole batch fast (a request mistake, no work done yet); a per-target
+  RUNTIME failure is an inline `[consulting X failed: …]` note, never aborting
+  siblings. One asker waiting→running transition; `delegate` reuses the same
+  lifecycle-free `_consult_one`/`_run_one` per-child runner.
 
 ## OpenCode harness specifics (the *why*, hard-won)
-- **Custom tools ship as real `.ts` files** under `opencode/tools/` (e.g.
-  `tools/ask_agent.ts`), loaded at import via `config.ASK_AGENT_TOOL_TS` and
-  staged into `<repo>/.opencode/tool/` at runtime — not embedded as Python
-  strings. The standalone copy under `specs/opencode-smoke/` is an independent
-  reproducible spike, NOT used by the app.
+- **Custom tools ship as real `.ts` files** under `opencode/tools/`
+  (`ask_agent.ts`, `ask_team.ts`), loaded at import into `config.OPENCODE_TOOLS`
+  (name → source) and staged into `<repo>/.opencode/tool/` at runtime — not
+  embedded as Python strings. `server.py` stages every entry and removes only the
+  files it created on shutdown; `<repo>/.opencode/` is gitignored (a runtime
+  artifact dir — OpenCode also installs the tools' `node_modules` there). The
+  standalone copy under `specs/opencode-smoke/` is an independent spike, NOT used.
+- **The pipeline stall was reconfigure-mid-run** (NOT OpenCode concurrency —
+  OpenCode runs one Runner per session, no global lock; a delegator parked in
+  `ask_agent`'s fetch holds nothing server-side). A graph autosave during a
+  delegation chain made the next `_ensure` restart the server and
+  `rt.agents.clear()` the `_AgentState` the parked awaiters waited on → hang until
+  the run timeout. Fix: `_ensure` SKIPS reconfigure while any agent is busy
+  (`_any_busy`: held `st.lock` or `st.busy`), deferring to the next idle run;
+  `_reconfigure` frees parked `st.idle` awaiters before clearing (safety net);
+  `PUT /api/teams/{id}/graph` is `async` so the `session.graph` swap is serialized
+  on the event loop. The single `session.idle` `_final_output` fetch is bounded
+  (`wait_for`) so a slow `messages` GET can't starve idle delivery for all agents.
+- **Interject steers the live run**: a busy `submit` publishes `user_message` and
+  `prompt_async`'s the SAME OC session directly (no `st.lock`, no `st.idle`
+  clear) — OpenCode persists the message and re-reads it mid-loop. The old path
+  only sent the prompt inside the lock, so an interject blocked silently
+  ("vanished"). Never clear `st.idle` from a steer — only the owning run does.
+- **Transcript reattaches across a restart**: the OC session id is persisted
+  (`agent_state.oc_session_id`) and reattached in `_oc_session` (verified to still
+  resolve, else fresh); `history()` after a restart spins the server up and
+  reattaches ONLY if a session was persisted (else empty, no spawn). Without this
+  a restart wiped the chat (the id lived only in memory). Lifecycle still resets
+  to idle on restart (nothing is running then).
 - **Server cwd = the repo** (not a config home): OpenCode's `prompt_async` only
   starts a run when the session directory matches the server's project. Config
   is injected via `OPENCODE_CONFIG_CONTENT` (no `opencode.json` in the repo);

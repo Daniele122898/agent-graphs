@@ -28,6 +28,46 @@ def _launch_opencode_session(client, tmp_path, fake_client):
     }).json()
 
 
+GRAPH_FANOUT = {
+    "nodes": [
+        {"spec": {"id": "lead", "name": "Lead", "is_entry_point": True, "model": "lmstudio:m",
+                  "capabilities": {"filesystem": "read-write", "read_paths": ["**"], "write_paths": ["**"], "bash": True}}},
+        {"spec": {"id": "fe", "name": "Frontend", "model": "lmstudio:m",
+                  "capabilities": {"filesystem": "read", "read_paths": ["**"], "write_paths": [], "bash": False}}},
+        {"spec": {"id": "be", "name": "Backend", "model": "lmstudio:m",
+                  "capabilities": {"filesystem": "read", "read_paths": ["**"], "write_paths": [], "bash": False}}},
+    ],
+    "edges": [{"id": "e1", "source": "lead", "target": "fe", "label": "ui"},
+              {"id": "e2", "source": "lead", "target": "be", "label": "api"}],
+}
+
+
+def test_ask_team_callback_fans_out(tmp_path, monkeypatch):
+    fake = FakeOpenCodeClient({"fe": [[text_part("frontend answer")]], "be": [[text_part("backend answer")]]})
+    monkeypatch.setattr(oc_harness, "_default_connect", lambda session, token: FakeConnection(fake))
+
+    app = create_app(db_path=tmp_path / "app.sqlite")
+    with TestClient(app) as client:
+        team = client.post("/api/teams", json={"name": "TF", "graph": GRAPH_FANOUT}).json()
+        session = client.post("/api/sessions", json={
+            "team_id": team["id"], "repo_path": str(tmp_path / "repo"), "harness": "opencode"}).json()
+        sid = session["id"]
+        live = app.state.sessions.get(sid)
+        token = live.harness.token_for(live)
+
+        # fan out to both teammates at once (one by display name, one by id)
+        ok = client.post("/internal/ask_team", headers={"x-ag-token": token}, json={
+            "session_id": sid, "asker_id": "lead",
+            "assignments": [{"target_id": "Frontend", "task": "ui"}, {"target_id": "be", "task": "api"}]})
+        assert ok.status_code == 200
+        assert "frontend answer" in ok.text and "backend answer" in ok.text
+
+        # bad token -> 403
+        bad = client.post("/internal/ask_team", headers={"x-ag-token": "nope"}, json={
+            "session_id": sid, "asker_id": "lead", "assignments": [{"target_id": "fe", "task": "x"}]})
+        assert bad.status_code == 403
+
+
 def test_ask_agent_callback_routes_through_delegate(tmp_path, monkeypatch):
     fake = FakeOpenCodeClient({"expert": [[text_part("call it result.txt")]]})
     monkeypatch.setattr(oc_harness, "_default_connect", lambda session, token: FakeConnection(fake))
@@ -61,3 +101,10 @@ def test_ask_agent_callback_routes_through_delegate(tmp_path, monkeypatch):
         missing = client.post("/internal/ask_agent", headers={"x-ag-token": token}, json={
             "session_id": "sess_nope", "asker_id": "lead", "target_id": "expert", "question": "q"})
         assert missing.status_code == 404
+
+        # target given by DISPLAY NAME (mixed case + whitespace) resolves to the
+        # canonical id — the reported "'Planner' is not someone you can consult" bug
+        by_name = client.post("/internal/ask_agent", headers={"x-ag-token": token}, json={
+            "session_id": sid, "asker_id": "lead", "target_id": "  Expert  ", "question": "what file name?"})
+        assert by_name.status_code == 200
+        assert "result.txt" in by_name.text

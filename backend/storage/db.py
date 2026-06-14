@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS agent_state (
     compacted_context   TEXT NOT NULL DEFAULT '',
     lifecycle           TEXT NOT NULL DEFAULT 'idle',
     usage               TEXT NOT NULL DEFAULT '{}',  -- JSON: token usage
+    oc_session_id       TEXT NOT NULL DEFAULT '',     -- opencode harness: its OC session id (reattach across restart)
     updated_at          TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (session_id, agent_id),
     FOREIGN KEY (session_id) REFERENCES sessions (id)
@@ -125,6 +126,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     """
     if "harness" not in column_names(conn, "sessions"):
         conn.execute("ALTER TABLE sessions ADD COLUMN harness TEXT NOT NULL DEFAULT 'native'")
+    if "oc_session_id" not in column_names(conn, "agent_state"):
+        conn.execute("ALTER TABLE agent_state ADD COLUMN oc_session_id TEXT NOT NULL DEFAULT ''")
 
 
 def table_names(conn: sqlite3.Connection) -> set[str]:

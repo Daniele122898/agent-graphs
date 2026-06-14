@@ -140,6 +140,14 @@ class OpenCodeHarness(Harness):
         """The shared secret the ask_agent callback presents (Phase 5)."""
         return self._tokens.setdefault(session.id, new_id("octok_"))
 
+    @staticmethod
+    def _any_busy(rt: _Runtime) -> bool:
+        """True if any agent has a run in flight (lock held) or the server
+        reports it busy. A reconfigure restarts the server and drops every OC
+        session — doing that under a live run (e.g. a delegation chain parked on
+        st.idle) orphans the awaiter until the run timeout (the stall)."""
+        return any(st.lock.locked() or st.busy for st in rt.agents.values())
+
     async def _ensure(self, session: "Session") -> _Runtime:
         # Serialize so concurrent first-runs don't spawn two servers and a graph
         # change doesn't reconfigure mid-flight.
@@ -148,7 +156,13 @@ class OpenCodeHarness(Harness):
             sig = session.graph.model_dump_json()
             rt = self._runtimes.get(session.id)
             if rt is not None and rt.conn.running:
-                if rt.configured_sig != sig:
+                # A graph/spec edit reconfigures (restarts) the server — but ONLY
+                # when nothing is running. The frontend debounce-autosaves the
+                # graph (even on a node drag), so reconfiguring mid-run would
+                # restart the server under a parked delegation chain and hang
+                # every awaiter. Defer the config change to the next idle run
+                # (the documented "edit takes effect next run" guarantee).
+                if rt.configured_sig != sig and not self._any_busy(rt):
                     await self._reconfigure(session, rt, sig)
                 return rt
             conn = self._connect(session, self.token_for(session))
@@ -167,6 +181,17 @@ class OpenCodeHarness(Harness):
         server). The OpenCode-side conversation is lost on restart — the
         edit-takes-effect-next-run guarantee, heavier than native's history
         carry-forward; documented."""
+        # Safety net: free any run still parked on st.idle BEFORE tearing the
+        # state down. Cancelling the listener (below) skips its stream-death
+        # awaiter-freeing path, and rt.agents.clear() drops the _AgentState the
+        # awaiters wait on — so without this they hang until OPENCODE_RUN_TIMEOUT.
+        # _ensure already refuses to reconfigure while busy; this guarantees
+        # fail-fast (RuntimeError -> task parks blocked, retryable) if a
+        # reconfigure ever lands mid-run anyway.
+        for st in rt.agents.values():
+            if not st.idle.is_set():
+                st.error = st.error or "[server reconfigured mid-run]"
+                st.idle.set()
         if rt.listener is not None:
             rt.listener.cancel()
             try:
@@ -183,10 +208,29 @@ class OpenCodeHarness(Harness):
     async def _oc_session(self, rt: _Runtime, session: "Session", agent_id: str) -> _AgentState:
         st = rt.agents.setdefault(agent_id, _AgentState())
         if st.oc_session_id is None:
-            sid = await rt.conn.client.create_session(agent=agent_id, directory=str(session.repo_root))
-            st.oc_session_id = sid
-            rt.by_oc[sid] = agent_id
+            # Reattach: a persisted OC session id from a previous process still
+            # resolves against OpenCode's on-disk store (the re-spawned server has
+            # the same repo cwd), so the transcript + conversation survive a
+            # restart. Verify it still resolves; otherwise create a fresh session.
+            persisted = self._state.get_oc_session(session.id, agent_id)
+            if persisted and await self._session_resolves(rt, persisted):
+                st.oc_session_id = persisted
+            else:
+                sid = await rt.conn.client.create_session(agent=agent_id, directory=str(session.repo_root))
+                st.oc_session_id = sid
+                self._state.set_oc_session(session.id, agent_id, sid)
+            rt.by_oc[st.oc_session_id] = agent_id
         return st
+
+    async def _session_resolves(self, rt: _Runtime, oc_session_id: str) -> bool:
+        """True if the OC session id still exists on the server (a GET succeeds).
+        A persisted id from a prior process may be gone if OpenCode's store was
+        cleared — degrade to a fresh session rather than breaking the run."""
+        try:
+            await rt.conn.client.messages(oc_session_id)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     async def start(self, session: "Session") -> None:
         await self._ensure(session)
@@ -287,7 +331,14 @@ class OpenCodeHarness(Harness):
             # run complete: compute final text, announce, free awaiters. Skip
             # agent_done when the run errored or was user-aborted (stop already
             # set lifecycle idle in the abort case).
-            st.last_output = await self._final_output(rt, st)
+            # Bound the final-output fetch: this single listener processes every
+            # agent's events serially, so a slow/hung `messages` GET here would
+            # delay idle delivery (and thus run completion) for ALL agents. On
+            # timeout/error keep the last streamed output.
+            try:
+                st.last_output = await asyncio.wait_for(self._final_output(rt, st), timeout=15)
+            except Exception:  # noqa: BLE001 — never let final-output fetch stall the stream
+                pass
             if st.error is None and not st.aborting:
                 bus.publish("agent_done", {"agent_id": agent_id, "output": st.last_output})
                 self._lifecycle(session, agent_id, "idle")
@@ -395,11 +446,34 @@ class OpenCodeHarness(Harness):
             return st.last_output
 
     async def submit(self, session: "Session", agent_id: str, prompt: str) -> None:
-        # validate up front (404 surfaces to the caller), then run in the
-        # background so the HTTP response returns immediately. The per-agent
-        # lock inside run_to_completion serializes concurrent submits (native's
-        # one-run-at-a-time inbox semantics).
-        await self._ensure(session)
+        # validate up front (404 surfaces to the caller), then dispatch:
+        rt = await self._ensure(session)
+        if self.is_busy(session, agent_id):
+            # INTERJECT: steer the in-flight run instead of queuing behind
+            # st.lock (which would block silently — the old "vanished" bug).
+            # OpenCode persists the new user message and its run loop re-reads
+            # messages each iteration (wrapping a newer user message as a steer
+            # reminder), so a second prompt_async on the busy session injects
+            # mid-run. We must NOT take st.lock or clear st.idle — the owning
+            # run_to_completion still owns the single st.idle await and will see
+            # the combined work through to its eventual session.idle.
+            st = rt.agents.get(agent_id)
+            spec = find_spec(session.graph, agent_id)
+            if st is not None and st.oc_session_id is not None and spec is not None:
+                session.bus.publish("user_message", {"agent_id": agent_id, "text": prompt})
+                try:
+                    await rt.conn.client.prompt_async(
+                        st.oc_session_id, agent=agent_id, model=self._model_dict(spec.model), text=prompt
+                    )
+                    return
+                except Exception as e:  # noqa: BLE001 — steering failed; surface, don't drop
+                    session.bus.publish("agent_error", {"agent_id": agent_id, "error": f"interject failed: {e}"})
+                    return
+            # raced to idle / state cleared between the busy check and here →
+            # fall through to a fresh tracked run rather than dropping the prompt.
+        # Not busy: fresh tracked run in the background (HTTP response returns
+        # immediately). The per-agent lock inside run_to_completion serializes
+        # concurrent fresh submits (native's one-run-at-a-time inbox semantics).
         task = asyncio.create_task(self._submit_bg(session, agent_id, prompt))
         self._bg = getattr(self, "_bg", set())
         self._bg.add(task)
@@ -410,8 +484,11 @@ class OpenCodeHarness(Harness):
             await self.run_to_completion(session, agent_id, prompt)
         except asyncio.CancelledError:
             pass  # user stopped this run (deliberate abort signal, not a task cancel)
-        except Exception:  # noqa: BLE001 — already surfaced via agent_error on the bus
-            pass
+        except Exception as e:  # noqa: BLE001
+            # run_to_completion already publishes agent_error for in-band failures
+            # (timeout, session.error); this catches anything earlier (e.g. the
+            # prompt_async POST) so a dropped submit is visible, never swallowed.
+            session.bus.publish("agent_error", {"agent_id": agent_id, "error": str(e)})
 
     async def run_for_task(self, session: "Session", agent_id: str, prompt: str) -> str:
         output = await self.run_to_completion(session, agent_id, prompt)
@@ -481,8 +558,18 @@ class OpenCodeHarness(Harness):
         rt = self._runtimes.get(session.id)
         st = rt.agents.get(agent_id) if rt else None
         if st is None or st.oc_session_id is None:
+            # Not live in memory (e.g. just after a backend restart). Reattach the
+            # transcript ONLY if this agent has a persisted OC session from a prior
+            # run — spin up the server to read it. If it never ran, there's nothing
+            # to show, so don't spawn a server just to render an empty transcript.
+            if not self._state.get_oc_session(session.id, agent_id):
+                return HistoryView(instructions=instructions, rows=[], message_count=0)
+            rt = await self._ensure(session)
+            st = await self._oc_session(rt, session, agent_id)
+        try:
+            msgs = await rt.conn.client.messages(st.oc_session_id)
+        except Exception:  # noqa: BLE001 — a stale/unavailable session must not 500 the tab
             return HistoryView(instructions=instructions, rows=[], message_count=0)
-        msgs = await rt.conn.client.messages(st.oc_session_id)
         return HistoryView(instructions=instructions, rows=render_oc_messages(msgs), message_count=len(msgs))
 
     async def clear_history(self, session: "Session", agent_id: str) -> None:
@@ -492,6 +579,7 @@ class OpenCodeHarness(Harness):
             await rt.conn.client.delete_session(st.oc_session_id)
             rt.by_oc.pop(st.oc_session_id, None)
             rt.agents[agent_id] = _AgentState()  # fresh session created on next run
+            self._state.set_oc_session(session.id, agent_id, "")  # drop the stale reattach pointer
 
     async def summarize_history(self, session: "Session", agent_id: str) -> list[dict]:
         rt = self._runtimes.get(session.id)

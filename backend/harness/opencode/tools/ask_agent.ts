@@ -9,9 +9,9 @@ import { tool } from "@opencode-ai/plugin"
 // asker is known without a session map.
 export default tool({
   description:
-    "Consult a teammate agent by id and get their concise answer. Use this when a question is outside your expertise; only the teammates listed in your instructions are reachable.",
+    "Consult a teammate agent and get their concise answer. Use this when a question is outside your expertise; only the teammates listed in your instructions are reachable.",
   args: {
-    target_id: tool.schema.string().describe("the teammate's agent id"),
+    target_id: tool.schema.string().describe("the teammate to ask — their id (in backticks) or display name; both resolve"),
     question: tool.schema.string().describe("the question to ask them"),
   },
   async execute(args, ctx) {

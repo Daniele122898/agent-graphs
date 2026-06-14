@@ -984,3 +984,147 @@ adversarial verification) confirmed real issues; fixed the substantive ones:
   /tmp/ag_shots/oc_02_after_run.png.
 - Confirmed clean teardown: no stray `opencode serve` processes after the E2E
   backend exited (the lifespan harness.shutdown fix from Phase 8b held).
+
+## OpenCode harness bug cluster — delegation/interject/stall/durability (2026-06-14)
+
+User hit a cluster of OpenCode-harness bugs (delegation by name rejected,
+interject vanishing, no parallel delegation, a hard pipeline stall, chat/status
+lost on reload). Root-caused via a parallel multi-agent research+verification
+pass; fixes landed in order so the shared files (base.py / opencode/harness.py /
+a2a.py) stayed coherent.
+
+### 2026-06-14 — The pipeline stall is reconfigure-mid-run, not OpenCode concurrency
+
+- **What:** `_ensure` now SKIPS a server reconfigure while any agent is busy
+  (`_any_busy`: a held `st.lock` or `st.busy`), deferring the config change to
+  the next idle run; `_reconfigure` frees every parked `st.idle` awaiter (with an
+  error) BEFORE `rt.agents.clear()` as a safety net; `PUT /api/teams/{id}/graph`
+  is now `async` so the live `session.graph` swap is serialized on the event loop
+  with the harness reads of it.
+- **Why:** the confirmed freeze ("all agents running, nothing happening"): the
+  frontend debounce-autosaves the graph (even on a node drag) → signature change
+  → the next `_ensure` (top of every delegation hop) called `_reconfigure`, which
+  restarts the server and `rt.agents.clear()`s the `_AgentState` whose `st.idle`
+  the parked lead/planner delegators were awaiting → they hung until the 900s
+  run timeout. OpenCode itself does NOT deadlock (one Runner per session, no
+  global lock; a delegator parked in `ask_agent`'s fetch holds nothing
+  server-side) — the freeze was entirely ours.
+- **Reversibility:** easy. The skip-while-busy is the primary guard; the
+  awaiter-freeing is defense-in-depth. Documented tradeoff: a graph edit during a
+  run takes effect on the next idle run (was already the documented contract).
+
+### 2026-06-14 — Bound the single listener's final-output fetch
+
+- **What:** the `session.idle` handler wraps `_final_output` (a `messages` GET)
+  in `asyncio.wait_for(timeout=15)`, falling back to the last streamed output.
+- **Why:** one `_listen` task processes EVERY agent's SSE events serially; a
+  slow/hung `messages` GET there would delay idle delivery (run completion) for
+  all agents. Secondary latency hardening, not the hard freeze above.
+- **Reversibility:** trivial.
+
+### 2026-06-14 — Delegation accepts a teammate by display name OR id (both harnesses)
+
+- **What:** new pure `base.resolve_target(graph, asker, ref)` — trims, strips
+  backticks, case-insensitive, scoped to the asker's neighbors (resolution set ==
+  guard set, so you can never resolve to a non-neighbor); unique display-name or
+  id match → canonical id, ambiguous name → `ModelRetry`, unknown → None.
+  `check_delegation` resolves FIRST then runs the cycle/depth guards on the
+  canonical id (so a name one hop + id the next can't dodge the cycle guard) and
+  returns the resolved spec; `delegate` uses `spec.id`. Native `Delegator.ask`
+  routes through the same resolver (local import to avoid an agents↔harness
+  cycle). Tool docstrings now say a name is accepted.
+- **Why:** instructions list teammates as `Planner (\`agent_6\`)`, so small models
+  call `ask_agent("Planner")` and got the exact reported rejection. The guard
+  only ever accepted ids.
+- **Reversibility:** easy; the exact-id fast path preserves prior behavior byte
+  for byte. Also gitignored `.opencode/` (a runtime artifact dir the harness
+  stages the tool + node_modules into) — a stale copy had been committed.
+
+### 2026-06-14 — Interject steers the live OpenCode run
+
+- **What:** `submit` now branches on `is_busy`. Busy → publish `user_message`
+  immediately and `prompt_async` the SAME OC session directly (no `st.lock`, no
+  `st.idle` clear) — OpenCode persists the message and its run loop re-reads it
+  mid-run (steer). Idle → fresh tracked run as before. Raced-to-idle falls back
+  to a fresh run. `_submit_bg` now publishes `agent_error` instead of swallowing.
+- **Why:** the interject "vanished": the old `submit` only sent the prompt INSIDE
+  `st.lock` and published `user_message` only after acquiring it, so while a run
+  held the lock the interject blocked silently and never reached the model.
+- **Reversibility:** easy. Known follow-up (documented): interject while parked on
+  `ask_user` is steered rather than routed as an answer.
+
+### 2026-06-14 — Parallel delegation: an explicit `ask_team` fan-out tool (both harnesses)
+
+- **What:** new `ask_team` tool lets one agent hand independent work to SEVERAL
+  teammates at once. Backend runs them with `asyncio.gather`, so it doesn't depend
+  on the model emitting concurrent tool calls (the weak local model emits one per
+  turn — so this is the ONLY way to actually fan out here). Shared logic refactored
+  so single + batch delegation share one per-child runner:
+  - `base.Harness`: `delegate` now calls a lifecycle-free `_consult_one`; new
+    `delegate_many` validates ALL targets up front against one chain snapshot
+    (rejects unknown/non-neighbor/cycle/duplicate/over-`MAX_FANOUT`=4 as a
+    ModelRetry the model fixes), then gathers `_consult_one` over distinct targets
+    — one asker waiting→running transition; a per-target RUNTIME failure (busy /
+    error) is an inline `[consulting X failed: …]` note, never aborting siblings.
+  - native `a2a.Delegator`: same split (`_validate`/`_run_one`/`ask`/`ask_many`);
+    new `ask_team` tool (arg = list of `{target_id, task}`) registered in
+    `factory.py`.
+  - opencode: `tools/ask_team.ts` (zod array-of-objects arg) → `POST
+    /internal/ask_team` → `delegate_many`; staged alongside `ask_agent.ts`
+    (server.py now stages a dict of tool files; `OPENCODE_TOOLS` in config.py).
+  - neighbor instructions + both tool-guidance prompts mention `ask_team`.
+- **Why:** an agent could only consult teammates one at a time (ask_agent blocks
+  until the target finishes), so a planner couldn't dispatch frontend + backend
+  concurrently. (Confirmed NOT a server/concurrency limit — distinct targets have
+  distinct locks/sessions and already ran concurrently in our backend; the gap was
+  the lack of a fan-out affordance the model would actually use.)
+- **Design choice:** guard violations (bad name/cycle/dup/overflow) fail the whole
+  batch fast (the model's request mistake, no work done yet); runtime failures are
+  isolated per-target. Distinct-target dedup avoids two batch entries contending on
+  one teammate's lock / racing its delegation chain.
+- **Reversibility:** additive (new tool + endpoint + per-child refactor preserves
+  single-delegate behavior exactly). Caveat: on the single local model children
+  serialize on the model regardless of `gather`; real speedup needs parallel mode
+  / a hosted model. `MAX_FANOUT` guards the laptop.
+
+### 2026-06-14 — OpenCode transcript survives a restart (reattach)
+
+- **What:** persist each agent's OC session id (`agent_state.oc_session_id`, new
+  column + migration). `_oc_session` reattaches a persisted id (verifying it still
+  resolves, else creates fresh + re-persists); `history()` after a restart (no
+  live runtime) spins the server up and reattaches IF there's a persisted session
+  (else returns empty without spawning — nothing to show); `clear_history` drops
+  the pointer. `messages()` failures in `history()` now degrade to empty instead
+  of 500ing the tab.
+- **Why:** a backend/OpenCode-server restart (uvicorn --reload, a crash, the
+  reconfigure path) wiped the chat + statuses and orphaned the in-flight task —
+  the OC session id lived only in memory, so the re-spawned server made brand-new
+  sessions and `history()` had nothing to read, even though OpenCode persists its
+  own sessions to disk. (User chose "reattach" over a full DB transcript mirror.)
+- **Scope/known gaps (documented):** lifecycle/status still resets to idle on
+  restart (nothing is actually running then — lower value than the transcript);
+  reattach depends on OpenCode's on-disk session store surviving the respawn (the
+  `opencode.db` vs `opencode-local.db` channel detail still needs LIVE
+  confirmation — the deterministic test models the persisted store by carrying the
+  fake's message map across a simulated restart).
+- **Reversibility:** easy; additive column + lazy reattach with graceful fallback
+  to a fresh session.
+
+### 2026-06-14 — Live verification of the bug-cluster fixes
+
+- **Reattach (the headline bug), confirmed live two ways:** (1) `verify_oc_reattach.py`
+  — a real `opencode serve` respawned on the same repo still resolves a prior
+  session id (`messages()` 200; a gone/garbage id 404s, so `_session_resolves` is
+  a meaningful probe). (2) End-to-end through the running backend: created an
+  opencode session + transcript, restarted the backend on the same DB, re-fetched
+  `/api/agent/lead/history` → `message_count` + rows reattached identically (the
+  re-spawned server resolved the persisted `oc_session_id`). The user's "chat gone
+  on reload" is fixed.
+- **No regression, confirmed live:** the full browser E2E (`verify_opencode_ui.py`,
+  isolated stack on :8001/:5175, fresh temp DB — the user's :8000/:5173 + db.sqlite
+  untouched) passed with the real 9B model: opencode-harness chip shown, the agent
+  created `hello.txt`=`banana` via OpenCode's `write` tool, run rendered in the
+  transcript. A plain `prompt_async` run (PONG) also idled cleanly.
+- **Covered by the green deterministic suite (not separately live-driven, to spare
+  the laptop):** the stall fix (graph-edit-mid-run), interject steering, and
+  `ask_team` fan-out / name resolution — each has a fast-suite regression.

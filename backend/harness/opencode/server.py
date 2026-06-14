@@ -26,7 +26,7 @@ from pathlib import Path
 import httpx
 
 from ...domain.models import TeamGraph
-from .config import ASK_AGENT_TOOL_TS, build_opencode_config
+from .config import OPENCODE_TOOLS, build_opencode_config
 
 
 def opencode_binary() -> str:
@@ -74,8 +74,10 @@ class OpenCodeServer:
         # touch only our tool file.
         self._opencode_dir = self.repo_root / ".opencode"
         self._opencode_created = not self._opencode_dir.exists()
-        self._tool_file = self._opencode_dir / "tool" / "ask_agent.ts"
-        self._tool_created = False
+        self._tool_dir = self._opencode_dir / "tool"
+        # Tool files WE created (only ones we wrote get cleaned up — never a
+        # user's own .opencode/tool file of the same name).
+        self._tools_created: list[Path] = []
         self._proc: asyncio.subprocess.Process | None = None
         self.port: int | None = None
         self.base_url: str | None = None
@@ -99,19 +101,23 @@ class OpenCodeServer:
         """
         self.graph = graph
         self._config = build_opencode_config(graph, repo_root=self.repo_root)
-        (self._opencode_dir / "tool").mkdir(parents=True, exist_ok=True)
-        if not self._tool_file.exists():
-            self._tool_file.write_text(ASK_AGENT_TOOL_TS)
-            self._tool_created = True
+        self._tool_dir.mkdir(parents=True, exist_ok=True)
+        for name, src in OPENCODE_TOOLS.items():
+            f = self._tool_dir / name
+            if not f.exists():
+                f.write_text(src)
+                self._tools_created.append(f)
 
     def _unstage(self) -> None:
         # Full teardown of a .opencode we created (incl. the node_modules
-        # OpenCode installs for the tool); otherwise just our tool file.
+        # OpenCode installs for the tools); otherwise just the tool files WE wrote.
         try:
             if self._opencode_created and self._opencode_dir.exists():
                 shutil.rmtree(self._opencode_dir, ignore_errors=True)
-            elif self._tool_created and self._tool_file.exists():
-                self._tool_file.unlink()
+            else:
+                for f in self._tools_created:
+                    if f.exists():
+                        f.unlink()
         except OSError:
             pass
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from pydantic_ai import ModelRetry
 
 from backend.domain.models import AgentSpec, Capabilities, GraphEdge, GraphNode, TeamGraph
 from backend.harness.opencode.harness import OpenCodeHarness
@@ -25,8 +26,19 @@ def _graph() -> TeamGraph:
                      edges=[GraphEdge(id="e1", source="lead", target="expert", label="ask")])
 
 
-def _opencode_session(conn, fake_clock, repo, client: FakeOpenCodeClient):
-    graph = _graph()
+def _fanout_graph() -> TeamGraph:
+    """lead -> frontend, lead -> backend (two neighbors, for fan-out tests)."""
+    lead = AgentSpec(id="lead", name="Lead", is_entry_point=True, model="lmstudio:qwen/qwen3.5-9b",
+                     capabilities=Capabilities.from_level("read-write"))
+    fe = AgentSpec(id="fe", name="Frontend", model="lmstudio:qwen/qwen3.5-9b", capabilities=Capabilities.from_level("read"))
+    be = AgentSpec(id="be", name="Backend", model="lmstudio:qwen/qwen3.5-9b", capabilities=Capabilities.from_level("read"))
+    return TeamGraph(nodes=[GraphNode(spec=lead), GraphNode(spec=fe), GraphNode(spec=be)],
+                     edges=[GraphEdge(id="e1", source="lead", target="fe", label="frontend"),
+                            GraphEdge(id="e2", source="lead", target="be", label="backend")])
+
+
+def _opencode_session(conn, fake_clock, repo, client: FakeOpenCodeClient, graph: TeamGraph | None = None):
+    graph = graph or _graph()
     team = TeamStore(conn, clock=fake_clock).create("T", graph)
     session = SessionManager(conn, clock=fake_clock).create_session(
         team_id=team.id, repo_path=repo, graph=graph
@@ -107,6 +119,83 @@ async def test_submit_runs_in_background_and_announces_done(conn, fake_clock, re
     assert any(e["type"] == "agent_done" for e in events)
     await session.harness.shutdown(session)
     sub.cancel()
+
+
+async def test_interject_steers_busy_run(conn, fake_clock, repo):
+    # Interject while busy must STEER the live run (a 2nd prompt_async on the same
+    # OC session), not queue silently behind st.lock (the "vanished" bug). The
+    # user sees their message immediately and the in-flight run carries it to idle.
+    client = FakeOpenCodeClient({"lead": [{"park": True}, [text_part("handled the interject")]]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+
+    await session.harness.submit(session, "lead", "do long work")  # fresh run → parks (busy)
+    for _ in range(100):
+        if session.harness.is_busy(session, "lead"):
+            break
+        await asyncio.sleep(0.02)
+    assert session.harness.is_busy(session, "lead")
+
+    await session.harness.submit(session, "lead", "ACTUALLY do this instead")  # interject
+    for _ in range(100):  # the interject reached the model: a 2nd prompt_async on the same session
+        if client._turn["ses_fake1"] == 2:
+            break
+        await asyncio.sleep(0.02)
+    assert client._turn["ses_fake1"] == 2, "interject was not steered into the live run"
+    # the user's interject is published (the old bug queued silently behind the
+    # lock and never surfaced it) — poll, the bus drain is a separate task
+    for _ in range(100):
+        if any(e["type"] == "user_message" and e["data"]["text"] == "ACTUALLY do this instead" for e in events):
+            break
+        await asyncio.sleep(0.02)
+    assert any(e["type"] == "user_message" and e["data"]["text"] == "ACTUALLY do this instead" for e in events)
+    # the steered work streams and the in-flight run completes on its idle
+    for _ in range(100):
+        if any(e["type"] == "agent_done" for e in events):
+            break
+        await asyncio.sleep(0.02)
+    assert any(e["type"] == "text" and "handled the interject" in e["data"].get("text", "") for e in events)
+    await session.harness.shutdown(session)
+    sub.cancel()
+
+
+async def test_transcript_reattaches_after_restart(conn, fake_clock, repo):
+    # Durability: after a backend restart the OpenCode transcript must come back.
+    # We persist the OC session id; a re-spawned server (same repo) still resolves
+    # it against OpenCode's on-disk store, so history() reattaches and reads it.
+    client = FakeOpenCodeClient({"lead": [[text_part("did the work")]]})
+    graph = _graph()
+    team = TeamStore(conn, clock=fake_clock).create("T", graph)
+    session = SessionManager(conn, clock=fake_clock).create_session(team_id=team.id, repo_path=repo, graph=graph)
+    state_store = AgentStateStore(conn, clock=fake_clock)
+    msglog = session.harness.message_log
+
+    h1 = OpenCodeHarness(state_store=state_store, message_log=msglog, connect=fake_connect(client))
+    session.harness = h1
+    await h1.run_to_completion(session, "lead", "do it")
+    view1 = await h1.history(session, "lead")
+    assert view1.message_count > 0 and any(r["kind"] == "text" for r in view1.rows)
+    oc_id = state_store.get_oc_session(session.id, "lead")
+    assert oc_id, "the OC session id must be persisted for reattach"
+    await h1.shutdown(session)
+
+    # Simulate a BACKEND RESTART: a brand-new harness (empty _runtimes), the SAME
+    # state store, and a fresh client that shares OpenCode's persisted store (its
+    # on-disk DB survives — modelled by carrying the messages dict forward).
+    client2 = FakeOpenCodeClient({"lead": [[text_part("more")]]})
+    client2._messages = client._messages
+    client2._agent_of = dict(client._agent_of)
+    h2 = OpenCodeHarness(state_store=state_store, message_log=msglog, connect=fake_connect(client2))
+    session.harness = h2
+
+    view2 = await h2.history(session, "lead")
+    assert view2.message_count == view1.message_count, "transcript should reattach after restart"
+    assert any(r["kind"] == "text" for r in view2.rows)
+    # and it reattached the SAME OC session (no fresh one created)
+    assert state_store.get_oc_session(session.id, "lead") == oc_id
+    await h2.shutdown(session)
 
 
 async def test_history_renders_transcript(conn, fake_clock, repo):
@@ -219,6 +308,38 @@ async def test_delegate_runs_target_and_logs(conn, fake_clock, repo):
     sub.cancel()
 
 
+async def test_delegate_many_fans_out_and_isolates_failures(conn, fake_clock, repo):
+    # Parallel delegation: lead fans out to frontend + backend at once. Backend
+    # errors — its failure must be inline (the asker still gets frontend's
+    # answer), and the asker makes exactly one waiting→running transition.
+    client = FakeOpenCodeClient({"fe": [[text_part("frontend done")]], "be": [{"error": "boom"}]})
+    session = _opencode_session(conn, fake_clock, repo, client, graph=_fanout_graph())
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+
+    out = await session.harness.delegate_many(session, "lead", [("Frontend", "build ui"), ("be", "build api")])
+    assert "frontend done" in out                       # the healthy sibling answered
+    assert "be" in out and "failed" in out.lower()      # the failing one is an inline note, not an abort
+    await asyncio.sleep(0.05)
+    lead_lc = [e["data"]["lifecycle"] for e in events if e["type"] == "agent_lifecycle" and e["data"]["agent_id"] == "lead"]
+    assert "waiting-on-agent" in lead_lc and lead_lc[-1] == "running"
+    # both targets actually ran (distinct OC sessions, concurrent — not serialized)
+    assert any(e["type"] == "agent_done" and e["data"]["agent_id"] == "fe" for e in events)
+    await session.harness.shutdown(session)
+    sub.cancel()
+
+
+async def test_delegate_many_rejects_overflow_and_duplicates(conn, fake_clock, repo):
+    client = FakeOpenCodeClient({"fe": [[text_part("x")]], "be": [[text_part("y")]]})
+    session = _opencode_session(conn, fake_clock, repo, client, graph=_fanout_graph())
+    with pytest.raises(ModelRetry, match="listed twice"):
+        await session.harness.delegate_many(session, "lead", [("fe", "a"), ("Frontend", "b")])
+    with pytest.raises(ModelRetry, match="capped"):
+        await session.harness.delegate_many(session, "lead", [("fe", str(i)) for i in range(5)])
+    await session.harness.shutdown(session)
+
+
 async def test_delegate_enforces_neighbor_guard(conn, fake_clock, repo):
     import pytest
     from pydantic_ai import ModelRetry
@@ -253,6 +374,63 @@ async def test_graph_edit_reconfigures_the_server(conn, fake_clock, repo):
     # an unchanged graph on the next run does NOT reconfigure again
     await session.harness.run_to_completion(session, "lead", "go thrice")
     assert rt.conn.reconfigured == 1
+    await session.harness.shutdown(session)
+
+
+async def test_graph_edit_does_not_reconfigure_mid_run(conn, fake_clock, repo):
+    # The pipeline-stall bug: a debounced graph autosave WHILE a run is in flight
+    # must NOT reconfigure (restart) the server — that drops every OC session and
+    # orphans the parked run/delegation (the "everyone running, nothing happening"
+    # freeze). The config change defers to the next idle run.
+    from backend.domain.models import AgentSpec, Capabilities, GraphEdge, GraphNode, TeamGraph
+    client = FakeOpenCodeClient({"lead": [{"park": True}, [text_part("done")]]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    run = asyncio.create_task(session.harness.run_to_completion(session, "lead", "go"))
+    for _ in range(100):
+        if session.registry.lifecycle("lead") == "running":
+            break
+        await asyncio.sleep(0.02)
+    rt = session.harness._runtimes[session.id]
+    assert rt.conn.reconfigured == 0
+
+    # simulate the autosave changing the graph signature mid-run
+    session.graph = TeamGraph(
+        nodes=[
+            GraphNode(spec=AgentSpec(id="lead", name="Lead", is_entry_point=True, persona="EDITED",
+                                     model="lmstudio:qwen/qwen3.5-9b", capabilities=Capabilities.from_level("read-write"))),
+            GraphNode(spec=AgentSpec(id="expert", name="Expert", model="lmstudio:qwen/qwen3.5-9b",
+                                     capabilities=Capabilities.from_level("read"))),
+        ],
+        edges=[GraphEdge(id="e1", source="lead", target="expert", label="ask")],
+    )
+    await session.harness._ensure(session)
+    assert rt.conn.reconfigured == 0, "must NOT reconfigure while a run is in flight (would orphan it)"
+
+    # stop the parked run; once idle, the deferred config change applies.
+    await session.harness.stop(session, "lead")
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    await asyncio.sleep(0.05)  # let the abort's idle event clear st.busy
+    await session.harness._ensure(session)
+    assert rt.conn.reconfigured == 1, "deferred edit should reconfigure once idle"
+    await session.harness.shutdown(session)
+
+
+async def test_reconfigure_frees_parked_awaiter(conn, fake_clock, repo):
+    # Defense-in-depth: if a reconfigure ever lands mid-run anyway, the parked
+    # awaiter must be freed (RuntimeError → task parks blocked, retryable), never
+    # hang until OPENCODE_RUN_TIMEOUT.
+    client = FakeOpenCodeClient({"lead": [{"park": True}]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    run = asyncio.create_task(session.harness.run_to_completion(session, "lead", "go"))
+    for _ in range(100):
+        if session.registry.lifecycle("lead") == "running":
+            break
+        await asyncio.sleep(0.02)
+    rt = session.harness._runtimes[session.id]
+    await session.harness._reconfigure(session, rt, "new-sig")  # forced mid-run
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(run, timeout=2)
     await session.harness.shutdown(session)
 
 

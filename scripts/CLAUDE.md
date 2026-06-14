@@ -28,3 +28,10 @@ wait on `networkidle` (the SSE `/events` stream never goes idle).
   (no LM Studio needed). Use it to browser-verify agent *flows* — e.g. the
   ask_user question card — deterministically: start it on :8001, point Vite at
   it with `AG_BACKEND`, and drive with Playwright. Fresh DB every launch.
+- `verify_oc_reattach.py` — focused **live** durability check (the Step-6 restart
+  reattach): spawns a real `opencode serve` on a temp repo, creates a session,
+  shuts it down, RE-spawns on the same repo, and asserts the old session id still
+  resolves (`messages()` 200, vs 404 for a gone session). Confirms the assumption
+  behind persisting `oc_session_id` — OpenCode's on-disk store survives a respawn
+  — without the backend/UI/model. Run: `./.venv/bin/python scripts/verify_oc_reattach.py`
+  (needs the `opencode` binary). Verified passing 2026-06-14.

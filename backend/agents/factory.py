@@ -12,7 +12,7 @@ from __future__ import annotations
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 
-from .a2a import ask_agent, neighbor_instructions
+from .a2a import ask_agent, ask_team, neighbor_instructions
 from .capabilities import make_dev_toolset
 from .history import compaction_capability
 from ..domain.models import AgentSpec
@@ -39,7 +39,7 @@ def build_agent(
         deps_type=AgentDeps,
         instructions=build_instructions(spec),
         toolsets=[make_dev_toolset(dev_tools)],
-        tools=[write_todos, ask_agent, ask_user],
+        tools=[write_todos, ask_agent, ask_team, ask_user],
         capabilities=[compaction_capability()],
         model_settings=model_settings,
         # Small local models need a few self-correction rounds (stale edit
