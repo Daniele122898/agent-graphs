@@ -37,9 +37,19 @@ if TYPE_CHECKING:
 CONTINUATION_NUDGES = 2
 
 # A run must not await session.idle forever: if the server dies or the SSE
-# stream drops without a terminal event, the awaiter would hang. Generous (a
-# weak local model is slow) but finite — mirrors the native finite read timeout.
-OPENCODE_RUN_TIMEOUT = float(os.environ.get("AGENT_GRAPHS_OPENCODE_RUN_TIMEOUT", "900"))
+# stream drops without a terminal event, the awaiter would hang. Generous (big
+# implementation work + a weak local model are slow) but finite — mirrors the
+# native finite read timeout. Default 1h; env-tunable. This is the BACKSTOP; the
+# first-event watchdog + per-request provider timeouts (config.py) catch the
+# common stuck-DeepSeek failures far sooner.
+OPENCODE_RUN_TIMEOUT = float(os.environ.get("AGENT_GRAPHS_OPENCODE_RUN_TIMEOUT", "3600"))
+
+# After prompt_async the run must produce SOME event (busy / a message part /
+# error) quickly. If nothing arrives, the model never actually ran (bad id/key,
+# rate-limited at connect, a no-op) — fail fast with a clear error instead of
+# waiting out the whole run budget (the old silent-900s hang). Generous enough
+# for a cold first step on the laptop; env-tunable.
+OPENCODE_FIRST_EVENT_TIMEOUT = float(os.environ.get("AGENT_GRAPHS_OPENCODE_FIRST_EVENT_TIMEOUT", "120"))
 
 REVIEW_PROMPT = (
     "You are reviewing whether a task result fully satisfies the task. Reply with "
@@ -89,6 +99,7 @@ class _AgentState:
         self.oc_session_id: str | None = None
         self.lock = asyncio.Lock()
         self.idle = asyncio.Event()
+        self.started = asyncio.Event()  # set on the first event of a run (watchdog)
         self.busy = False
         self.error: str | None = None
         self.aborting = False  # set by stop() → run_to_completion raises CancelledError
@@ -288,6 +299,7 @@ class OpenCodeHarness(Harness):
             return  # server-level event or not one of our agent sessions
         st = rt.agents[agent_id]
         bus = session.bus
+        st.started.set()  # any event for this agent means the run actually started (watchdog)
 
         if etype == "message.part.updated":
             self._emit_part(bus, st, agent_id, props.get("part", {}) or {})
@@ -299,6 +311,14 @@ class OpenCodeHarness(Harness):
             if stat == "busy":
                 st.busy = True
                 self._lifecycle(session, agent_id, "running")
+            elif stat == "retry":
+                # OpenCode is retrying a transient model error (rate limit / 5xx /
+                # "Overloaded"). Its retry loop is UNBOUNDED, so surface it as a
+                # visible row — otherwise a rate-limited DeepSeek run just shows
+                # "running" forever ("running but doing nothing"). Lifecycle stays
+                # running (it may recover); the run budget is the ultimate bound.
+                detail = (props.get("status", {}) or {}).get("message") or "transient model error (rate limit / overloaded)"
+                bus.publish("retry", {"agent_id": agent_id, "text": f"retrying — {detail}"})
             elif stat == "idle":
                 st.busy = False
         elif etype == "message.updated":
@@ -412,8 +432,19 @@ class OpenCodeHarness(Harness):
             raise HTTPException(404, f"no agent '{agent_id}' in this session")
         rt = await self._ensure(session)
         st = await self._oc_session(rt, session, agent_id)
-        async with st.lock:
+        # Acquire the per-agent lock. ``lock_timeout`` bounds LOCK ACQUISITION
+        # ONLY (a delegation passes it as a deadlock backstop for a BUSY target →
+        # TimeoutError → "busy" ModelRetry); a normal run waits for the lock. The
+        # RUN itself is bounded by the run budget below, NOT lock_timeout — those
+        # were conflated before, so a delegated run's whole execution was wrongly
+        # capped at the (short) busy-timeout.
+        if lock_timeout is not None:
+            await asyncio.wait_for(st.lock.acquire(), timeout=lock_timeout)
+        else:
+            await st.lock.acquire()
+        try:
             st.idle.clear()
+            st.started.clear()
             st.error = None
             st.aborting = False
             st.seen_tool_call.clear()
@@ -427,12 +458,28 @@ class OpenCodeHarness(Harness):
                 st.oc_session_id, agent=agent_id, model=self._model_dict(spec.model), text=prompt
             )
             try:
-                await asyncio.wait_for(st.idle.wait(), timeout=lock_timeout or OPENCODE_RUN_TIMEOUT)
+                # Watchdog: the prompt must produce SOME event quickly; if not, the
+                # model never ran (bad id/key, rate-limited at connect, no-op) —
+                # fail fast instead of burning the whole run budget (the silent
+                # 900s hang). idle implies started, so a very fast run is fine.
+                try:
+                    await asyncio.wait_for(st.started.wait(), timeout=OPENCODE_FIRST_EVENT_TIMEOUT)
+                except asyncio.TimeoutError:
+                    await rt.conn.client.abort(st.oc_session_id)
+                    msg = (
+                        f"no response from the model in {int(OPENCODE_FIRST_EVENT_TIMEOUT)}s "
+                        f"— check the model id / API key / rate limit for {spec.model}"
+                    )
+                    session.bus.publish("agent_error", {"agent_id": agent_id, "error": msg})
+                    self._lifecycle(session, agent_id, "blocked")
+                    raise RuntimeError(msg)
+                # Then wait for completion, bounded by the (generous) run budget.
+                await asyncio.wait_for(st.idle.wait(), timeout=OPENCODE_RUN_TIMEOUT)
             except asyncio.TimeoutError:
-                # the run never signalled completion — abort it server-side and
-                # surface as an error so the agent lands blocked, never hung.
+                # the run started but never signalled completion — abort server-side
+                # and surface as an error so the agent lands blocked, never hung.
                 await rt.conn.client.abort(st.oc_session_id)
-                msg = f"run did not complete within {int(lock_timeout or OPENCODE_RUN_TIMEOUT)}s"
+                msg = f"run did not complete within {int(OPENCODE_RUN_TIMEOUT)}s"
                 session.bus.publish("agent_error", {"agent_id": agent_id, "error": msg})
                 self._lifecycle(session, agent_id, "blocked")
                 raise RuntimeError(msg)
@@ -448,6 +495,8 @@ class OpenCodeHarness(Harness):
             if st.error:
                 raise RuntimeError(st.error)
             return st.last_output
+        finally:
+            st.lock.release()
 
     async def submit(self, session: "Session", agent_id: str, prompt: str) -> None:
         # validate up front (404 surfaces to the caller), then dispatch:

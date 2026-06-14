@@ -103,7 +103,22 @@ no caller ever holds a harness-specific worker object. A `Session` owns one
 - **A graph/spec edit restarts the server** (`_ensure` compares the graph
   signature → `reconfigure`); the OpenCode-side conversation is lost on restart
   (heavier than native's history carry-forward) — accepted, documented.
-- **DeepSeek caveat**: OpenCode's registry may not know newer ids
-  (`deepseek-v4-flash`); config declares them under `provider.deepseek.models`,
-  but verify live — an unknown id makes `prompt_async` no-op (bounded now by the
-  run timeout). The native harness uses DeepSeek directly and is unaffected.
+- **DeepSeek on OpenCode — fail-fast, NOT the old "unknown-id no-op" theory**
+  (corrected 2026-06-14, verified against vendored source). Declaring the models
+  under `provider.deepseek.models` registers the ids, so the model RESOLVES; an
+  unknown id would *fail fast* (`session.error` → blocked), not hang. The real
+  big-task failures were: (1) **no per-request HTTP timeout** → a stuck/no-progress
+  DeepSeek fetch hangs the whole run → now `config._request_timeout_opts` wires
+  `timeout`/`headerTimeout`/`chunkTimeout` (env-tunable) into both provider blocks;
+  (2) **a first-event watchdog** (`OPENCODE_FIRST_EVENT_TIMEOUT`) aborts a prompt
+  that produces no events at all, instead of waiting the full run budget; (3)
+  OpenCode's **unbounded retry loop** (rate-limit/5xx) was invisible — the
+  `session.status: retry` is now surfaced as a `retry` bus row (not a mute
+  "running"). The per-run budget (`OPENCODE_RUN_TIMEOUT`, default now 1h) is the
+  final backstop; `lock_timeout` bounds only LOCK ACQUISITION (the busy-target
+  deadlock backstop), no longer the whole run. The native harness uses DeepSeek
+  directly and is unaffected.
+- **Delegation is still BLOCKING** (asker parked inside the `ask_agent`/`ask_team`
+  tool fetch for the whole nested subtree); the tool fetches set `timeout:false`
+  so Bun's ~255s default can't orphan a long subtree. Non-blocking/callback
+  delegation is the planned structural fix for deep chains (see `log.md`).

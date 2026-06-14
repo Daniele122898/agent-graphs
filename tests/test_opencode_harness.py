@@ -434,6 +434,42 @@ async def test_reconfigure_frees_parked_awaiter(conn, fake_clock, repo):
     await session.harness.shutdown(session)
 
 
+async def test_no_first_event_watchdog_fails_fast(conn, fake_clock, repo, monkeypatch):
+    # DeepSeek fail-fast: a prompt that produces NO events (bad id/key/no-op) must
+    # fail fast via the first-event watchdog, NOT hang for the whole run budget.
+    import backend.harness.opencode.harness as oc
+    monkeypatch.setattr(oc, "OPENCODE_FIRST_EVENT_TIMEOUT", 0.3)
+    client = FakeOpenCodeClient({"lead": [{"silent": True}]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+    with pytest.raises(RuntimeError, match="no response from the model"):
+        await asyncio.wait_for(session.harness.run_to_completion(session, "lead", "go"), timeout=3)
+    await asyncio.sleep(0.03)
+    assert any(e["type"] == "agent_error" for e in events)
+    assert session.registry.lifecycle("lead") == "blocked"
+    await session.harness.shutdown(session)
+    sub.cancel()
+
+
+async def test_retry_status_is_surfaced(conn, fake_clock, repo):
+    # An OpenCode transient-retry must be VISIBLE (a retry row), not a mute
+    # "running" — and the run still completes when it recovers.
+    client = FakeOpenCodeClient({"lead": [{"retry": "rate limited (429)"}]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+    out = await session.harness.run_to_completion(session, "lead", "go")
+    await asyncio.sleep(0.03)
+    assert "recovered" in out
+    retry_rows = [e for e in events if e["type"] == "retry" and e["data"]["agent_id"] == "lead"]
+    assert retry_rows and "rate limited" in retry_rows[0]["data"]["text"]
+    await session.harness.shutdown(session)
+    sub.cancel()
+
+
 async def test_session_error_blocks_and_does_not_announce_done(conn, fake_clock, repo):
     client = FakeOpenCodeClient({"lead": [{"error": "Channel Error: worker crashed"}]})
     session = _opencode_session(conn, fake_clock, repo, client)

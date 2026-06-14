@@ -101,6 +101,24 @@ def test_provider_block_lmstudio_always_deepseek_when_keyed(monkeypatch, tmp_pat
     assert cfg2["provider"]["deepseek"]["options"]["apiKey"] == "sk-test-not-real"
 
 
+def test_provider_block_sets_per_request_timeouts(monkeypatch, tmp_path):
+    # Per-request timeouts must be wired into BOTH provider blocks so a stuck
+    # model fetch fails fast instead of hanging the run (the silent-900s hang).
+    monkeypatch.setenv("AGENT_GRAPHS_CONFIG", str(tmp_path / "absent.yml"))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    monkeypatch.delenv("AGENT_GRAPHS_OPENCODE_REQUEST_TIMEOUT_MS", raising=False)
+    monkeypatch.delenv("AGENT_GRAPHS_OPENCODE_HEADER_TIMEOUT_MS", raising=False)
+    monkeypatch.delenv("AGENT_GRAPHS_OPENCODE_CHUNK_TIMEOUT_MS", raising=False)
+    cfg = build_opencode_config(_graph(), repo_root=Path("/tmp/repo"))
+    for prov in ("lmstudio", "deepseek"):
+        opts = cfg["provider"][prov]["options"]
+        assert opts["timeout"] > 0 and opts["headerTimeout"] > 0 and opts["chunkTimeout"] > 0
+    # an env set to 0 disables that one
+    monkeypatch.setenv("AGENT_GRAPHS_OPENCODE_CHUNK_TIMEOUT_MS", "0")
+    cfg2 = build_opencode_config(_graph(), repo_root=Path("/tmp/repo"))
+    assert "chunkTimeout" not in cfg2["provider"]["deepseek"]["options"]
+
+
 def test_ask_agent_tool_uses_env_wiring():
     # the custom tool must read its callback wiring from env (server manager
     # injects it) and pass ctx.agent as the asker

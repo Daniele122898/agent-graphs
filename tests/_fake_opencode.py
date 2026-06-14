@@ -61,6 +61,25 @@ class FakeOpenCodeClient:
             await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "busy"}}})
             return
 
+        # A silent turn emits NOTHING — models a model that never responds (bad
+        # id/key, no-op). The first-event watchdog must fire.
+        if isinstance(turn, dict) and turn.get("silent"):
+            return
+
+        # A retry turn surfaces OpenCode's transient-retry status, then completes —
+        # for asserting the retry row is published (not a mute "running").
+        if isinstance(turn, dict) and "retry" in turn:
+            await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "busy"}}})
+            await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "retry", "message": turn["retry"]}}})
+            assistant = {"info": {"role": "assistant", "id": f"msg_{session_id}_r", "tokens": {"input": 5, "output": 3}},
+                         "parts": [text_part("recovered after retry")]}
+            self._messages[session_id].append(assistant)
+            await self._events.put({"type": "message.part.updated", "properties": {"sessionID": session_id, "part": assistant["parts"][0]}})
+            await self._events.put({"type": "message.updated", "properties": {"sessionID": session_id, "info": assistant["info"]}})
+            await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "idle"}}})
+            await self._events.put({"type": "session.idle", "properties": {"sessionID": session_id}})
+            return
+
         # An error turn goes busy then emits session.error (+ idle).
         if isinstance(turn, dict) and "error" in turn:
             await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "busy"}}})

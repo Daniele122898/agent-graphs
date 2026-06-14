@@ -1128,3 +1128,38 @@ a2a.py) stayed coherent.
 - **Covered by the green deterministic suite (not separately live-driven, to spare
   the laptop):** the stall fix (graph-edit-mid-run), interject steering, and
   `ask_team` fan-out / name resolution — each has a fast-suite regression.
+
+## Big-task failures on OpenCode (DeepSeek 900s hangs, ask_team timeouts) — 2026-06-14
+
+Second multi-agent research+verify pass on why big/long DeepSeek tasks fail. The
+**"unknown-id no-op" theory was REFUTED** (verified against vendored source): our
+config declares the deepseek models so they resolve; an unknown id would fail
+fast, not hang. Real causes: (1) no per-request HTTP timeout -> a stuck DeepSeek
+fetch hangs the run; (2) OpenCode's unbounded retry loop (rate-limit/5xx) pinned
+at status:retry, which we ignored -> "running but doing nothing"; (3) blocking
+delegation holds the tool fetch for the whole subtree -> Bun's ~255s fetch default
+fires -> "The operation timed out" and orphans the subtree; (4) the 900s cap was
+per-hop and lock_timeout was overloaded as the run bound.
+
+### 2026-06-14 — Phase A: fail-fast + sane timeouts (shipped)
+
+- **What:** (A1) config._request_timeout_opts wires timeout/headerTimeout/
+  chunkTimeout (env-tunable ms) into the deepseek + lmstudio provider blocks, so a
+  stuck/no-progress model fetch aborts instead of hanging. (A2) session.status
+  "retry" is surfaced as a `retry` bus row (visible, not a mute "running"). (A3) a
+  first-event watchdog (OPENCODE_FIRST_EVENT_TIMEOUT, 120s) aborts a prompt that
+  produces NO events with a clear "no response from the model — check id/key/rate
+  limit" error instead of waiting the run budget. (A4) the ask_agent/ask_team tool
+  fetches set timeout:false so Bun's ~255s default can't orphan a long subtree
+  (the backend owns the deadline). (A5) run_to_completion uses lock_timeout ONLY
+  for lock ACQUISITION (busy-target backstop) and the full run budget for the run;
+  OPENCODE_RUN_TIMEOUT default raised 900s->3600s (env-tunable). (A6) corrected the
+  stale DeepSeek caveat in harness/CLAUDE.md.
+- **Why:** removes the acute symptoms (silent 900s, invisible retries, Bun
+  "operation timed out") and is needed regardless of the delegation model — a
+  no-fail-fast model call hangs under blocking AND non-blocking delegation alike.
+- **Reversibility:** easy; all timeouts env-tunable (0 disables).
+- **Still open (Phase B, the user's instinct):** delegation is still BLOCKING (the
+  asker parked inside the tool fetch for the whole subtree). Structural fix =
+  non-blocking dispatch + steer-injection of results (reuses the interject path +
+  _submit_bg); pending the user's blocking-vs-callback-vs-task-graph decision.

@@ -27,12 +27,16 @@ export default tool({
     const res = await fetch(`${base}/internal/ask_team`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-ag-token": token },
+      // timeout:false (Bun) — the backend owns the deadline; without this Bun's
+      // ~255s fetch default kills this call mid-fan-out and orphans the target
+      // runs ("The operation timed out").
+      timeout: false,
       body: JSON.stringify({
         session_id: sessionId,
         asker_id: ctx.agent,
         assignments: args.assignments,
       }),
-    })
+    } as RequestInit)
     const text = await res.text()
     if (!res.ok) throw new Error(text || `ask_team failed (${res.status})`)
     return text

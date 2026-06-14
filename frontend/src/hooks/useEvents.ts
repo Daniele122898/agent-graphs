@@ -27,6 +27,7 @@ const EVENT_TYPES = [
   "tool_call",
   "tool_result",
   "todos",
+  "retry",
   "agent_done",
   "agent_error",
   "a2a_message",
