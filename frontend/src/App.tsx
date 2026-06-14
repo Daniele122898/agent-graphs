@@ -44,7 +44,7 @@ export default function App() {
   const [view, setView] = useState<"canvas" | "board">("canvas");
 
   const graph = useTeamGraph(activeTeamId);
-  const { events, lifecycles, activeEdges } = useEvents(activeSessionId);
+  const { events, lifecycles, waitingOn, activeEdges } = useEvents(activeSessionId);
 
   const selectSession = useCallback((id: string | null) => {
     setActiveSession(id);
@@ -110,6 +110,10 @@ export default function App() {
     is_entry_point: n.data.spec.is_entry_point,
   }));
   const agentNames = Object.fromEntries(agents.map((a) => [a.id, a.name]));
+  // Map each waiting agent's blocker IDs to display names for the UI.
+  const waitingOnNames: Record<string, string[]> = Object.fromEntries(
+    Object.entries(waitingOn).map(([id, targets]) => [id, targets.map((t) => agentNames[t] ?? t)])
+  );
 
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "var(--bg)" }}>
@@ -243,6 +247,7 @@ export default function App() {
                 nodes={graph.nodes}
                 edges={graph.edges}
                 lifecycles={lifecycles}
+                waitingOnNames={waitingOnNames}
                 onNodesChange={graph.onNodesChange}
                 onEdgesChange={graph.onEdgesChange}
                 onConnect={graph.onConnect}
@@ -262,6 +267,7 @@ export default function App() {
             onDelete={graph.deleteNode}
             events={events}
             lifecycles={lifecycles}
+            waitingOnNames={waitingOnNames}
             edges={graph.edges}
             agentNames={agentNames}
             onUpdateEdgeLabel={graph.updateEdgeLabel}

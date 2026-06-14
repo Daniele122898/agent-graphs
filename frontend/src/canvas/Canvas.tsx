@@ -25,6 +25,7 @@ export default function Canvas(props: {
   nodes: RFNode[];
   edges: Edge[];
   lifecycles: Record<string, AgentLifecycle>;
+  waitingOnNames: Record<string, string[]>;
   onNodesChange: (c: NodeChange<RFNode>[]) => void;
   onEdgesChange: (c: EdgeChange<Edge>[]) => void;
   onConnect: (c: Connection) => void;
@@ -34,10 +35,11 @@ export default function Canvas(props: {
   status: string;
   activeEdges: Set<string>;
 }) {
-  // Inject the live lifecycle into each node's data so AgentNode can color its badge.
+  // Inject the live lifecycle + who-it's-waiting-on into each node's data so
+  // AgentNode can color its badge and name the blocker(s).
   const nodes = props.nodes.map((n) => ({
     ...n,
-    data: { ...n.data, lifecycle: props.lifecycles[n.id] ?? "idle" },
+    data: { ...n.data, lifecycle: props.lifecycles[n.id] ?? "idle", waitingOnNames: props.waitingOnNames[n.id] },
   }));
   // Render-time edge decoration (the persisted graph stays plain except the
   // user-dragged `curve`): floating edge type + arrowhead; reciprocal pairs

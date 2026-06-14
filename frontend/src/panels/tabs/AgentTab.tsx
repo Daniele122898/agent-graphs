@@ -33,10 +33,12 @@ export default function AgentTab({
   agentId,
   events,
   lifecycle,
+  waitingOnNames,
 }: {
   agentId: string;
   events: BusEvent[];
   lifecycle: AgentLifecycle;
+  waitingOnNames?: string[];
 }) {
   const [prompt, setPrompt] = useState("");
   const [posting, setPosting] = useState(false);
@@ -49,6 +51,7 @@ export default function AgentTab({
   // would point past everything and silently hide all new events.
   const [baselineSeq, setBaselineSeq] = useState(0);
   const [working, setWorking] = useState<"clear" | "summarize" | null>(null);
+  const [todosOpen, setTodosOpen] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const eventsRef = useRef(events);
   eventsRef.current = events;
@@ -109,6 +112,19 @@ export default function AgentTab({
     () => events.filter((e) => (e.seq ?? 0) > baselineSeq && e.data?.agent_id === agentId),
     [events, baselineSeq, agentId]
   );
+  // Dedup the prompt: the OpenCode harness's history() reads the server's LIVE
+  // messages, so mid-run the in-flight user prompt is in BOTH the fetched history
+  // AND the live SSE tail — drop the live copy if history already shows it (the
+  // "message sent twice" report). Native history excludes the in-flight run, so
+  // this is a no-op there.
+  const liveRows = useMemo(() => {
+    const histUserTexts = new Set(
+      (history?.rows ?? []).filter((r) => r.kind === "user").map((r) => r.text)
+    );
+    return live.filter(
+      (e) => !(e.type === "user_message" && histUserTexts.has(String(e.data?.text ?? "")))
+    );
+  }, [live, history]);
   const todos = useMemo(() => {
     const last = [...mine].reverse().find((e) => e.type === "todos");
     return (last?.data?.todos as TodoItem[] | undefined) ?? [];
@@ -181,6 +197,9 @@ export default function AgentTab({
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span className="field-label" style={{ margin: 0 }}>STATUS</span>
         <Chip tone={LIFECYCLE_TONE[lifecycle]}>{lifecycle}</Chip>
+        {lifecycle === "waiting-on-agent" && waitingOnNames && waitingOnNames.length > 0 && (
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>⏳ on {waitingOnNames.join(", ")}</span>
+        )}
         <span style={{ flex: 1 }} />
         <Button size="sm" onClick={clearHistory} disabled={busy || working !== null || !hasConversation} title="Forget the whole conversation; keep the agent's identity">
           {working === "clear" ? "Clearing…" : "Clear"}
@@ -221,13 +240,30 @@ export default function AgentTab({
       ))}
 
       {todos.length > 0 && (
-        <div className="card" style={{ padding: 10 }}>
-          <div className="field-label">TODOS</div>
-          {todos.map((t, i) => (
-            <div key={i} style={{ fontSize: 13, color: t.status === "completed" ? "var(--text-faint)" : "var(--text)", textDecoration: t.status === "completed" ? "line-through" : "none" }}>
-              {TODO_MARK[t.status]} {t.content}
+        <div className="card" style={{ padding: 10, flexShrink: 0 }}>
+          <button
+            onClick={() => setTodosOpen((v) => !v)}
+            title={todosOpen ? "Collapse todos" : "Expand todos"}
+            style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", font: "inherit", textAlign: "left" }}
+          >
+            <span style={{ color: "var(--text-faint)", fontSize: 10 }}>{todosOpen ? "▾" : "▸"}</span>
+            <span className="field-label" style={{ margin: 0 }}>
+              TODOS
+              <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>
+                {" "}({todos.filter((t) => t.status === "completed").length}/{todos.length})
+              </span>
+            </span>
+          </button>
+          {todosOpen && (
+            // capped height + scroll so a long list never blocks the transcript
+            <div style={{ marginTop: 6, maxHeight: 160, overflowY: "auto" }}>
+              {todos.map((t, i) => (
+                <div key={i} style={{ fontSize: 13, color: t.status === "completed" ? "var(--text-faint)" : "var(--text)", textDecoration: t.status === "completed" ? "line-through" : "none" }}>
+                  {TODO_MARK[t.status]} {t.content}
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
 
@@ -255,14 +291,14 @@ export default function AgentTab({
         {history?.rows.map((r, i) => (
           <EventRow key={`h${i}`} event={historyRowToEvent(r)} />
         ))}
-        {history && history.rows.length > 0 && live.length > 0 && (
+        {history && history.rows.length > 0 && liveRows.length > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--text-faint)", fontSize: 11 }}>
             <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
             live
             <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
           </div>
         )}
-        {live.map((e, i) => (
+        {liveRows.map((e, i) => (
           <EventRow key={i} event={e} />
         ))}
       </div>
@@ -391,19 +427,35 @@ function Bubble({
 // click away. Tuned per tool so the transcript reads like a work log.
 function toolSummary(tool: string, args: Record<string, unknown> | undefined): string {
   const a = (k: string) => (args?.[k] != null ? String(args[k]) : "");
+  // `path`/`start_line` etc. are native tool arg names; OpenCode tools use
+  // `filePath`/`command`/`pattern`. Handle both so the transcript reads the same
+  // on either harness.
   switch (tool) {
     case "read_file":
-      return a("start_line") ? `${a("path")} :${a("start_line")}–${a("end_line") || "end"}` : a("path");
+    case "read":
+      return a("start_line")
+        ? `${a("path") || a("filePath")} :${a("start_line")}–${a("end_line") || "end"}`
+        : a("path") || a("filePath");
     case "write_file":
-      return a("path");
+    case "write":
+      return a("path") || a("filePath");
     case "edit_file":
-      return `${a("path")} :${a("start")}–${a("end")}`;
+    case "edit":
+      return a("start")
+        ? `${a("path")} :${a("start")}–${a("end")}`
+        : a("path") || a("filePath");
     case "list_dir":
-      return a("path") || ".";
+    case "list":
+      return a("path") || a("filePath") || ".";
     case "grep":
+      return `"${a("pattern")}"${a("path") || a("include") ? ` in ${a("path") || a("include")}` : ""}`;
+    case "glob":
       return `"${a("pattern")}"${a("path") ? ` in ${a("path")}` : ""}`;
     case "run_bash":
-      return truncate(a("command"), 90);
+    case "bash":
+      return truncate(a("description") || a("command"), 90);
+    case "question":
+      return truncate(a("question") || JSON.stringify(args?.questions ?? ""), 90);
     case "ask_agent":
       return `${a("target_id")} — ${truncate(a("question"), 90)}`;
     case "ask_team": {
@@ -422,15 +474,16 @@ function toolSummary(tool: string, args: Record<string, unknown> | undefined): s
 }
 
 const TOOL_ICON: Record<string, string> = {
-  read_file: "📖",
-  write_file: "📝",
-  edit_file: "✏️",
-  list_dir: "📁",
-  grep: "🔍",
-  run_bash: "💻",
+  read_file: "📖", read: "📖",
+  write_file: "📝", write: "📝",
+  edit_file: "✏️", edit: "✏️",
+  list_dir: "📁", list: "📁",
+  grep: "🔍", glob: "🔍",
+  run_bash: "💻", bash: "💻",
   ask_agent: "🤝",
   ask_team: "👥",
-  write_todos: "☑️",
+  write_todos: "☑️", todowrite: "☑️", todoread: "☑️",
+  question: "❓",
 };
 
 // A compact, expandable row for a tool call or its result: a readable summary

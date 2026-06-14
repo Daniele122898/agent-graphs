@@ -58,6 +58,7 @@ export default function Sidebar({
   onDelete,
   events,
   lifecycles,
+  waitingOnNames,
   edges,
   agentNames,
   onUpdateEdgeLabel,
@@ -68,6 +69,7 @@ export default function Sidebar({
   onDelete: (agentId: string) => void;
   events: BusEvent[];
   lifecycles: Record<string, AgentLifecycle>;
+  waitingOnNames: Record<string, string[]>;
   edges: Edge[];
   agentNames: Record<string, string>;
   onUpdateEdgeLabel: (edgeId: string, label: string) => void;
@@ -181,7 +183,7 @@ export default function Sidebar({
         ) : tab === "capabilities" ? (
           <CapabilitiesTab spec={selected} onUpdate={onUpdate} />
         ) : tab === "agent" ? (
-          <AgentTab agentId={selected.id} events={events} lifecycle={lifecycles[selected.id] ?? "idle"} />
+          <AgentTab agentId={selected.id} events={events} lifecycle={lifecycles[selected.id] ?? "idle"} waitingOnNames={waitingOnNames[selected.id]} />
         ) : tab === "stats" ? (
           <StatsTab spec={selected} />
         ) : (

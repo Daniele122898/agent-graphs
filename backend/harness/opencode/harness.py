@@ -368,9 +368,13 @@ class OpenCodeHarness(Harness):
             cid = part.get("callID") or part.get("id") or ""
             state = part.get("state", {}) or {}
             status = state.get("status")
-            if cid and cid not in st.seen_tool_call:
+            inp = state.get("input") or {}
+            # Emit the call once we ACTUALLY have args (input populated) or the
+            # tool has started/finished — NOT on the first "pending" update where
+            # input is still {} (that produced the empty "read {}" rows).
+            if cid and cid not in st.seen_tool_call and (inp or status in ("running", "completed", "error")):
                 st.seen_tool_call.add(cid)
-                bus.publish("tool_call", {"agent_id": agent_id, "tool": part.get("tool", ""), "args": state.get("input", {}) or {}})
+                bus.publish("tool_call", {"agent_id": agent_id, "tool": part.get("tool", ""), "args": inp})
             if status in ("completed", "error") and cid and cid not in st.seen_tool_result:
                 st.seen_tool_result.add(cid)
                 out = state.get("output") if status == "completed" else state.get("error", "error")
