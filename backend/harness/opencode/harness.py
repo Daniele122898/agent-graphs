@@ -427,11 +427,34 @@ class OpenCodeHarness(Harness):
             return st.last_output
 
     async def submit(self, session: "Session", agent_id: str, prompt: str) -> None:
-        # validate up front (404 surfaces to the caller), then run in the
-        # background so the HTTP response returns immediately. The per-agent
-        # lock inside run_to_completion serializes concurrent submits (native's
-        # one-run-at-a-time inbox semantics).
-        await self._ensure(session)
+        # validate up front (404 surfaces to the caller), then dispatch:
+        rt = await self._ensure(session)
+        if self.is_busy(session, agent_id):
+            # INTERJECT: steer the in-flight run instead of queuing behind
+            # st.lock (which would block silently — the old "vanished" bug).
+            # OpenCode persists the new user message and its run loop re-reads
+            # messages each iteration (wrapping a newer user message as a steer
+            # reminder), so a second prompt_async on the busy session injects
+            # mid-run. We must NOT take st.lock or clear st.idle — the owning
+            # run_to_completion still owns the single st.idle await and will see
+            # the combined work through to its eventual session.idle.
+            st = rt.agents.get(agent_id)
+            spec = find_spec(session.graph, agent_id)
+            if st is not None and st.oc_session_id is not None and spec is not None:
+                session.bus.publish("user_message", {"agent_id": agent_id, "text": prompt})
+                try:
+                    await rt.conn.client.prompt_async(
+                        st.oc_session_id, agent=agent_id, model=self._model_dict(spec.model), text=prompt
+                    )
+                    return
+                except Exception as e:  # noqa: BLE001 — steering failed; surface, don't drop
+                    session.bus.publish("agent_error", {"agent_id": agent_id, "error": f"interject failed: {e}"})
+                    return
+            # raced to idle / state cleared between the busy check and here →
+            # fall through to a fresh tracked run rather than dropping the prompt.
+        # Not busy: fresh tracked run in the background (HTTP response returns
+        # immediately). The per-agent lock inside run_to_completion serializes
+        # concurrent fresh submits (native's one-run-at-a-time inbox semantics).
         task = asyncio.create_task(self._submit_bg(session, agent_id, prompt))
         self._bg = getattr(self, "_bg", set())
         self._bg.add(task)
@@ -442,8 +465,11 @@ class OpenCodeHarness(Harness):
             await self.run_to_completion(session, agent_id, prompt)
         except asyncio.CancelledError:
             pass  # user stopped this run (deliberate abort signal, not a task cancel)
-        except Exception:  # noqa: BLE001 — already surfaced via agent_error on the bus
-            pass
+        except Exception as e:  # noqa: BLE001
+            # run_to_completion already publishes agent_error for in-band failures
+            # (timeout, session.error); this catches anything earlier (e.g. the
+            # prompt_async POST) so a dropped submit is visible, never swallowed.
+            session.bus.publish("agent_error", {"agent_id": agent_id, "error": str(e)})
 
     async def run_for_task(self, session: "Session", agent_id: str, prompt: str) -> str:
         output = await self.run_to_completion(session, agent_id, prompt)

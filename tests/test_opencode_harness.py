@@ -109,6 +109,46 @@ async def test_submit_runs_in_background_and_announces_done(conn, fake_clock, re
     sub.cancel()
 
 
+async def test_interject_steers_busy_run(conn, fake_clock, repo):
+    # Interject while busy must STEER the live run (a 2nd prompt_async on the same
+    # OC session), not queue silently behind st.lock (the "vanished" bug). The
+    # user sees their message immediately and the in-flight run carries it to idle.
+    client = FakeOpenCodeClient({"lead": [{"park": True}, [text_part("handled the interject")]]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+
+    await session.harness.submit(session, "lead", "do long work")  # fresh run → parks (busy)
+    for _ in range(100):
+        if session.harness.is_busy(session, "lead"):
+            break
+        await asyncio.sleep(0.02)
+    assert session.harness.is_busy(session, "lead")
+
+    await session.harness.submit(session, "lead", "ACTUALLY do this instead")  # interject
+    for _ in range(100):  # the interject reached the model: a 2nd prompt_async on the same session
+        if client._turn["ses_fake1"] == 2:
+            break
+        await asyncio.sleep(0.02)
+    assert client._turn["ses_fake1"] == 2, "interject was not steered into the live run"
+    # the user's interject is published (the old bug queued silently behind the
+    # lock and never surfaced it) — poll, the bus drain is a separate task
+    for _ in range(100):
+        if any(e["type"] == "user_message" and e["data"]["text"] == "ACTUALLY do this instead" for e in events):
+            break
+        await asyncio.sleep(0.02)
+    assert any(e["type"] == "user_message" and e["data"]["text"] == "ACTUALLY do this instead" for e in events)
+    # the steered work streams and the in-flight run completes on its idle
+    for _ in range(100):
+        if any(e["type"] == "agent_done" for e in events):
+            break
+        await asyncio.sleep(0.02)
+    assert any(e["type"] == "text" and "handled the interject" in e["data"].get("text", "") for e in events)
+    await session.harness.shutdown(session)
+    sub.cancel()
+
+
 async def test_history_renders_transcript(conn, fake_clock, repo):
     client = FakeOpenCodeClient({"lead": [[tool_part("read", "c1", {"path": "x"}, "contents"), text_part("read it")]]})
     session = _opencode_session(conn, fake_clock, repo, client)

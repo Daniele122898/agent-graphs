@@ -1039,3 +1039,16 @@ a2a.py) stayed coherent.
 - **Reversibility:** easy; the exact-id fast path preserves prior behavior byte
   for byte. Also gitignored `.opencode/` (a runtime artifact dir the harness
   stages the tool + node_modules into) — a stale copy had been committed.
+
+### 2026-06-14 — Interject steers the live OpenCode run
+
+- **What:** `submit` now branches on `is_busy`. Busy → publish `user_message`
+  immediately and `prompt_async` the SAME OC session directly (no `st.lock`, no
+  `st.idle` clear) — OpenCode persists the message and its run loop re-reads it
+  mid-run (steer). Idle → fresh tracked run as before. Raced-to-idle falls back
+  to a fresh run. `_submit_bg` now publishes `agent_error` instead of swallowing.
+- **Why:** the interject "vanished": the old `submit` only sent the prompt INSIDE
+  `st.lock` and published `user_message` only after acquiring it, so while a run
+  held the lock the interject blocked silently and never reached the model.
+- **Reversibility:** easy. Known follow-up (documented): interject while parked on
+  `ask_user` is steered rather than routed as an answer.
