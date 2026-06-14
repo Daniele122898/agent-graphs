@@ -1192,3 +1192,19 @@ per-hop and lock_timeout was overloaded as the run bound.
 - **Reversibility:** moderate. `delegate`/`delegate_many` remain; reverting is
   pointing `/internal` back at them. Native unaffected. Task-graph delegation
   (the eventual model) deferred to the plan.md backlog.
+
+### 2026-06-14 — Live E2E on the real team + DeepSeek (Phase A+B validated)
+
+- Ran the user's actual 6-agent `agent-graphs` team (lead→Planner→Frontend+Backend
+  experts, +Review/Documenter, all deepseek-v4-pro/flash) on the OpenCode harness
+  via an isolated stack (fresh DB, scratch repo — their data untouched), driving a
+  real "build a guess-the-number game" task.
+- RESULT: the delegation chain fired (lead→Planner, Planner→Backend+Frontend),
+  the **non-blocking ask_team fan-out ran the two experts CONCURRENTLY**, real
+  files (`frontend/`, `backend/`) were created, 39 tool calls, replies injected
+  back — **zero errors, zero 900s hangs, zero "operation timed out"** (the exact
+  failures reported). Playwright confirmed the control room renders the 6-agent
+  team + opencode chip + the Planner's ask_team transcript.
+- Minor follow-up applied: `agent_lifecycle "running"` was re-published on every
+  OpenCode busy tick (95 events/run) — now published only on the idle→busy
+  transition.

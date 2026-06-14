@@ -311,8 +311,9 @@ class OpenCodeHarness(Harness):
         elif etype == "session.status":
             stat = (props.get("status", {}) or {}).get("type")
             if stat == "busy":
+                if not st.busy:  # publish only on the idle→busy TRANSITION, not every tick
+                    self._lifecycle(session, agent_id, "running")
                 st.busy = True
-                self._lifecycle(session, agent_id, "running")
             elif stat == "retry":
                 # OpenCode is retrying a transient model error (rate limit / 5xx /
                 # "Overloaded"). Its retry loop is UNBOUNDED, so surface it as a
