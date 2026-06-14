@@ -43,6 +43,13 @@ own `CLAUDE.md` with subsystem detail (loaded when you open files there).
 ./.venv/bin/python -m uvicorn backend.main:app --reload --port 8000 --timeout-graceful-shutdown 3
 # frontend (Vite :5173, proxies /api /health /events)
 cd frontend && npm run dev
+# SINGLE-PROCESS (self-host) mode — for dogfooding the tool ON THIS REPO: build
+# the UI, then run the backend WITHOUT --reload; it serves the built frontend
+# from :8000 too (StaticFiles mount, added last so /api,/health,/events still
+# win). No Vite HMR + no --reload means an agent editing this repo can't
+# hot-swap code mid-run and kill the live session. Rebuild + restart for UI
+# changes (intentional). Skipped automatically if frontend/dist is absent.
+cd frontend && npm run build && cd .. && ./.venv/bin/python -m uvicorn backend.main:app --port 8000  # open :8000
 # backend tests — deterministic, token-free (FunctionModel); MUST be green
 ./.venv/bin/python -m pytest
 # frontend — type-check + build (no unit-test runner)

@@ -23,6 +23,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .agents.a2a import MessageLog
 from .api import install_routes
@@ -106,6 +107,18 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
         }
 
     install_routes(app)
+
+    # Single-process mode: if the frontend has been built, serve it from this
+    # same process so you can run ONE server (uvicorn WITHOUT --reload) for both
+    # API and UI. The point is dogfooding — when an agent edits THIS repo, there's
+    # no Vite HMR and no --reload to hot-swap code mid-run and kill the live
+    # session. Mounted LAST so the API/SSE routes above always win; skipped when
+    # dist/ is absent (then use the Vite dev server as usual). Rebuild + restart
+    # to pick up UI changes (intentional: stability during a run).
+    dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    if dist.is_dir():
+        app.mount("/", StaticFiles(directory=str(dist), html=True), name="frontend")
+
     return app
 
 
