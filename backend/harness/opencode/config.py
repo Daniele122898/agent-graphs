@@ -32,6 +32,10 @@ from .prompt import build_opencode_prompt
 # into <repo>/.opencode/tool/ at runtime; its callback wiring (URL/token/session
 # id) comes from env vars the server manager injects.
 ASK_AGENT_TOOL_TS = (Path(__file__).resolve().parent / "tools" / "ask_agent.ts").read_text()
+ASK_TEAM_TOOL_TS = (Path(__file__).resolve().parent / "tools" / "ask_team.ts").read_text()
+
+# Custom tools staged into <repo>/.opencode/tool/ at runtime (name -> source).
+OPENCODE_TOOLS = {"ask_agent.ts": ASK_AGENT_TOOL_TS, "ask_team.ts": ASK_TEAM_TOOL_TS}
 
 
 def _glob_permission(allowed: bool, paths: list[str]) -> object:

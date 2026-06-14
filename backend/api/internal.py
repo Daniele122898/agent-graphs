@@ -16,18 +16,23 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic_ai import ModelRetry
 
-from .schemas import AskAgentInternalRequest
+from .schemas import AskAgentInternalRequest, AskTeamInternalRequest
 
 
 def install(app: FastAPI) -> None:
-    @app.post("/internal/ask_agent", response_class=PlainTextResponse)
-    async def internal_ask_agent(body: AskAgentInternalRequest, x_ag_token: str = Header(default="")) -> str:
-        session = app.state.sessions.get(body.session_id)
+    def _authed_session(session_id: str, token: str):
+        """Resolve + token-authenticate a callback. 404 unknown, 403 bad token."""
+        session = app.state.sessions.get(session_id)
         if session is None:
             raise HTTPException(404, "no such session")
         token_for = getattr(session.harness, "token_for", None)
-        if token_for is None or x_ag_token != token_for(session):
+        if token_for is None or token != token_for(session):
             raise HTTPException(403, "invalid or missing callback token")
+        return session
+
+    @app.post("/internal/ask_agent", response_class=PlainTextResponse)
+    async def internal_ask_agent(body: AskAgentInternalRequest, x_ag_token: str = Header(default="")) -> str:
+        session = _authed_session(body.session_id, x_ag_token)
         # Thread the asker's in-flight delegation chain so the cross-hop
         # cycle/depth guards accumulate across HTTP callbacks (A→B→C…).
         current = getattr(session.harness, "current_chain", None)
@@ -39,4 +44,17 @@ def install(app: FastAPI) -> None:
         except ModelRetry as e:
             # guard violation / busy / consult failure → corrective message the
             # model can act on (surfaced as a tool error on the OpenCode side).
+            raise HTTPException(409, str(e))
+
+    @app.post("/internal/ask_team", response_class=PlainTextResponse)
+    async def internal_ask_team(body: AskTeamInternalRequest, x_ag_token: str = Header(default="")) -> str:
+        """Parallel-delegation callback: fan work out to several teammates at once
+        via Harness.delegate_many (shared guards + concurrent target runs)."""
+        session = _authed_session(body.session_id, x_ag_token)
+        current = getattr(session.harness, "current_chain", None)
+        chain = current(body.asker_id) if current else None
+        pairs = [(a.target_id, a.task) for a in body.assignments]
+        try:
+            return await session.harness.delegate_many(session, body.asker_id, pairs, chain=chain)
+        except ModelRetry as e:
             raise HTTPException(409, str(e))

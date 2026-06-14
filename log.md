@@ -1052,3 +1052,37 @@ a2a.py) stayed coherent.
   held the lock the interject blocked silently and never reached the model.
 - **Reversibility:** easy. Known follow-up (documented): interject while parked on
   `ask_user` is steered rather than routed as an answer.
+
+### 2026-06-14 — Parallel delegation: an explicit `ask_team` fan-out tool (both harnesses)
+
+- **What:** new `ask_team` tool lets one agent hand independent work to SEVERAL
+  teammates at once. Backend runs them with `asyncio.gather`, so it doesn't depend
+  on the model emitting concurrent tool calls (the weak local model emits one per
+  turn — so this is the ONLY way to actually fan out here). Shared logic refactored
+  so single + batch delegation share one per-child runner:
+  - `base.Harness`: `delegate` now calls a lifecycle-free `_consult_one`; new
+    `delegate_many` validates ALL targets up front against one chain snapshot
+    (rejects unknown/non-neighbor/cycle/duplicate/over-`MAX_FANOUT`=4 as a
+    ModelRetry the model fixes), then gathers `_consult_one` over distinct targets
+    — one asker waiting→running transition; a per-target RUNTIME failure (busy /
+    error) is an inline `[consulting X failed: …]` note, never aborting siblings.
+  - native `a2a.Delegator`: same split (`_validate`/`_run_one`/`ask`/`ask_many`);
+    new `ask_team` tool (arg = list of `{target_id, task}`) registered in
+    `factory.py`.
+  - opencode: `tools/ask_team.ts` (zod array-of-objects arg) → `POST
+    /internal/ask_team` → `delegate_many`; staged alongside `ask_agent.ts`
+    (server.py now stages a dict of tool files; `OPENCODE_TOOLS` in config.py).
+  - neighbor instructions + both tool-guidance prompts mention `ask_team`.
+- **Why:** an agent could only consult teammates one at a time (ask_agent blocks
+  until the target finishes), so a planner couldn't dispatch frontend + backend
+  concurrently. (Confirmed NOT a server/concurrency limit — distinct targets have
+  distinct locks/sessions and already ran concurrently in our backend; the gap was
+  the lack of a fan-out affordance the model would actually use.)
+- **Design choice:** guard violations (bad name/cycle/dup/overflow) fail the whole
+  batch fast (the model's request mistake, no work done yet); runtime failures are
+  isolated per-target. Distinct-target dedup avoids two batch entries contending on
+  one teammate's lock / racing its delegation chain.
+- **Reversibility:** additive (new tool + endpoint + per-child refactor preserves
+  single-delegate behavior exactly). Caveat: on the single local model children
+  serialize on the model regardless of `gather`; real speedup needs parallel mode
+  / a hosted model. `MAX_FANOUT` guards the laptop.

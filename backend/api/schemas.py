@@ -48,6 +48,22 @@ class AskAgentInternalRequest(BaseModel):
     question: str
 
 
+class TeamAssignmentWire(BaseModel):
+    """One (teammate, task) entry of an ask_team fan-out callback."""
+
+    target_id: str
+    task: str
+
+
+class AskTeamInternalRequest(BaseModel):
+    """Body of the OpenCode ask_team callback: fan work out to several teammates
+    at once. Localhost-only, authenticated by the per-session token header."""
+
+    session_id: str
+    asker_id: str
+    assignments: list[TeamAssignmentWire]
+
+
 class RunRequest(BaseModel):
     prompt: str
 

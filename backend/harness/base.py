@@ -30,6 +30,10 @@ if TYPE_CHECKING:
 # Delegation caps (mirrors a2a.py; the single source for both harnesses).
 MAX_DELEGATION_DEPTH = 3
 DELEGATION_BUSY_TIMEOUT = 15 * 60.0
+# Max teammates one agent may fan work out to in a single ask_team call. Bounds
+# concurrent target runs (the weak local model / single LM Studio can choke on
+# too many at once); split larger work across turns.
+MAX_FANOUT = 4
 
 
 @dataclass
@@ -232,17 +236,79 @@ class Harness(ABC):
         chain = list(chain or [])
         spec = check_delegation(session.graph, asker_id, target_id, chain)  # raises ModelRetry
         target_id = spec.id  # canonical id (target_id may have been a display name)
-
-        self._record(session, asker_id, target_id, "question", question)
         self._set_lifecycle(session, asker_id, "waiting-on-agent")
         try:
+            return await self._consult_one(
+                session, asker_id, target_id, question, usage=usage, chain=chain + [asker_id]
+            )
+        finally:
+            self._set_lifecycle(session, asker_id, "running")
+
+    async def delegate_many(
+        self,
+        session: "Session",
+        asker_id: str,
+        requests: list[tuple[str, str]],
+        *,
+        usage=None,
+        chain: list[str] | None = None,
+    ) -> str:
+        """Fan out to several teammates AT ONCE (the planner→frontend+backend
+        case). Validates every (target, question) up front against the SAME chain
+        snapshot, then runs them concurrently and returns their answers together.
+        The asker makes ONE waiting→running transition; a per-target failure
+        becomes an inline note rather than aborting its siblings. Shared by both
+        harnesses (the opencode ask_team callback; native has its own ask_many)."""
+        chain = list(chain or [])
+        if not requests:
+            raise ModelRetry("ask_team needs at least one (teammate, task) pair.")
+        if len(requests) > MAX_FANOUT:
+            raise ModelRetry(
+                f"ask_team is capped at {MAX_FANOUT} teammates at once; split the work across turns."
+            )
+        # Resolve + guard EVERY target before running any (all against the same
+        # pre-fan-out chain), and reject a duplicate target — one teammate does
+        # one thing at a time, two batch entries would contend on its lock.
+        resolved: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for target_ref, question in requests:
+            spec = check_delegation(session.graph, asker_id, target_ref, chain)  # raises ModelRetry
+            if spec.id in seen:
+                raise ModelRetry(
+                    f"'{spec.id}' is listed twice — one teammate does one thing at a time; ask them once."
+                )
+            seen.add(spec.id)
+            resolved.append((spec.id, question))
+
+        async def _one(tid: str, q: str) -> tuple[str, str]:
+            try:
+                return tid, await self._consult_one(
+                    session, asker_id, tid, q, usage=usage, chain=chain + [asker_id]
+                )
+            except ModelRetry as e:  # isolate: a failed teammate must not sink the others
+                return tid, f"[consulting {tid} failed: {e}]"
+
+        self._set_lifecycle(session, asker_id, "waiting-on-agent")
+        try:
+            results = await asyncio.gather(*(_one(tid, q) for tid, q in resolved))
+        finally:
+            self._set_lifecycle(session, asker_id, "running")
+        names = {n.spec.id: n.spec.name for n in session.graph.nodes}
+        return "\n\n".join(f"From {names.get(tid, tid)} (`{tid}`):\n{ans}" for tid, ans in results)
+
+    async def _consult_one(
+        self, session: "Session", asker_id: str, target_id: str, question: str, *, usage, chain: list[str]
+    ) -> str:
+        """Run ONE already-resolved target to completion + record the Q/reply.
+        Does NOT touch the asker's lifecycle — ``delegate``/``delegate_many`` own
+        that single waiting→running transition. ``chain`` is the FULL chain for
+        the child (caller appends the asker). Raises ``ModelRetry`` on busy/failure
+        (recording the failure as the reply so the canvas shows WHY)."""
+        self._record(session, asker_id, target_id, "question", question)
+        try:
             answer = await self.run_to_completion(
-                session,
-                target_id,
-                question,
-                usage=usage,
-                delegation_chain=chain + [asker_id],
-                lock_timeout=DELEGATION_BUSY_TIMEOUT,
+                session, target_id, question, usage=usage,
+                delegation_chain=chain, lock_timeout=DELEGATION_BUSY_TIMEOUT,
             )
         except asyncio.TimeoutError:
             self._record(session, target_id, asker_id, "reply", f"[no reply: busy for over {int(DELEGATION_BUSY_TIMEOUT)}s]")
@@ -255,8 +321,6 @@ class Harness(ABC):
         except Exception as e:  # noqa: BLE001 — surfaced on the target as agent_error too
             self._record(session, target_id, asker_id, "reply", f"[consultation failed: {e}]")
             raise ModelRetry(f"consulting '{target_id}' failed ({e}); handle it without them.") from e
-        finally:
-            self._set_lifecycle(session, asker_id, "running")
         self._record(session, target_id, asker_id, "reply", answer)
         return answer
 

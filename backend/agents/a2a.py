@@ -20,6 +20,7 @@ import asyncio
 import sqlite3
 from typing import TYPE_CHECKING, Awaitable, Callable
 
+from pydantic import BaseModel
 from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.usage import UsageLimits
 
@@ -65,8 +66,10 @@ def neighbor_instructions(graph: TeamGraph, agent_id: str) -> str:
         f"- {names.get(t, t)} (`{t}`){f' — {why}' if why else ''}" for t, why in pairs
     )
     return (
-        "You can consult these teammates with `ask_agent(target_id, question)`, "
-        "passing the id in backticks as target_id. "
+        "You can consult these teammates with `ask_agent(target_id, question)` "
+        "(pass either the id in backticks or the display name). To hand work to "
+        "SEVERAL of them at once, in parallel, call `ask_team` with one assignment "
+        "(teammate + task) per teammate instead of asking them one after another. "
         "They answer from their own expertise; use them instead of guessing:\n" + lines
     )
 
@@ -133,44 +136,43 @@ class Delegator:
                 return node.spec
         return None
 
-    async def ask(self, *, asker_id: str, target_id: str, question: str, usage, chain: list[str]) -> str:
-        # Resolve a target given by display name OR id to the canonical neighbor
-        # id (shared with the opencode harness via base.resolve_target — local
-        # import avoids any agents<->harness module cycle). Models reach for the
-        # human name ("Planner") shown in their instructions, not the id.
+    def _validate(self, asker_id: str, target_ref: str, chain: list[str]) -> AgentSpec:
+        """Resolve a target (display name OR id) to its spec + run the neighbor /
+        cycle / depth guards on the canonical id. Shared resolver with the
+        opencode harness (base.resolve_target — local import avoids an
+        agents↔harness cycle). Raises ``ModelRetry`` on any violation."""
         from ..harness.base import resolve_target
 
-        resolved = resolve_target(self.session.graph, asker_id, target_id)  # raises ModelRetry if ambiguous
+        resolved = resolve_target(self.session.graph, asker_id, target_ref)  # raises ModelRetry if ambiguous
         if resolved is None:
             names = {n.spec.id: n.spec.name for n in self.session.graph.nodes}
             pretty = sorted(f"{names.get(t, t)} (`{t}`)" for t, _ in self.neighbors(asker_id))
             raise ModelRetry(
-                f"'{target_id}' is not someone you can consult. "
+                f"'{target_ref}' is not someone you can consult. "
                 f"You may ask: {pretty or 'no one'}."
             )
-        target_id = resolved  # canonical id — the cycle/depth guards run on THIS
-        # Cycle + depth guards (the inoculation against runaway delegation loops).
-        if target_id in chain or target_id == asker_id:
-            raise ModelRetry(f"delegation cycle: '{target_id}' is already in the current chain {chain}.")
+        if resolved in chain or resolved == asker_id:
+            raise ModelRetry(f"delegation cycle: '{resolved}' is already in the current chain {chain}.")
         if len(chain) >= self._max_depth:
             raise ModelRetry(f"delegation depth cap ({self._max_depth}) reached; answer directly.")
+        spec = self._spec(resolved)
+        if spec is None:
+            raise ModelRetry(f"no agent '{resolved}' exists.")
+        return spec
 
-        target_spec = self._spec(target_id)
-        if target_spec is None:
-            raise ModelRetry(f"no agent '{target_id}' exists.")
-
+    async def _run_one(self, asker_id: str, target_spec: AgentSpec, question: str, usage, chain: list[str]) -> str:
+        """Run ONE already-validated target through its real RunningAgent (streamed
+        events, shared history) + record the Q/reply. Does NOT touch the asker's
+        lifecycle (ask/ask_many own that). ``chain`` is the FULL child chain."""
+        target_id = target_spec.id
         self._publish(asker_id, target_id, "question", question)
-        # The asker is visibly waiting, the target visibly working: delegation
-        # runs through the target's RunningAgent (streamed events, shared
-        # history, persisted state), not an invisible throwaway agent.
-        self._set_lifecycle(asker_id, "waiting-on-agent")
         try:
             worker = await self._workers(target_spec)
             answer = await worker.run_once(
                 question,
                 usage=usage,
                 usage_limits=UsageLimits(request_limit=50),
-                delegation_chain=chain + [asker_id],
+                delegation_chain=chain,
                 lock_timeout=self._busy_timeout,
             )
         except asyncio.TimeoutError:
@@ -186,10 +188,55 @@ class Delegator:
             # WHY the consultation died, not just a generic retries-exceeded.
             self._publish(target_id, asker_id, "reply", f"[consultation failed: {e}]")
             raise ModelRetry(f"consulting '{target_id}' failed ({e}); handle it without them.") from e
-        finally:
-            self._set_lifecycle(asker_id, "running")
         self._publish(target_id, asker_id, "reply", answer)
         return answer
+
+    async def ask(self, *, asker_id: str, target_id: str, question: str, usage, chain: list[str]) -> str:
+        spec = self._validate(asker_id, target_id, chain)
+        # The asker is visibly waiting, the target visibly working: delegation
+        # runs through the target's RunningAgent (streamed events, shared
+        # history, persisted state), not an invisible throwaway agent.
+        self._set_lifecycle(asker_id, "waiting-on-agent")
+        try:
+            return await self._run_one(asker_id, spec, question, usage, list(chain) + [asker_id])
+        finally:
+            self._set_lifecycle(asker_id, "running")
+
+    async def ask_many(self, *, asker_id: str, requests: list[tuple[str, str]], usage, chain: list[str]) -> str:
+        """Fan out to several teammates concurrently (planner→frontend+backend).
+        Validates all up front against one chain snapshot, rejects duplicate
+        targets, runs them in parallel, and returns their answers together — the
+        asker makes ONE waiting→running transition; a per-target failure is an
+        inline note, never aborting siblings."""
+        from ..harness.base import MAX_FANOUT
+
+        chain = list(chain or [])
+        if not requests:
+            raise ModelRetry("ask_team needs at least one (teammate, task) pair.")
+        if len(requests) > MAX_FANOUT:
+            raise ModelRetry(f"ask_team is capped at {MAX_FANOUT} teammates at once; split the work across turns.")
+        specs: list[tuple[AgentSpec, str]] = []
+        seen: set[str] = set()
+        for target_ref, question in requests:
+            spec = self._validate(asker_id, target_ref, chain)
+            if spec.id in seen:
+                raise ModelRetry(f"'{spec.id}' is listed twice — one teammate does one thing at a time; ask them once.")
+            seen.add(spec.id)
+            specs.append((spec, question))
+
+        async def _one(spec: AgentSpec, q: str) -> tuple[str, str]:
+            try:
+                return spec.id, await self._run_one(asker_id, spec, q, usage, chain + [asker_id])
+            except ModelRetry as e:
+                return spec.id, f"[consulting {spec.id} failed: {e}]"
+
+        self._set_lifecycle(asker_id, "waiting-on-agent")
+        try:
+            results = await asyncio.gather(*(_one(spec, q) for spec, q in specs))
+        finally:
+            self._set_lifecycle(asker_id, "running")
+        names = {n.spec.id: n.spec.name for n in self.session.graph.nodes}
+        return "\n\n".join(f"From {names.get(tid, tid)} (`{tid}`):\n{ans}" for tid, ans in results)
 
     def _set_lifecycle(self, agent_id: str, lifecycle: str) -> None:
         self.session.registry.set_lifecycle(agent_id, lifecycle)
@@ -216,6 +263,32 @@ async def ask_agent(ctx: RunContext[AgentDeps], target_id: str, question: str) -
         asker_id=ctx.deps.agent_id,
         target_id=target_id,
         question=question,
+        usage=ctx.usage,
+        chain=ctx.deps.delegation_chain,
+    )
+
+
+class TeamAssignment(BaseModel):
+    """One teammate + the task to hand them, for ``ask_team`` fan-out."""
+
+    target_id: str
+    """The teammate to delegate to — their id (in backticks) or display name."""
+    task: str
+    """The task/question for that teammate."""
+
+
+async def ask_team(ctx: RunContext[AgentDeps], assignments: list[TeamAssignment]) -> str:
+    """Delegate to SEVERAL teammates AT ONCE, in parallel, and get all their
+    answers back together. Each assignment names a teammate (their listed id or
+    display name) and the task for them. Use this to fan out independent work —
+    e.g. a frontend task and a backend task simultaneously — instead of asking one
+    teammate, waiting, then the next. Only your listed neighbors are reachable."""
+    if ctx.deps.delegator is None:
+        raise ModelRetry("delegation is not available in this context.")
+    pairs = [(a.target_id, a.task) for a in assignments]
+    return await ctx.deps.delegator.ask_many(
+        asker_id=ctx.deps.agent_id,
+        requests=pairs,
         usage=ctx.usage,
         chain=ctx.deps.delegation_chain,
     )

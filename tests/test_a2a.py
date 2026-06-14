@@ -171,6 +171,57 @@ async def test_cycle_guard_refuses_revisit(conn, fake_clock, repo):
         await delegator.ask(asker_id="lead", target_id="react", question="q", usage=RunUsage(), chain=["react"])
 
 
+# --- parallel fan-out (ask_team / ask_many) ---------------------------------
+
+
+async def test_ask_many_fans_out_to_multiple_targets(conn, fake_clock, repo):
+    session = _session(conn, fake_clock, repo, _graph())
+    log = MessageLog(conn, clock=fake_clock)
+    delegator = Delegator(session, _worker_provider(session), message_log=log)
+    out = await delegator.ask_many(
+        asker_id="lead",
+        requests=[("react", "do frontend"), ("Node", "do backend")],  # id + display name mix
+        usage=RunUsage(), chain=[],
+    )
+    assert "answer from react" in out and "answer from node" in out
+    trip = {(m["from_agent"], m["to_agent"], m["kind"]) for m in log.for_session(session.id)}
+    assert ("lead", "react", "question") in trip and ("react", "lead", "reply") in trip
+    assert ("lead", "node", "question") in trip and ("node", "lead", "reply") in trip
+
+
+async def test_ask_many_rejects_duplicate_and_overflow(conn, fake_clock, repo):
+    import pytest
+    from pydantic_ai import ModelRetry
+
+    session = _session(conn, fake_clock, repo, _graph())
+    delegator = Delegator(session, _worker_provider(session))
+    with pytest.raises(ModelRetry, match="listed twice"):  # 'react' twice (id + name)
+        await delegator.ask_many(asker_id="lead", requests=[("react", "a"), ("React", "b")], usage=RunUsage(), chain=[])
+    with pytest.raises(ModelRetry, match="capped"):
+        await delegator.ask_many(asker_id="lead", requests=[("react", str(i)) for i in range(5)], usage=RunUsage(), chain=[])
+
+
+async def test_ask_team_tool_fans_out_via_model(conn, fake_clock, repo):
+    """End-to-end: the lead's model calls ask_team with two assignments; both
+    teammates run on their own workers; the lead gets both answers."""
+    session = _session(conn, fake_clock, repo, _graph())
+    log = MessageLog(conn, clock=fake_clock)
+    delegator = Delegator(session, _worker_provider(session), message_log=log)
+    lead_model = make_sequence_model([
+        [ToolCallPart("ask_team", {"assignments": [
+            {"target_id": "react", "task": "build the UI"},
+            {"target_id": "Node", "task": "build the API"},
+        ]})],
+        [TextPart("delegated both")],
+    ])
+    lead = build_agent(_spec("lead", entry=True), model=lead_model, dev_tools=DevTools(repo, Capabilities.from_level("read")))
+    deps = AgentDeps(session_id=session.id, agent_id="lead", delegator=delegator)
+    result = await lead.run("split the work between frontend and backend", deps=deps)
+    assert "delegated both" in result.output
+    trip = {(m["from_agent"], m["to_agent"], m["kind"]) for m in log.for_session(session.id)}
+    assert ("lead", "react", "question") in trip and ("lead", "node", "question") in trip
+
+
 async def test_delegated_run_is_visible_on_the_target(conn, fake_clock, repo):
     """Regression (bug: 'edge animated but the target did nothing'): a delegated
     run must go through the target's real worker — registered in the registry,

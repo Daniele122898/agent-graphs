@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from pydantic_ai import ModelRetry
 
 from backend.domain.models import AgentSpec, Capabilities, GraphEdge, GraphNode, TeamGraph
 from backend.harness.opencode.harness import OpenCodeHarness
@@ -25,8 +26,19 @@ def _graph() -> TeamGraph:
                      edges=[GraphEdge(id="e1", source="lead", target="expert", label="ask")])
 
 
-def _opencode_session(conn, fake_clock, repo, client: FakeOpenCodeClient):
-    graph = _graph()
+def _fanout_graph() -> TeamGraph:
+    """lead -> frontend, lead -> backend (two neighbors, for fan-out tests)."""
+    lead = AgentSpec(id="lead", name="Lead", is_entry_point=True, model="lmstudio:qwen/qwen3.5-9b",
+                     capabilities=Capabilities.from_level("read-write"))
+    fe = AgentSpec(id="fe", name="Frontend", model="lmstudio:qwen/qwen3.5-9b", capabilities=Capabilities.from_level("read"))
+    be = AgentSpec(id="be", name="Backend", model="lmstudio:qwen/qwen3.5-9b", capabilities=Capabilities.from_level("read"))
+    return TeamGraph(nodes=[GraphNode(spec=lead), GraphNode(spec=fe), GraphNode(spec=be)],
+                     edges=[GraphEdge(id="e1", source="lead", target="fe", label="frontend"),
+                            GraphEdge(id="e2", source="lead", target="be", label="backend")])
+
+
+def _opencode_session(conn, fake_clock, repo, client: FakeOpenCodeClient, graph: TeamGraph | None = None):
+    graph = graph or _graph()
     team = TeamStore(conn, clock=fake_clock).create("T", graph)
     session = SessionManager(conn, clock=fake_clock).create_session(
         team_id=team.id, repo_path=repo, graph=graph
@@ -257,6 +269,38 @@ async def test_delegate_runs_target_and_logs(conn, fake_clock, repo):
     assert any(m["from_agent"] == "lead" and m["to_agent"] == "expert" for m in logged)
     await session.harness.shutdown(session)
     sub.cancel()
+
+
+async def test_delegate_many_fans_out_and_isolates_failures(conn, fake_clock, repo):
+    # Parallel delegation: lead fans out to frontend + backend at once. Backend
+    # errors — its failure must be inline (the asker still gets frontend's
+    # answer), and the asker makes exactly one waiting→running transition.
+    client = FakeOpenCodeClient({"fe": [[text_part("frontend done")]], "be": [{"error": "boom"}]})
+    session = _opencode_session(conn, fake_clock, repo, client, graph=_fanout_graph())
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+
+    out = await session.harness.delegate_many(session, "lead", [("Frontend", "build ui"), ("be", "build api")])
+    assert "frontend done" in out                       # the healthy sibling answered
+    assert "be" in out and "failed" in out.lower()      # the failing one is an inline note, not an abort
+    await asyncio.sleep(0.05)
+    lead_lc = [e["data"]["lifecycle"] for e in events if e["type"] == "agent_lifecycle" and e["data"]["agent_id"] == "lead"]
+    assert "waiting-on-agent" in lead_lc and lead_lc[-1] == "running"
+    # both targets actually ran (distinct OC sessions, concurrent — not serialized)
+    assert any(e["type"] == "agent_done" and e["data"]["agent_id"] == "fe" for e in events)
+    await session.harness.shutdown(session)
+    sub.cancel()
+
+
+async def test_delegate_many_rejects_overflow_and_duplicates(conn, fake_clock, repo):
+    client = FakeOpenCodeClient({"fe": [[text_part("x")]], "be": [[text_part("y")]]})
+    session = _opencode_session(conn, fake_clock, repo, client, graph=_fanout_graph())
+    with pytest.raises(ModelRetry, match="listed twice"):
+        await session.harness.delegate_many(session, "lead", [("fe", "a"), ("Frontend", "b")])
+    with pytest.raises(ModelRetry, match="capped"):
+        await session.harness.delegate_many(session, "lead", [("fe", str(i)) for i in range(5)])
+    await session.harness.shutdown(session)
 
 
 async def test_delegate_enforces_neighbor_guard(conn, fake_clock, repo):
