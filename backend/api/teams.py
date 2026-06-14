@@ -40,7 +40,11 @@ def install(app: FastAPI) -> None:
         return team.graph.model_dump()
 
     @app.put("/api/teams/{team_id}/graph")
-    def put_team_graph(team_id: str, graph: TeamGraph) -> dict:
+    async def put_team_graph(team_id: str, graph: TeamGraph) -> dict:
+        # async (event loop, not a threadpool thread) so the live session's
+        # `session.graph` swap is serialized with the harness reads of it
+        # (opencode's _ensure reads session.graph mid-run); a sync handler ran
+        # this on a worker thread, racing those reads.
         return wiring.apply_team_graph(app, team_id, graph)
 
     @app.post("/api/teams/{team_id}/rename")

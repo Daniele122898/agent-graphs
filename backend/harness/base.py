@@ -61,18 +61,57 @@ def find_spec(graph: TeamGraph, agent_id: str) -> AgentSpec | None:
     return None
 
 
+def resolve_target(graph: TeamGraph, asker_id: str, target_ref: str) -> str | None:
+    """Resolve a delegation target given by id OR display name to the canonical
+    neighbor id. Case-insensitive, trimmed, surrounding backticks stripped (the
+    instructions show ids as ``Planner (`agent_6`)`` and small models copy either
+    the name or the backticked id verbatim). Scoped to the asker's neighbors so
+    resolution and the neighbor guard share ONE set — you can never resolve to a
+    non-neighbor. Returns the canonical id, or None if nothing matches; raises
+    ``ModelRetry`` (a self-correcting nudge, never a fatal error) on an ambiguous
+    name. Pure — shared by both harnesses."""
+    ref = (target_ref or "").strip().strip("`").strip()
+    allowed = neighbors_of(graph, asker_id)
+    if ref in allowed:  # exact id — unchanged fast path, today's behavior
+        return ref
+    low = ref.casefold()
+    id_hits = [a for a in allowed if a.casefold() == low]
+    if len(id_hits) == 1:
+        return id_hits[0]
+    names = {n.spec.id: n.spec.name for n in graph.nodes}
+    name_hits = sorted({a for a in allowed if (names.get(a) or "").strip().casefold() == low})
+    if len(name_hits) == 1:
+        return name_hits[0]
+    if len(name_hits) > 1:
+        raise ModelRetry(
+            f"'{ref}' is ambiguous — it matches teammates {name_hits}. "
+            "Pass the exact id in backticks."
+        )
+    return None
+
+
+def _consultable(graph: TeamGraph, asker_id: str) -> list[str]:
+    """Pretty ``Name (`id`)`` list of who an asker may consult, for error nudges."""
+    names = {n.spec.id: n.spec.name for n in graph.nodes}
+    return sorted(f"{names.get(a, a)} (`{a}`)" for a in neighbors_of(graph, asker_id))
+
+
 def check_delegation(
     graph: TeamGraph, asker_id: str, target_id: str, chain: list[str], *, max_depth: int = MAX_DELEGATION_DEPTH
 ) -> AgentSpec:
     """Validate an ask_agent call against the graph + current delegation chain.
-    Raises ``ModelRetry`` (a self-correcting nudge) on any violation; returns the
-    target's spec on success. Pure — identical for every harness."""
-    allowed = neighbors_of(graph, asker_id)
-    if target_id not in allowed:
+    Accepts a target by id OR display name (resolved to the canonical id BEFORE
+    the cycle/depth guards, so a name typed once and the id next hop can't dodge
+    the cycle guard). Raises ``ModelRetry`` (a self-correcting nudge) on any
+    violation; returns the target's spec on success (``spec.id`` is the canonical
+    target id). Pure — identical for every harness."""
+    resolved = resolve_target(graph, asker_id, target_id)  # may raise ModelRetry (ambiguous)
+    if resolved is None:
         raise ModelRetry(
             f"'{target_id}' is not someone you can consult. "
-            f"You may ask: {sorted(allowed) or 'no one'}."
+            f"You may ask: {_consultable(graph, asker_id) or 'no one'}."
         )
+    target_id = resolved
     if target_id in chain or target_id == asker_id:
         raise ModelRetry(f"delegation cycle: '{target_id}' is already in the current chain {chain}.")
     if len(chain) >= max_depth:
@@ -191,7 +230,8 @@ class Harness(ABC):
         equivalent path via ``Delegator``; this serves the opencode callback and
         any harness-level delegation)."""
         chain = list(chain or [])
-        check_delegation(session.graph, asker_id, target_id, chain)  # raises ModelRetry
+        spec = check_delegation(session.graph, asker_id, target_id, chain)  # raises ModelRetry
+        target_id = spec.id  # canonical id (target_id may have been a display name)
 
         self._record(session, asker_id, target_id, "question", question)
         self._set_lifecycle(session, asker_id, "waiting-on-agent")

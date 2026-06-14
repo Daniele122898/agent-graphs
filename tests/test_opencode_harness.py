@@ -256,6 +256,63 @@ async def test_graph_edit_reconfigures_the_server(conn, fake_clock, repo):
     await session.harness.shutdown(session)
 
 
+async def test_graph_edit_does_not_reconfigure_mid_run(conn, fake_clock, repo):
+    # The pipeline-stall bug: a debounced graph autosave WHILE a run is in flight
+    # must NOT reconfigure (restart) the server — that drops every OC session and
+    # orphans the parked run/delegation (the "everyone running, nothing happening"
+    # freeze). The config change defers to the next idle run.
+    from backend.domain.models import AgentSpec, Capabilities, GraphEdge, GraphNode, TeamGraph
+    client = FakeOpenCodeClient({"lead": [{"park": True}, [text_part("done")]]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    run = asyncio.create_task(session.harness.run_to_completion(session, "lead", "go"))
+    for _ in range(100):
+        if session.registry.lifecycle("lead") == "running":
+            break
+        await asyncio.sleep(0.02)
+    rt = session.harness._runtimes[session.id]
+    assert rt.conn.reconfigured == 0
+
+    # simulate the autosave changing the graph signature mid-run
+    session.graph = TeamGraph(
+        nodes=[
+            GraphNode(spec=AgentSpec(id="lead", name="Lead", is_entry_point=True, persona="EDITED",
+                                     model="lmstudio:qwen/qwen3.5-9b", capabilities=Capabilities.from_level("read-write"))),
+            GraphNode(spec=AgentSpec(id="expert", name="Expert", model="lmstudio:qwen/qwen3.5-9b",
+                                     capabilities=Capabilities.from_level("read"))),
+        ],
+        edges=[GraphEdge(id="e1", source="lead", target="expert", label="ask")],
+    )
+    await session.harness._ensure(session)
+    assert rt.conn.reconfigured == 0, "must NOT reconfigure while a run is in flight (would orphan it)"
+
+    # stop the parked run; once idle, the deferred config change applies.
+    await session.harness.stop(session, "lead")
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    await asyncio.sleep(0.05)  # let the abort's idle event clear st.busy
+    await session.harness._ensure(session)
+    assert rt.conn.reconfigured == 1, "deferred edit should reconfigure once idle"
+    await session.harness.shutdown(session)
+
+
+async def test_reconfigure_frees_parked_awaiter(conn, fake_clock, repo):
+    # Defense-in-depth: if a reconfigure ever lands mid-run anyway, the parked
+    # awaiter must be freed (RuntimeError → task parks blocked, retryable), never
+    # hang until OPENCODE_RUN_TIMEOUT.
+    client = FakeOpenCodeClient({"lead": [{"park": True}]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    run = asyncio.create_task(session.harness.run_to_completion(session, "lead", "go"))
+    for _ in range(100):
+        if session.registry.lifecycle("lead") == "running":
+            break
+        await asyncio.sleep(0.02)
+    rt = session.harness._runtimes[session.id]
+    await session.harness._reconfigure(session, rt, "new-sig")  # forced mid-run
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(run, timeout=2)
+    await session.harness.shutdown(session)
+
+
 async def test_session_error_blocks_and_does_not_announce_done(conn, fake_clock, repo):
     client = FakeOpenCodeClient({"lead": [{"error": "Channel Error: worker crashed"}]})
     session = _opencode_session(conn, fake_clock, repo, client)

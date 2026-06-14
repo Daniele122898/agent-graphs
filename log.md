@@ -984,3 +984,58 @@ adversarial verification) confirmed real issues; fixed the substantive ones:
   /tmp/ag_shots/oc_02_after_run.png.
 - Confirmed clean teardown: no stray `opencode serve` processes after the E2E
   backend exited (the lifespan harness.shutdown fix from Phase 8b held).
+
+## OpenCode harness bug cluster — delegation/interject/stall/durability (2026-06-14)
+
+User hit a cluster of OpenCode-harness bugs (delegation by name rejected,
+interject vanishing, no parallel delegation, a hard pipeline stall, chat/status
+lost on reload). Root-caused via a parallel multi-agent research+verification
+pass; fixes landed in order so the shared files (base.py / opencode/harness.py /
+a2a.py) stayed coherent.
+
+### 2026-06-14 — The pipeline stall is reconfigure-mid-run, not OpenCode concurrency
+
+- **What:** `_ensure` now SKIPS a server reconfigure while any agent is busy
+  (`_any_busy`: a held `st.lock` or `st.busy`), deferring the config change to
+  the next idle run; `_reconfigure` frees every parked `st.idle` awaiter (with an
+  error) BEFORE `rt.agents.clear()` as a safety net; `PUT /api/teams/{id}/graph`
+  is now `async` so the live `session.graph` swap is serialized on the event loop
+  with the harness reads of it.
+- **Why:** the confirmed freeze ("all agents running, nothing happening"): the
+  frontend debounce-autosaves the graph (even on a node drag) → signature change
+  → the next `_ensure` (top of every delegation hop) called `_reconfigure`, which
+  restarts the server and `rt.agents.clear()`s the `_AgentState` whose `st.idle`
+  the parked lead/planner delegators were awaiting → they hung until the 900s
+  run timeout. OpenCode itself does NOT deadlock (one Runner per session, no
+  global lock; a delegator parked in `ask_agent`'s fetch holds nothing
+  server-side) — the freeze was entirely ours.
+- **Reversibility:** easy. The skip-while-busy is the primary guard; the
+  awaiter-freeing is defense-in-depth. Documented tradeoff: a graph edit during a
+  run takes effect on the next idle run (was already the documented contract).
+
+### 2026-06-14 — Bound the single listener's final-output fetch
+
+- **What:** the `session.idle` handler wraps `_final_output` (a `messages` GET)
+  in `asyncio.wait_for(timeout=15)`, falling back to the last streamed output.
+- **Why:** one `_listen` task processes EVERY agent's SSE events serially; a
+  slow/hung `messages` GET there would delay idle delivery (run completion) for
+  all agents. Secondary latency hardening, not the hard freeze above.
+- **Reversibility:** trivial.
+
+### 2026-06-14 — Delegation accepts a teammate by display name OR id (both harnesses)
+
+- **What:** new pure `base.resolve_target(graph, asker, ref)` — trims, strips
+  backticks, case-insensitive, scoped to the asker's neighbors (resolution set ==
+  guard set, so you can never resolve to a non-neighbor); unique display-name or
+  id match → canonical id, ambiguous name → `ModelRetry`, unknown → None.
+  `check_delegation` resolves FIRST then runs the cycle/depth guards on the
+  canonical id (so a name one hop + id the next can't dodge the cycle guard) and
+  returns the resolved spec; `delegate` uses `spec.id`. Native `Delegator.ask`
+  routes through the same resolver (local import to avoid an agents↔harness
+  cycle). Tool docstrings now say a name is accepted.
+- **Why:** instructions list teammates as `Planner (\`agent_6\`)`, so small models
+  call `ask_agent("Planner")` and got the exact reported rejection. The guard
+  only ever accepted ids.
+- **Reversibility:** easy; the exact-id fast path preserves prior behavior byte
+  for byte. Also gitignored `.opencode/` (a runtime artifact dir the harness
+  stages the tool + node_modules into) — a stale copy had been committed.

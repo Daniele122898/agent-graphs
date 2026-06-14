@@ -134,12 +134,21 @@ class Delegator:
         return None
 
     async def ask(self, *, asker_id: str, target_id: str, question: str, usage, chain: list[str]) -> str:
-        allowed = {t for t, _ in self.neighbors(asker_id)}
-        if target_id not in allowed:
+        # Resolve a target given by display name OR id to the canonical neighbor
+        # id (shared with the opencode harness via base.resolve_target — local
+        # import avoids any agents<->harness module cycle). Models reach for the
+        # human name ("Planner") shown in their instructions, not the id.
+        from ..harness.base import resolve_target
+
+        resolved = resolve_target(self.session.graph, asker_id, target_id)  # raises ModelRetry if ambiguous
+        if resolved is None:
+            names = {n.spec.id: n.spec.name for n in self.session.graph.nodes}
+            pretty = sorted(f"{names.get(t, t)} (`{t}`)" for t, _ in self.neighbors(asker_id))
             raise ModelRetry(
                 f"'{target_id}' is not someone you can consult. "
-                f"You may ask: {sorted(allowed) or 'no one'}."
+                f"You may ask: {pretty or 'no one'}."
             )
+        target_id = resolved  # canonical id — the cycle/depth guards run on THIS
         # Cycle + depth guards (the inoculation against runaway delegation loops).
         if target_id in chain or target_id == asker_id:
             raise ModelRetry(f"delegation cycle: '{target_id}' is already in the current chain {chain}.")
@@ -198,9 +207,9 @@ class Delegator:
 
 
 async def ask_agent(ctx: RunContext[AgentDeps], target_id: str, question: str) -> str:
-    """Consult a teammate. ``target_id`` must be one of your listed neighbors.
-    Returns their concise answer. Use this instead of guessing about a domain a
-    teammate owns."""
+    """Consult a teammate. ``target_id`` is one of your listed neighbors — pass
+    either its id (in backticks) or its display name; both resolve. Returns their
+    concise answer. Use this instead of guessing about a domain a teammate owns."""
     if ctx.deps.delegator is None:
         raise ModelRetry("delegation is not available in this context.")
     return await ctx.deps.delegator.ask(

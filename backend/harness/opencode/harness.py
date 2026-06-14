@@ -140,6 +140,14 @@ class OpenCodeHarness(Harness):
         """The shared secret the ask_agent callback presents (Phase 5)."""
         return self._tokens.setdefault(session.id, new_id("octok_"))
 
+    @staticmethod
+    def _any_busy(rt: _Runtime) -> bool:
+        """True if any agent has a run in flight (lock held) or the server
+        reports it busy. A reconfigure restarts the server and drops every OC
+        session — doing that under a live run (e.g. a delegation chain parked on
+        st.idle) orphans the awaiter until the run timeout (the stall)."""
+        return any(st.lock.locked() or st.busy for st in rt.agents.values())
+
     async def _ensure(self, session: "Session") -> _Runtime:
         # Serialize so concurrent first-runs don't spawn two servers and a graph
         # change doesn't reconfigure mid-flight.
@@ -148,7 +156,13 @@ class OpenCodeHarness(Harness):
             sig = session.graph.model_dump_json()
             rt = self._runtimes.get(session.id)
             if rt is not None and rt.conn.running:
-                if rt.configured_sig != sig:
+                # A graph/spec edit reconfigures (restarts) the server — but ONLY
+                # when nothing is running. The frontend debounce-autosaves the
+                # graph (even on a node drag), so reconfiguring mid-run would
+                # restart the server under a parked delegation chain and hang
+                # every awaiter. Defer the config change to the next idle run
+                # (the documented "edit takes effect next run" guarantee).
+                if rt.configured_sig != sig and not self._any_busy(rt):
                     await self._reconfigure(session, rt, sig)
                 return rt
             conn = self._connect(session, self.token_for(session))
@@ -167,6 +181,17 @@ class OpenCodeHarness(Harness):
         server). The OpenCode-side conversation is lost on restart — the
         edit-takes-effect-next-run guarantee, heavier than native's history
         carry-forward; documented."""
+        # Safety net: free any run still parked on st.idle BEFORE tearing the
+        # state down. Cancelling the listener (below) skips its stream-death
+        # awaiter-freeing path, and rt.agents.clear() drops the _AgentState the
+        # awaiters wait on — so without this they hang until OPENCODE_RUN_TIMEOUT.
+        # _ensure already refuses to reconfigure while busy; this guarantees
+        # fail-fast (RuntimeError -> task parks blocked, retryable) if a
+        # reconfigure ever lands mid-run anyway.
+        for st in rt.agents.values():
+            if not st.idle.is_set():
+                st.error = st.error or "[server reconfigured mid-run]"
+                st.idle.set()
         if rt.listener is not None:
             rt.listener.cancel()
             try:
@@ -287,7 +312,14 @@ class OpenCodeHarness(Harness):
             # run complete: compute final text, announce, free awaiters. Skip
             # agent_done when the run errored or was user-aborted (stop already
             # set lifecycle idle in the abort case).
-            st.last_output = await self._final_output(rt, st)
+            # Bound the final-output fetch: this single listener processes every
+            # agent's events serially, so a slow/hung `messages` GET here would
+            # delay idle delivery (and thus run completion) for ALL agents. On
+            # timeout/error keep the last streamed output.
+            try:
+                st.last_output = await asyncio.wait_for(self._final_output(rt, st), timeout=15)
+            except Exception:  # noqa: BLE001 — never let final-output fetch stall the stream
+                pass
             if st.error is None and not st.aborting:
                 bus.publish("agent_done", {"agent_id": agent_id, "output": st.last_output})
                 self._lifecycle(session, agent_id, "idle")

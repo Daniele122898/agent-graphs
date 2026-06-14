@@ -26,3 +26,8 @@ frontend/.vite/
 
 # Local configuration (holds API keys — config.example.yml is the committed shape)
 config.yml
+
+# OpenCode harness runtime artifacts: the harness stages ask_agent.ts here and
+# OpenCode installs the tool's node_modules into it at run time. Generated, never
+# source (the canonical tool lives in backend/harness/opencode/tools/).
+.opencode/

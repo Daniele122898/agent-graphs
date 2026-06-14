@@ -61,3 +61,10 @@ def test_ask_agent_callback_routes_through_delegate(tmp_path, monkeypatch):
         missing = client.post("/internal/ask_agent", headers={"x-ag-token": token}, json={
             "session_id": "sess_nope", "asker_id": "lead", "target_id": "expert", "question": "q"})
         assert missing.status_code == 404
+
+        # target given by DISPLAY NAME (mixed case + whitespace) resolves to the
+        # canonical id — the reported "'Planner' is not someone you can consult" bug
+        by_name = client.post("/internal/ask_agent", headers={"x-ag-token": token}, json={
+            "session_id": sid, "asker_id": "lead", "target_id": "  Expert  ", "question": "what file name?"})
+        assert by_name.status_code == 200
+        assert "result.txt" in by_name.text
