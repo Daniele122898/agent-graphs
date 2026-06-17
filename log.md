@@ -1268,3 +1268,43 @@ per-hop and lock_timeout was overloaded as the run bound.
   at all (only native did), so its edges only flickered.
 - **Reversibility:** trivial (frontend-only animation derived from existing
   state; backend just adds the lifecycle publish the native path already did).
+
+### 2026-06-17 — Adversarial review of the rewrite + four hardening fixes
+
+- A 12-agent adversarial-review workflow (4 lenses → independent refutation →
+  triage) over the quiescence rewrite found four real defects, all fixed with
+  regression tests (full suite green):
+  - **D1 (HIGH)** stopping ONE sub-delegated teammate collapsed the whole task +
+    orphaned siblings (gather propagated the child's CancelledError; the finally
+    dropped siblings untracked, still burning tokens). Fix: `_delegated_reply`
+    swallows CancelledError → records a `[stopped]` note + returns; teardown is
+    the asker's own `stop()`/timeout (the `aborting` checks in `_drain`).
+  - **D2 (HIGH)** a delegation drive has gaps where no agent holds a lock, so a
+    graph autosave could reconfigure (restart) the server mid-subtree and corrupt
+    the task result. Fix: `_Runtime.inflight` counts in-flight drives and
+    `_any_busy` also checks `inflight`/`pending`/`children` → reconfigure deferred
+    until the whole subtree is idle.
+  - **D3 (MED)** the `MAX_DELEGATION_ROUNDS` backstop left the asker stuck
+    `waiting-on-agent` forever; fix settles it (`agent_done` + idle).
+  - **D4 (MED)** a stop in the post-gather/pre-re-prompt window was clobbered by
+    `run_to_completion`'s `aborting=False` prologue; fix checks `st.aborting` in
+    `_drain` before re-prompting.
+- **Reversibility:** these are corrections within the rewrite; no interface change.
+
+### 2026-06-17 — Live DeepSeek E2E validated the subtree-await fix
+
+- Ran the user's real 6-agent `test` team (Lead→Planner→{Backend,Frontend}
+  experts, deepseek-v4-pro/flash) on the OpenCode harness via an isolated stack
+  (a COPY of `backend/db.sqlite`, a scratch repo, callback URL on :8021 — their
+  DB/servers/repos untouched; the copy deleted after), one tiny delegation-forcing
+  task assigned to the Lead.
+- RESULT (task done in 48s, zero errors): the a2a sequence was lead→Planner
+  (question), Planner→Backend + Planner→Frontend (questions), Backend→Planner +
+  Frontend→Planner (replies), THEN **Planner→lead (reply)** — i.e. the Planner
+  reported up to the Lead ONLY after BOTH experts replied (the exact premature-
+  reply bug, now fixed). `agent_done` order was Frontend, Backend, Planner, Lead
+  (bottom-up termination); both files (`backend/ping.py`, `frontend/index.html`)
+  were created by the experts; the waiting-on-agent lifecycles fired (lead on
+  [Planner], Planner on [Backend, Frontend]) so the edge animation lights through
+  the whole subtree; **no "operation timed out" / "did not complete within Ns"**
+  (the failures reported). Subtree-await confirmed on real models.
