@@ -87,6 +87,19 @@ class AgentStateStore:
         ).fetchone()
         return (row["oc_session_id"] or None) if row else None
 
+    def delete(self, session_id: str, agent_id: str) -> None:
+        """Drop an agent's persisted row entirely (history + lifecycle + usage +
+        oc_session_id). Used when an agent is REMOVED from a session's team on
+        rebind: leaving the row means re-adding that id later (even for a
+        different role) silently inherits the stale transcript / OC session —
+        history identity is (id, name), and a removed id has no live identity to
+        carry. See SessionManager.rebind + backend/runtime/CLAUDE.md."""
+        self._conn.execute(
+            "DELETE FROM agent_state WHERE session_id = ? AND agent_id = ?",
+            (session_id, agent_id),
+        )
+        self._conn.commit()
+
     def load_messages(self, session_id: str, agent_id: str) -> list[ModelMessage]:
         row = self._conn.execute(
             "SELECT history FROM agent_state WHERE session_id = ? AND agent_id = ?",

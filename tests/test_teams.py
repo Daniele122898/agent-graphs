@@ -181,6 +181,29 @@ def test_rebind_resets_history_for_repurposed_slot_but_keeps_it_for_same_role(tm
         assert cleared == [], "same id + same name is the same agent — history must be kept"
 
 
+def test_rebind_drops_persisted_state_of_removed_agents(tmp_path):
+    """A removed agent's persisted row (history + oc_session_id) is deleted on
+    rebind, so re-adding that id later can't silently inherit stale state — a
+    removed id has no live identity to carry."""
+    app = create_app(db_path=tmp_path / "t.sqlite")
+    with TestClient(app) as client:
+        big = TeamGraph(nodes=[
+            GraphNode(spec=AgentSpec(id="lead", name="Lead", is_entry_point=True)),
+            GraphNode(spec=AgentSpec(id="extra", name="Extra")),
+        ]).model_dump()
+        team_a, session = bootstrap_session(client, tmp_path / "repo", graph=big)
+        sid = session["id"]
+        # seed a persisted row for the agent that will be removed
+        app.state.agent_state.set_lifecycle(sid, "extra", "idle")
+        app.state.agent_state.set_oc_session(sid, "extra", "ses_old")
+        assert app.state.agent_state.get(sid, "extra") is not None
+
+        # rebind to a team WITHOUT "extra" → it's removed → its row is dropped
+        team_b = client.post("/api/teams", json={"name": "B", "graph": _graph("Lead")}).json()
+        assert client.post(f"/api/sessions/{sid}/rebind", json={"team_id": team_b["id"]}).status_code == 200
+        assert app.state.agent_state.get(sid, "extra") is None, "removed agent's persisted row must be dropped"
+
+
 def test_rebind_persists_team_id_to_db(tmp_path):
     """The new team_id is persisted (so a resume after restart binds the new team),
     routed through SessionManager.rebind rather than an ad-hoc write in the endpoint."""

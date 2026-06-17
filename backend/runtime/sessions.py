@@ -279,7 +279,10 @@ class SessionManager:
         same reason ``PUT /api/teams/{id}/graph`` is async; a sync handler ran it
         on a worker thread, racing those reads). Caller guards busy first
         (``wiring.require_session_idle``)."""
+        old_ids = {n.spec.id for n in session.graph.nodes}
+        new_ids = {n.spec.id for n in graph.nodes}
         repurposed = session.repurposed_ids(graph)
+        removed = old_ids - new_ids
         session.rebind(team_id, graph)
         # A repurposed slot keeps its id but is a different agent now → clear its
         # carried-over conversation so the new role starts fresh (native: wipe
@@ -289,6 +292,11 @@ class SessionManager:
                 await session.harness.clear_history(session, agent_id)
             except Exception:  # noqa: BLE001 — a clear failure must not abort the rebind
                 pass
+        # A removed id has no live identity to carry — drop its persisted row so
+        # re-adding that id later (even for a different role) can't inherit the
+        # stale transcript / OC session (history identity is (id, name)).
+        for agent_id in removed:
+            self._state_store.delete(session.id, agent_id)
         self._conn.execute("UPDATE sessions SET team_id = ? WHERE id = ?", (team_id, session.id))
         self._conn.commit()
         return session
