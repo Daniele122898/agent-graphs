@@ -35,6 +35,8 @@ export function useTeamGraph(teamId: string | null, teamName?: string) {
   const [status, setStatus] = useState("loading…");
   const loaded = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const teamNameRef = useRef(teamName);
+  teamNameRef.current = teamName;
 
   // (Re)load whenever the active team changes (loading a library team into the
   // editor). Suppress the save effect until the new graph is in place.
@@ -52,7 +54,7 @@ export function useTeamGraph(teamId: string | null, teamName?: string) {
         setNodes(n);
         setEdges(e);
         loaded.current = true;
-        setStatus(`saved — ${teamName || 'team'}`);
+        setStatus(`saved — ${teamNameRef.current || 'team'}`);
       })
       .catch((err) => {
         if (!cancelled) setStatus(`load error: ${err}`);
@@ -69,7 +71,7 @@ export function useTeamGraph(teamId: string | null, teamName?: string) {
     saveTimer.current = setTimeout(() => {
       api
         .putTeamGraph(teamId, fromReactFlow(nodes, edges))
-        .then(() => setStatus(`saved — ${teamName || 'team'}`))
+        .then(() => setStatus(`saved — ${teamNameRef.current || 'team'}`))
         .catch((err) => setStatus(`save error: ${err}`));
     }, 600);
     return () => {

@@ -103,7 +103,8 @@ export default function App() {
     if (!name) return;
     const t = await api.createTeam(name, graph.snapshot());
     setActiveTeamId(t.id);
-    await api.rebindSession(activeSessionId!, t.id);
+    const info = await api.rebindSession(activeSessionId!, t.id);
+    setSession(info);
     await refresh();
   };
 
@@ -160,7 +161,8 @@ export default function App() {
                   title="Rebind this session to use the selected team"
                   onClick={async () => {
                     if (!activeTeamId || !activeSessionId) return;
-                    await api.rebindSession(activeSessionId, activeTeamId);
+                    const info = await api.rebindSession(activeSessionId, activeTeamId);
+                    setSession(info);
                     await refresh();
                   }}
                 >
