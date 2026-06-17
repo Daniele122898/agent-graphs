@@ -24,7 +24,7 @@ own `CLAUDE.md` with subsystem detail (loaded when you open files there).
 
 ## Architecture in one screen (the *why*)
 - **Team = definition (template); Session = running instance bound to a repo.** This image-vs-container split is the spine of the data model and runtime — designed in from day one so multi-repo is UI work, not a rewrite. One process holds `dict[session_id, Session]`.
-- **Sessions can be rebound to a different team mid-life** via `POST /api/sessions/{id}/rebind` and `Session.rebind()`, preserving agent histories for agents that exist in both teams, registering new ones, and detaching removed ones. This lets the team-selector UI switch a running session to a different team definition without losing in-progress work. The graph editor is also team-scoped (not session-scoped): you can edit any team's graph in the editor independently of the running session — edits to a non-session team don't affect live sessions, and a "↻ Use for session" button explicitly rebinds the session when the editor shows a different team.
+- **Sessions can be rebound to a different team while idle** via `POST /api/sessions/{id}/rebind` → `SessionManager.rebind()` (async; 409 if any agent is busy). Agents common to both teams keep their history; new ones register; removed ones are detached and their persisted state dropped; a **repurposed slot** (same id, different role *name*) has its history reset — identity for history carry-forward is `(id, name)`, not id alone (see `backend/runtime/CLAUDE.md`). The graph editor is team-scoped (not session-scoped): you can edit any team's graph independently of the running session — edits to a non-session team don't affect live sessions; "↻ Use for session" rebinds explicitly; "Save as new team…" is a pure fork (copy + switch the editor, never silently rebind the session). The frontend autosave **flushes the outgoing team on every team switch** (the hook owns it), so switching the editor can't drop unsaved edits (see `frontend/CLAUDE.md`).
 - **Nothing is a global singleton.** Each `Session` owns its own write-lock, LLM execution gateway, event bus, agent registry, usage tally. A global lock would wrongly serialize unrelated repos.
 - **Agents are long-lived background workers**, not request handlers. The UI observes and interjects.
 - **Tasks are first-class** with a status lifecycle and per-task completion gate (self-reported / reviewer agent / `check:` command). Code-level caps (turn/depth/revision) plus a per-task **timeout in hours** (default 1h, 0 = no limit) prevent runaway loops. On opencode, a delegating agent's task is "done" only when its **whole delegation subtree** is (subtree-aware quiescence — see `backend/harness/CLAUDE.md`), never on a premature first turn.
@@ -61,6 +61,27 @@ cd frontend && npm run build
 ./.venv/bin/python scripts/verify_ui.py   # screenshots → /tmp/ag_shots/, then Read them
 ```
 A real local model is available at `http://127.0.0.1:1234` (LM Studio, OpenAI-compatible). **Only models with LM Studio's `tool_use` capability work** — others emit tool calls as text that silently does nothing. The capability flag isn't sufficient either: `unsloth/gemma-4-12b-it-qat` claims tool_use but its jinja template crashes on any request with tools ("Cannot call something that is not a function") — probe a new model with a tiny tools request before trusting it. Good choice: `qwen/qwen3.5-9b` (default); `qwen2.5-coder-*` does NOT tool-call; 12B+ models tend to exhaust this laptop (KV-cache quantization + big contexts cause "Channel Error" worker crashes, especially on gemma). Load/unload via the API (`specs/lmstudio-api.md`), ONE model at a time. **Use it sparingly** (weak laptop). The env-gated live tier is `tests/test_live_smoke.py` (`AGENT_GRAPHS_LIVE=1`).
+
+## Definition of done (YOU MUST satisfy before claiming a task complete)
+A clean `tsc`/build is NECESSARY, NEVER SUFFICIENT — it can't see a dropped
+autosave, an unguarded endpoint, or a broken flow. The team-switch data-loss bug
+shipped green precisely because no *behavioral* gate ran. Tick every line that applies:
+- **Backend tests green**: `./.venv/bin/python -m pytest`.
+- **Frontend builds**: `cd frontend && npm run build`.
+- **UI *behavior* changed** (persistence, switching, lifecycle)? A browser
+  regression MUST exercise it and you MUST run it + Read the screenshots — extend
+  `scripts/verify_ui.py` (or run `scripts/verify_team_save.py`: edit, switch
+  within the 600 ms debounce, switch back, assert via the API the edit survived).
+  Type-check is not UI verification.
+- **New/changed mutating endpoint** (POST/PUT/DELETE touching session graph,
+  agent history, or the DB)? It MUST go through a component/`SessionManager`
+  method (never `app.state.*._conn`); be `async` if it swaps `session.graph`;
+  carry a busy-guard (`wiring.require_session_idle`/`require_agent_idle`) if a
+  live run depends on what it mutates; and be classified in
+  `tests/test_endpoint_contracts.py` (the route-contract backstop).
+- **Diverged from your plan/spec?** Do the planned item or record in `log.md`
+  *why* it was dropped — never silently skip it (esp. the browser verification).
+- **Touched `config.yml`/docs?** `git diff --staged | grep sk-` is empty.
 
 ## What's left to do
 The 10 build phases are complete (see `plan.md`). The remaining backlog (Phase 9.4, ongoing): cost estimates, per-command bash allowlist, optional Docker sandbox executor. (The persisted work-log UI shipped 2026-06-10: the Agent tab renders the stored history + system context, with Clear/Summarize.) The path-check sandbox is **not** escape-proof (accepted for v1, local single-user).

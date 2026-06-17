@@ -1379,3 +1379,50 @@ Follow-up refinements to the team UX fixes above:
   the new graph has different agents (old agents removed, new ones added).
   `AgentRegistry.unregister()` added for the detach path. 186 tests green, frontend
   build clean.
+
+### 2026-06-18 — Review of the team-UX changes + STRUCTURAL prevention pass
+
+An adversarial review of the above team-UX work (deepseek-trial) found that,
+while the headline #1 fix was real, the changes shipped/left several bugs. Fixed
+each at the STRUCTURAL level (so the class is prevented, not just the instance),
+and added durable guards in code + CLAUDE.md.
+
+- **The deeper pattern (the why):** every bug here was a correctness invariant
+  that lived only as a *convention/comment* or was wired into *one* of several
+  call sites, so the next call site silently inherited nothing — and a clean
+  `tsc`/build looked "done" because the only automatic gate (type-check) is blind
+  to a dropped autosave or an unguarded endpoint. Fix the meta-cause, not just the
+  instances: **move invariants to a choke point the code is forced through, and
+  add an executable gate that can SEE the failure.**
+- **Data loss on team-switch (HIGHEST):** the debounced autosave only flushed
+  before launch; the new selector switched teams without flushing → edits dropped.
+  Fix: `useTeamGraph` now OWNS flush-on-switch + flush-on-unmount (a `[teamId]`
+  cleanup), so every control inherits it. Browser regression `verify_team_save.py`.
+- **Rebind concurrency + layering:** rebind was a sync `def` mutating
+  `session.graph` off the loop + reaching into `sessions._conn`. Fix: `async`
+  `SessionManager.rebind` (event-loop swap, bundled DB write).
+- **Rebind busy-guard:** none → could corrupt a running session. Fix: shared
+  `wiring.require_session_idle`/`require_agent_idle` (one rule, also adopted by
+  the history endpoints).
+- **History bleed (id-only identity):** fixed first only in rebind, but the review
+  found the SAME class one call site over — an in-place RENAME via
+  `apply_team_graph`→`obtain_worker` still carried the old role's transcript. Fix:
+  gate the carry on identity `(id, name)` at `obtain_worker` (the one
+  get-or-create choke point → covers run/task/delegation/rename/rebind); removed
+  ids drop their `agent_state` row (`AgentStateStore.delete`).
+- **Save-as UX:** "Save as team…" silently rebound the session → made it a pure
+  fork ("Save as new team…", editor-only); save indicator hoisted to the header.
+- **Executable backstops:** `tests/test_endpoint_contracts.py` asserts the
+  `session.graph` mutators are `async` and that every POST/PUT under
+  `/api/session(s)|/api/agent` is classified guarded/exempt (a new route fails
+  until classified). A **Definition of Done** checklist added to the root
+  `CLAUDE.md` (build is necessary, never sufficient; UI-behavior change ⇒ a
+  browser regression; mutating endpoint ⇒ guard+async+owner+contract-test).
+  Invariants documented in `backend/{api,runtime}/CLAUDE.md` + `frontend/CLAUDE.md`.
+- **Recorded backlog directions (not done — a documented invariant + the tests
+  above suffice single-user):** extract a reusable `useDebouncedAutosave` hook; a
+  guarded `Session.set_graph` collapsing the two `session.graph` writers; a named
+  `AgentSpec.same_agent_as`/`identity()` imported by every carry point; an
+  `agent_state.name` column so a rename ACROSS a backend restart (no live worker
+  to compare) is also detected (today that narrow edge isn't).
+- **Reversibility:** all fixes are local/within-feature; no interface removed.

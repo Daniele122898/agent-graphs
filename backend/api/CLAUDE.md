@@ -32,6 +32,19 @@ lifespan/CORS setup.
 - The history endpoints (`/history`, `/clear`, `/summarize`) 409 while the
   agent is mid-run (mutating history under a run would corrupt it); summarize
   surfaces model failures as a clean 502.
+- **Contract for session/agent-MUTATING endpoints (YOU MUST).** Any endpoint
+  that mutates state a live run depends on (an agent's history, or the session's
+  `team_id`/`graph`): (1) **guard busy FIRST** — `wiring.require_agent_idle`
+  (one agent) or `wiring.require_session_idle` (session-wide, e.g. rebind —
+  checks EVERY node); these are the ONE definition of the rule, never re-derive a
+  local check (a local `_require_not_busy` is exactly how rebind first shipped
+  able to corrupt a running session). (2) **Be `async`** if it swaps
+  `session.graph` (a `def` handler runs in a threadpool and races the harness's
+  mid-run reads). (3) **Go through the owner** (`SessionManager.rebind`,
+  `session.harness.clear_history`) and **persist atomically there** — never reach
+  into `app.state.sessions._conn` from a handler. `tests/test_endpoint_contracts.py`
+  enforces (1)+(2) by route-table introspection, so a new mutating route must be
+  classified there — it will fail until you make the guard decision.
 - `/api/stats/models` returns a friendly `{models: [], error}` payload instead
   of a 500 when the model backend is unreachable — the UI must degrade
   gracefully without a local server.

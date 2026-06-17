@@ -8,6 +8,39 @@
 - **Agents are long-lived background workers** (`RunningAgent`), not request
   handlers: an inbox of prompts, history preserved across runs, state persisted
   continuously. The UI observes and interjects.
+- **`session.graph`/`session.team_id` are swapped through a sanctioned mutator,
+  on the event loop.** The opencode harness reads `session.graph` MID-RUN
+  (`_ensure`, `reconfigure`, `find_spec`, neighbour lookups), so an off-loop swap
+  (a sync `def` handler's threadpool thread) races those reads. Sanctioned
+  writers: `SessionManager.rebind` (team switch — async; bundles the in-memory
+  swap + the `sessions.team_id` DB write; the API endpoint must NOT touch the
+  `sessions` table / `_conn`) and `wiring.apply_team_graph` (graph edit of the
+  bound team). BOTH run only from `async` endpoints. Rebind guards
+  `require_session_idle` first; the graph-edit path instead DEFERS the opencode
+  reconfigure while `_any_busy` — that asymmetry is intentional
+  (edit-takes-effect-next-run), not a missing guard. (Shipping rebind as a sync
+  `def` with an inline `_conn` UPDATE was the race + layering break that was
+  fixed; `tests/test_endpoint_contracts.py` asserts these stay async.)
+- **Agent identity for history carry-forward is `(id, name)`, NOT id alone.**
+  History persists under `(session_id, agent_id)`, but a graph editor reuses an
+  id for a DIFFERENT role (change a node's name/persona, keep its id). Before ANY
+  path carries a stored transcript onto a spec it must check the spec is the same
+  agent: same id + same name = the same person evolving → keep history through a
+  persona/model/caps tweak; same id + different name = a new role on the slot →
+  reset (clear messages + drop the opencode `oc_session_id` reattach pointer).
+  This holds at EVERY carry point: `obtain_worker` (the get-or-create choke point
+  — an in-place rename via `PUT /teams/{id}/graph` rebuilds here, so it must NOT
+  carry `prior_messages` across a name change), `SessionManager.rebind`
+  (`repurposed_ids`, computed BEFORE the swap; `clear_history` runs AFTER, so the
+  agent is in the new graph), and the opencode `_oc_session` reattach (keyed by
+  id). A fully-REMOVED id also has its `agent_state` row dropped
+  (`AgentStateStore.delete`) so re-adding it later can't inherit stale state.
+  Keying identity on id alone is exactly how one role's conversation bled into
+  another. (Caveat: `name` doubles as label + identity, so a typo-fix rename
+  resets history; a dedicated `slot_uid` column would separate them — recorded
+  direction in `log.md`, not worth a migration single-user. A rename across a
+  backend restart with no live worker isn't detected (the persisted row has no
+  name) — a narrow, documented edge.)
 - **One run at a time per worker** (`RunningAgent._run_lock`): an agent is one
   "person" — concurrent work queues rather than interleaving one history. The
   delegation path acquires with a 15-min timeout as a deadlock backstop
