@@ -92,6 +92,7 @@ class TaskStore:
         prompt: str,
         assigned_agent_id: str,
         completion_signal: str = "self_reported",
+        timeout_hours: float = 1.0,
         parent_task_id: str | None = None,
         delegation_chain: list[str] | None = None,
     ) -> Task:
@@ -102,6 +103,7 @@ class TaskStore:
             prompt=prompt,
             assigned_agent_id=assigned_agent_id,
             completion_signal=completion_signal,
+            timeout_hours=timeout_hours,
             parent_task_id=parent_task_id,
             delegation_chain=delegation_chain or [],
             created_at=self._now(),
@@ -109,12 +111,12 @@ class TaskStore:
         )
         self._conn.execute(
             """INSERT INTO tasks (id, session_id, title, prompt, assigned_agent_id, status,
-                   completion_signal, todos, parent_task_id, delegation_chain, result,
+                   completion_signal, timeout_hours, todos, parent_task_id, delegation_chain, result,
                    created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 task.id, task.session_id, task.title, task.prompt, task.assigned_agent_id,
-                task.status, task.completion_signal, "[]", task.parent_task_id,
+                task.status, task.completion_signal, task.timeout_hours, "[]", task.parent_task_id,
                 json.dumps(task.delegation_chain), "", task.created_at, task.updated_at,
             ),
         )
@@ -162,6 +164,7 @@ class TaskStore:
             assigned_agent_id=row["assigned_agent_id"],
             status=row["status"],
             completion_signal=row["completion_signal"],
+            timeout_hours=row["timeout_hours"],
             todos=[Todo(**t) for t in json.loads(row["todos"])],
             parent_task_id=row["parent_task_id"],
             delegation_chain=json.loads(row["delegation_chain"]),
@@ -222,10 +225,26 @@ class TaskRunner:
         prompt = task.prompt
         rounds = 0
 
+        # Per-task wall-clock budget (hours → seconds); 0/None means no limit. On
+        # timeout, asyncio.wait_for cancels the agent run (the opencode harness
+        # aborts the in-flight OC run + the whole delegation subtree on that
+        # CancelledError) and we park the task blocked, Retry-able.
+        timeout_s = (task.timeout_hours or 0) * 3600 or None
+
         while True:
             self._to(task_id, "running")
             try:
-                output = await self._run_agent(task.assigned_agent_id, prompt)
+                output = await asyncio.wait_for(
+                    self._run_agent(task.assigned_agent_id, prompt), timeout=timeout_s
+                )
+            except asyncio.TimeoutError:
+                self._store.set_result(
+                    task_id,
+                    f"[timed out after {task.timeout_hours:g}h — raise the task's timeout "
+                    "or split the work into smaller tasks, then press Retry]",
+                )
+                self._to(task_id, "blocked")
+                return "blocked"
             except asyncio.CancelledError:
                 # the user pressed Stop on the agent mid-run — park the task
                 # where Retry can revive it, then let the cancellation proceed

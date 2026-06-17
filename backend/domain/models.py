@@ -200,6 +200,10 @@ class Task(BaseModel):
     assigned_agent_id: str
     status: TaskStatus = "queued"
     completion_signal: str = "self_reported"
+    # Wall-clock budget for the assigned agent's run, in HOURS (the whole
+    # delegation subtree is bounded by this). 0 = no limit. Big implementation
+    # work legitimately takes time, so this is user-configurable per task.
+    timeout_hours: float = 1.0
     todos: list[Todo] = Field(default_factory=list)
     parent_task_id: str | None = None
     delegation_chain: list[str] = Field(default_factory=list)

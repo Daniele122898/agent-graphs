@@ -37,6 +37,22 @@ def _fanout_graph() -> TeamGraph:
                             GraphEdge(id="e2", source="lead", target="be", label="backend")])
 
 
+def _nested_graph() -> TeamGraph:
+    """lead -> planner -> {backend, frontend}: a 2-level delegation tree for the
+    subtree-await regression (a delegate that itself delegates)."""
+    lead = AgentSpec(id="lead", name="Lead", is_entry_point=True, model="lmstudio:qwen/qwen3.5-9b",
+                     capabilities=Capabilities.from_level("read-write"))
+    planner = AgentSpec(id="planner", name="Planner", model="lmstudio:qwen/qwen3.5-9b", capabilities=Capabilities.from_level("read"))
+    be = AgentSpec(id="be", name="Backend", model="lmstudio:qwen/qwen3.5-9b", capabilities=Capabilities.from_level("read"))
+    fe = AgentSpec(id="fe", name="Frontend", model="lmstudio:qwen/qwen3.5-9b", capabilities=Capabilities.from_level("read"))
+    return TeamGraph(
+        nodes=[GraphNode(spec=lead), GraphNode(spec=planner), GraphNode(spec=be), GraphNode(spec=fe)],
+        edges=[GraphEdge(id="e1", source="lead", target="planner", label="plan"),
+               GraphEdge(id="e2", source="planner", target="be", label="api"),
+               GraphEdge(id="e3", source="planner", target="fe", label="ui")],
+    )
+
+
 def _opencode_session(conn, fake_clock, repo, client: FakeOpenCodeClient, graph: TeamGraph | None = None):
     graph = graph or _graph()
     team = TeamStore(conn, clock=fake_clock).create("T", graph)
@@ -377,6 +393,101 @@ async def test_dispatch_enforces_guards_synchronously(conn, fake_clock, repo):
     with pytest.raises(ModelRetry, match="capped"):
         await session.harness.dispatch_many(session, "lead", [("expert", str(i)) for i in range(5)])
     await session.harness.shutdown(session)
+
+
+async def test_subtree_await_reply_is_final_and_completion_not_premature(conn, fake_clock, repo):
+    # THE core fix: when a delegate (planner) itself delegates (to backend +
+    # frontend), its reply to the lead must be its FINAL integrated answer — NOT
+    # its premature first turn — and run_for_task returns only AFTER the whole
+    # subtree (planner + backend + frontend) is done. The on_delegate hook models
+    # the real tool-call-during-a-run that POSTs to /internal mid-run.
+    client = FakeOpenCodeClient({
+        "lead": [
+            {"parts": [text_part("handing the plan to the planner")], "delegate": [("planner", "plan the feature")]},
+            [text_part("lead final: shipped the feature")],
+        ],
+        "planner": [
+            {"parts": [text_part("splitting across backend + frontend")],
+             "delegate": [("be", "build the api"), ("fe", "build the ui")]},
+            [text_part("planner final: integrated backend + frontend")],
+        ],
+        "be": [[text_part("backend: API ready")]],
+        "fe": [[text_part("frontend: UI ready")]],
+    })
+    session = _opencode_session(conn, fake_clock, repo, client, graph=_nested_graph())
+
+    async def on_delegate(asker_id, requests):
+        # mirror /internal: thread the asker's in-flight chain so depth/cycle accumulate
+        chain = session.harness.current_chain(asker_id)
+        await session.harness.dispatch_many(session, asker_id, requests, chain=chain)
+    client.on_delegate = on_delegate
+
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+
+    out = await session.harness.run_for_task(session, "lead", "ship the feature")
+    await asyncio.sleep(0.05)
+
+    # the lead's task output is its FINAL turn (after the planner's reply landed)
+    assert "lead final" in out
+
+    # by the time run_for_task returned, the WHOLE subtree had finished
+    done = {e["data"]["agent_id"] for e in events if e["type"] == "agent_done"}
+    assert {"lead", "planner", "be", "fe"} <= done, f"not all agents finished: {done}"
+
+    a2a = [(e["data"]["from"], e["data"]["to"], e["data"]["kind"]) for e in events if e["type"] == "a2a_message"]
+    # the planner's reply to the lead is its FINAL integrated answer, not the
+    # premature "splitting across…" first turn (the bug being fixed)
+    planner_replies = [e for e in events if e["type"] == "a2a_message"
+                       and e["data"]["from"] == "planner" and e["data"]["to"] == "lead" and e["data"]["kind"] == "reply"]
+    assert planner_replies, "planner never replied to the lead"
+    assert "planner final" in planner_replies[-1]["data"]["body"]
+    assert "splitting across" not in planner_replies[-1]["data"]["body"]
+
+    # the grandchildren actually ran AND replied BEFORE the planner's reply bubbled up
+    assert ("be", "planner", "reply") in a2a and ("fe", "planner", "reply") in a2a
+    assert a2a.index(("be", "planner", "reply")) < a2a.index(("planner", "lead", "reply"))
+    assert a2a.index(("fe", "planner", "reply")) < a2a.index(("planner", "lead", "reply"))
+
+    await session.harness.shutdown(session)
+    sub.cancel()
+
+
+async def test_dispatch_marks_asker_waiting_then_clears_on_reply(conn, fake_clock, repo):
+    # Request #2 (backend contract): dispatch marks the asker waiting-on-agent with
+    # waiting_on naming the teammate (drives the sustained edge animation), and the
+    # asker leaves that state once the reply lands (re-prompt → running → idle).
+    client = FakeOpenCodeClient({"expert": [[text_part("here you go")]], "lead": [[text_part("thanks")]]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+
+    await session.harness.dispatch(session, "lead", "expert", "need help")
+
+    def lead_waiting():
+        return any(e["type"] == "agent_lifecycle" and e["data"]["agent_id"] == "lead"
+                   and e["data"]["lifecycle"] == "waiting-on-agent"
+                   and e["data"].get("waiting_on") == ["expert"] for e in events)
+
+    for _ in range(100):
+        if lead_waiting():
+            break
+        await asyncio.sleep(0.02)
+    assert lead_waiting(), "asker should be marked waiting on the named teammate"
+
+    # the reply is delivered and the lead leaves the waiting state
+    for _ in range(150):
+        lcs = [e["data"]["lifecycle"] for e in events
+               if e["type"] == "agent_lifecycle" and e["data"]["agent_id"] == "lead"]
+        if lcs and lcs[-1] != "waiting-on-agent":
+            break
+        await asyncio.sleep(0.02)
+    lcs = [e["data"]["lifecycle"] for e in events if e["type"] == "agent_lifecycle" and e["data"]["agent_id"] == "lead"]
+    assert "waiting-on-agent" in lcs and lcs[-1] in ("running", "idle"), lcs
+    await session.harness.shutdown(session)
+    sub.cancel()
 
 
 async def test_delegate_enforces_neighbor_guard(conn, fake_clock, repo):

@@ -3,6 +3,8 @@ gates + safety rails — driven with injected fakes (no models/subprocess)."""
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from backend.domain.models import AgentSpec, GraphNode, TeamGraph
@@ -53,12 +55,13 @@ def test_task_round_trips_through_store(conn, fake_clock):
     store = TaskStore(conn, clock=fake_clock)
     t = store.create(
         session_id=session.id, title="Add auth", prompt="implement login",
-        assigned_agent_id="lead", completion_signal="check:pytest",
+        assigned_agent_id="lead", completion_signal="check:pytest", timeout_hours=2.5,
     )
     got = store.get(t.id)
     assert got is not None
     assert got.title == "Add auth"
     assert got.completion_signal == "check:pytest"
+    assert got.timeout_hours == 2.5  # the per-task budget round-trips through the store
     assert got.status == "queued"
     assert store.list_for_session(session.id)[0].id == t.id
 
@@ -78,6 +81,50 @@ def _store_with_task(conn, fake_clock, signal):
 
 async def _noop_reviewer(_id, _p, _r):
     return ReviewVerdict(approved=True)
+
+
+async def test_task_times_out_and_parks_blocked(conn, fake_clock):
+    # A per-task timeout (hours) bounds the agent run: wait_for cancels it and the
+    # task parks blocked (Retry-able) with a clear note — never runs forever.
+    session = _session(conn, fake_clock)
+    store = TaskStore(conn, clock=fake_clock)
+    task = store.create(
+        session_id=session.id, title="T", prompt="a big job",
+        assigned_agent_id="lead", completion_signal="self_reported",
+        timeout_hours=0.2 / 3600,  # 0.2s — tiny so the test is fast
+    )
+    cancelled = asyncio.Event()
+
+    async def slow_agent(_id, _prompt):
+        try:
+            await asyncio.sleep(30)  # would run far past the 0.2s budget
+        except asyncio.CancelledError:
+            cancelled.set()  # the timeout must cancel the run, not let it leak
+            raise
+        return "never"
+
+    runner = TaskRunner(store, run_agent=slow_agent, run_reviewer=_noop_reviewer, run_check=lambda c: (0, ""))
+    assert await runner.run(task.id) == "blocked"
+    got = store.get(task.id)
+    assert got.status == "blocked"
+    assert "timed out" in got.result.lower()
+    assert cancelled.is_set(), "the timed-out agent run must be cancelled"
+
+
+async def test_zero_timeout_means_no_limit(conn, fake_clock):
+    # timeout_hours=0 disables the budget (some work legitimately takes very long).
+    session = _session(conn, fake_clock)
+    store = TaskStore(conn, clock=fake_clock)
+    task = store.create(
+        session_id=session.id, title="T", prompt="x", assigned_agent_id="lead",
+        completion_signal="self_reported", timeout_hours=0,
+    )
+
+    async def quick_agent(_id, _prompt):
+        return "did it"
+
+    runner = TaskRunner(store, run_agent=quick_agent, run_reviewer=_noop_reviewer, run_check=lambda c: (0, ""))
+    assert await runner.run(task.id) == "done"  # no timeout wrapper interfered
 
 
 async def test_self_reported_goes_straight_to_done(conn, fake_clock):
