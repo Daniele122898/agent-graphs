@@ -11,12 +11,14 @@ export default function SessionSwitcher({
   teams,
   onSwitch,
   onLaunched,
+  flushSave,
 }: {
   activeSessionId: string | null;
   sessions: SessionInfo[];
   teams: TeamRow[];
   onSwitch: (id: string) => void;
   onLaunched: (id: string) => void;
+  flushSave: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [teamId, setTeamId] = useState("");
@@ -37,6 +39,7 @@ export default function SessionSwitcher({
     setLaunching(true);
     setError(null);
     try {
+      await flushSave();
       const s = await api.launchSession(teamId, repo.trim(), mode, harness);
       if (s.warning) window.alert(s.warning);
       setOpen(false);

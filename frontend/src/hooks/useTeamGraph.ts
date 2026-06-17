@@ -27,7 +27,7 @@ function newAgentSpec(id: string): AgentSpec {
   };
 }
 
-export function useTeamGraph(teamId: string | null) {
+export function useTeamGraph(teamId: string | null, teamName?: string) {
   const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -52,7 +52,7 @@ export function useTeamGraph(teamId: string | null) {
         setNodes(n);
         setEdges(e);
         loaded.current = true;
-        setStatus("saved");
+        setStatus(`saved — ${teamName || 'team'}`);
       })
       .catch((err) => {
         if (!cancelled) setStatus(`load error: ${err}`);
@@ -69,7 +69,7 @@ export function useTeamGraph(teamId: string | null) {
     saveTimer.current = setTimeout(() => {
       api
         .putTeamGraph(teamId, fromReactFlow(nodes, edges))
-        .then(() => setStatus("saved"))
+        .then(() => setStatus(`saved — ${teamName || 'team'}`))
         .catch((err) => setStatus(`save error: ${err}`));
     }, 600);
     return () => {
@@ -150,6 +150,24 @@ export function useTeamGraph(teamId: string | null) {
     [nodes, selectedId]
   );
 
+  // Immediately fire the pending debounced save — used before launching a
+  // session so the backend sees the latest graph state.
+  const flushSave = useCallback(async () => {
+    if (!teamId || !loaded.current) return;
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    setStatus("saving…");
+    try {
+      await api.putTeamGraph(teamId, fromReactFlow(nodes, edges));
+      setStatus(`saved — ${teamName || 'team'}`);
+    } catch (err) {
+      setStatus(`save error: ${err}`);
+      throw err;
+    }
+  }, [teamId, nodes, edges, teamName]);
+
   return {
     nodes,
     edges,
@@ -166,6 +184,7 @@ export function useTeamGraph(teamId: string | null) {
     selectedEdgeId,
     selectedSpec,
     status,
+    flushSave,
     snapshot: () => fromReactFlow(nodes, edges),
   };
 }

@@ -5,7 +5,7 @@ import Sidebar from "./panels/Sidebar";
 import SessionSwitcher from "./panels/SessionSwitcher";
 import TaskBoard from "./panels/TaskBoard";
 import { api, setActiveSession, withRetry, type TeamRow } from "./lib/api";
-import { Button } from "./lib/ui";
+import { Button, Select } from "./lib/ui";
 import { useEvents } from "./hooks/useEvents";
 import { useTeamGraph } from "./hooks/useTeamGraph";
 import type { SessionInfo } from "./lib/types";
@@ -43,7 +43,8 @@ export default function App() {
   const [activeTeamId, setActiveTeamId] = useState<string | null>(null);
   const [view, setView] = useState<"canvas" | "board">("canvas");
 
-  const graph = useTeamGraph(activeTeamId);
+  const teamName = teams.find(t => t.id === activeTeamId)?.name;
+  const graph = useTeamGraph(activeTeamId, teamName);
   const { events, lifecycles, waitingOn, activeEdges } = useEvents(activeSessionId);
 
   const selectSession = useCallback((id: string | null) => {
@@ -100,7 +101,8 @@ export default function App() {
   const saveAs = async () => {
     const name = window.prompt("Save current graph as a new team:");
     if (!name) return;
-    await api.createTeam(name, graph.snapshot());
+    const t = await api.createTeam(name, graph.snapshot());
+    setActiveTeamId(t.id);
     await refresh();
   };
 
@@ -114,7 +116,6 @@ export default function App() {
   const waitingOnNames: Record<string, string[]> = Object.fromEntries(
     Object.entries(waitingOn).map(([id, targets]) => [id, targets.map((t) => agentNames[t] ?? t)])
   );
-
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "var(--bg)" }}>
       <header
@@ -136,6 +137,20 @@ export default function App() {
         {session && (
           <>
             <div style={{ width: 1, height: 22, background: "var(--border)" }} />
+            <Select
+              value={activeTeamId ?? ""}
+              onChange={(e) => {
+                const newTeamId = e.target.value;
+                if (newTeamId && newTeamId !== activeTeamId) setActiveTeamId(newTeamId);
+              }}
+              style={{ minWidth: 160 }}
+            >
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}{t.id === session?.team_id ? " (active)" : ""}
+                </option>
+              ))}
+            </Select>
             <SessionSwitcher
               activeSessionId={activeSessionId}
               sessions={sessions}
@@ -145,6 +160,7 @@ export default function App() {
                 await refresh();
                 selectSession(id);
               }}
+              flushSave={graph.flushSave}
             />
             <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
               <Button variant="ghost" size="sm" onClick={saveAs}>
@@ -238,7 +254,7 @@ export default function App() {
         <Onboarding teams={teams} onChanged={refresh} onLaunched={async (id) => {
           await refresh();
           selectSession(id);
-        }} />
+        }} flushSave={graph.flushSave} />
       ) : (
         <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
