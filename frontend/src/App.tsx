@@ -98,13 +98,17 @@ export default function App() {
     };
   }, [activeSessionId]);
 
+  // Fork the current graph into a NEW team (a copy) and point the editor at it.
+  // Pure fork: it does NOT switch the running session onto the copy — that's an
+  // explicit, separate action ("↻ Use for session"), so "save a copy" can't
+  // surprise you by detaching the session you're running. Switching the editor
+  // (setActiveTeamId) triggers the hook's flush-on-switch, persisting the
+  // ORIGINAL team's pending edits before the copy loads.
   const saveAs = async () => {
-    const name = window.prompt("Save current graph as a new team:");
+    const name = window.prompt("Save the current graph as a NEW team (a copy):");
     if (!name) return;
     const t = await api.createTeam(name, graph.snapshot());
     setActiveTeamId(t.id);
-    const info = await api.rebindSession(activeSessionId!, t.id);
-    setSession(info);
     await refresh();
   };
 
@@ -158,7 +162,7 @@ export default function App() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  title="Rebind this session to use the selected team"
+                  title="This session is running a DIFFERENT team. Click to rebind it to the team you're editing."
                   onClick={async () => {
                     if (!activeTeamId || !activeSessionId) return;
                     const info = await api.rebindSession(activeSessionId, activeTeamId);
@@ -169,6 +173,16 @@ export default function App() {
                   ↻ Use for session
                 </Button>
               )}
+              {/* Save indicator — lives in the always-visible header (not the
+                  canvas) so it's shown on the Tasks view too, and names the team
+                  edits auto-save to, so "where does auto-save go?" is answered. */}
+              <span
+                className={graph.status.includes("error") ? "chip chip-danger" : "chip"}
+                style={{ fontSize: 11, color: "var(--text-faint)" }}
+                title="Canvas/spec edits auto-save here. Editing a team other than the running one (no '(active)') does not affect the live session."
+              >
+                {graph.status}
+              </span>
             </div>
             <SessionSwitcher
               activeSessionId={activeSessionId}
@@ -182,8 +196,8 @@ export default function App() {
               flushSave={graph.flushSave}
             />
             <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-              <Button variant="ghost" size="sm" onClick={saveAs}>
-                Save as team…
+              <Button variant="ghost" size="sm" title="Fork the current graph into a new team (a copy). Does not switch the running session." onClick={saveAs}>
+                Save as new team…
               </Button>
               <button
                 className="chip"
@@ -290,7 +304,6 @@ export default function App() {
                 onSelectionChange={graph.onSelectionChange}
                 onUpdateEdgeCurve={graph.updateEdgeCurve}
                 addNode={graph.addNode}
-                status={graph.status}
                 activeEdges={activeEdges}
               />
             ) : (

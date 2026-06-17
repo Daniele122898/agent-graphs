@@ -37,6 +37,11 @@ export function useTeamGraph(teamId: string | null, teamName?: string) {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const teamNameRef = useRef(teamName);
   teamNameRef.current = teamName;
+  // `dirty` = there are edits not yet known-persisted; `snapshotRef` = the
+  // latest graph to persist. Together they let the flush-on-switch effect below
+  // save the OUTGOING team before the canvas is replaced — see that effect.
+  const dirty = useRef(false);
+  const snapshotRef = useRef<ReturnType<typeof fromReactFlow> | null>(null);
 
   // (Re)load whenever the active team changes (loading a library team into the
   // editor). Suppress the save effect until the new graph is in place.
@@ -64,20 +69,47 @@ export function useTeamGraph(teamId: string | null, teamName?: string) {
     };
   }, [teamId, setNodes, setEdges]);
 
+  // Debounced autosave to the CURRENTLY-EDITED team. Marks the graph dirty and
+  // stashes the latest snapshot so the flush-on-switch effect can persist it.
   useEffect(() => {
     if (!loaded.current || !teamId) return;
+    snapshotRef.current = fromReactFlow(nodes, edges);
+    dirty.current = true;
     setStatus("saving…");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
+      const snap = snapshotRef.current!;
       api
-        .putTeamGraph(teamId, fromReactFlow(nodes, edges))
-        .then(() => setStatus(`saved — ${teamNameRef.current || 'team'}`))
+        .putTeamGraph(teamId, snap)
+        .then(() => { dirty.current = false; setStatus(`saved — ${teamNameRef.current || 'team'}`); })
         .catch((err) => setStatus(`save error: ${err}`));
     }, 600);
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
   }, [nodes, edges, teamId]);
+
+  // STRUCTURAL flush-on-switch (prevents the data-loss class, not one instance):
+  // when the edited team changes (selector switch, session switch, "save as")
+  // OR the editor unmounts, flush the OUTGOING team's pending edit BEFORE the
+  // load effect replaces the canvas. Because the hook OWNS this, every current
+  // and future control that changes which team is edited inherits it — there's
+  // no per-call-site flush to forget (forgetting it on the new selector is
+  // exactly how edits-on-switch were silently dropped). The cleanup runs only on
+  // a teamId change (deps=[teamId]), so a normal edit doesn't trigger it; the
+  // `dirty` guard makes it a no-op on mount (incl. StrictMode's double-invoke).
+  useEffect(() => {
+    const outgoing = teamId;
+    return () => {
+      if (!outgoing || !dirty.current || !snapshotRef.current) return;
+      if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+      dirty.current = false;
+      // fire-and-forget: targets the OUTGOING team id, so it can't clobber the
+      // incoming team's load (different ids, no ordering hazard).
+      api.putTeamGraph(outgoing, snapshotRef.current).catch(() => {});
+    };
+  }, [teamId]);
 
   const onConnect = useCallback(
     (conn: Connection) =>
@@ -152,8 +184,10 @@ export function useTeamGraph(teamId: string | null, teamName?: string) {
     [nodes, selectedId]
   );
 
-  // Immediately fire the pending debounced save — used before launching a
-  // session so the backend sees the latest graph state.
+  // Immediately fire (and AWAIT) the pending debounced save — used before
+  // launching a session on the CURRENTLY-edited team (no teamId change, so the
+  // flush-on-switch effect doesn't fire; this covers that path so the launched
+  // session reads the latest graph, not a mid-debounce stale one).
   const flushSave = useCallback(async () => {
     if (!teamId || !loaded.current) return;
     if (saveTimer.current) {
@@ -163,6 +197,7 @@ export function useTeamGraph(teamId: string | null, teamName?: string) {
     setStatus("saving…");
     try {
       await api.putTeamGraph(teamId, fromReactFlow(nodes, edges));
+      dirty.current = false;
       setStatus(`saved — ${teamName || 'team'}`);
     } catch (err) {
       setStatus(`save error: ${err}`);

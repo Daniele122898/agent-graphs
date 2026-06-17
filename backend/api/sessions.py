@@ -70,20 +70,18 @@ def install(app: FastAPI) -> None:
         return session.info().model_dump()
 
     @app.post("/api/sessions/{session_id}/rebind")
-    def rebind_session(session_id: str, body: RebindSessionRequest) -> dict:
-        """Rebind a session to a different team."""
+    async def rebind_session(session_id: str, body: RebindSessionRequest) -> dict:
+        """Rebind a session to a different team. ASYNC so the session.graph swap
+        runs on the event loop, serialized with the harness's mid-run reads of it
+        (same reason PUT /api/teams/{id}/graph is async). 409 if the session is
+        busy — a rebind mid-run would corrupt the running conversation, and the
+        guard guarantees no removed agent has a worker to orphan. The in-memory
+        rebind + DB persistence are bundled in SessionManager.rebind (the
+        endpoint never touches the sessions table directly)."""
         team = app.state.teams.get(body.team_id)
         if team is None:
             raise HTTPException(404, f"no team '{body.team_id}'")
-        session = app.state.sessions.get(session_id)
-        if session is None:
-            raise HTTPException(404, f"no session '{session_id}'")
-        # Update in-memory
-        session.rebind(body.team_id, team.graph)
-        # Persist to DB
-        app.state.sessions._conn.execute(
-            "UPDATE sessions SET team_id = ? WHERE id = ?",
-            (body.team_id, session_id),
-        )
-        app.state.sessions._conn.commit()
+        session = wiring.resolve_session(app, session_id)
+        wiring.require_session_idle(session)
+        await app.state.sessions.rebind(session, body.team_id, team.graph)
         return session.info().model_dump()

@@ -136,3 +136,60 @@ def test_rebind_session_registry_updates_for_graph_changes(tmp_path):
         r = client.post(f"/api/sessions/{session['id']}/rebind", json={"team_id": team_c["id"]})
         assert r.status_code == 200
         assert set(live.registry.agent_ids()) == {"lead"}
+
+
+def test_rebind_refused_while_session_busy(tmp_path):
+    """A rebind mid-run would corrupt the running conversation and orphan removed
+    agents' workers — so it 409s if ANY agent is busy, and leaves the team unchanged."""
+    app = create_app(db_path=tmp_path / "t.sqlite")
+    with TestClient(app) as client:
+        team_a, session = bootstrap_session(client, tmp_path / "repo", graph=_graph("LeadA"))
+        team_b = client.post("/api/teams", json={"name": "Team B", "graph": _graph("LeadB")}).json()
+        live = app.state.sessions.get(session["id"])
+        live.harness.is_busy = lambda _s, _a: True  # pretend the agent is mid-run
+
+        r = client.post(f"/api/sessions/{session['id']}/rebind", json={"team_id": team_b["id"]})
+        assert r.status_code == 409
+        assert "busy" in r.text.lower()
+        assert live.team_id == team_a["id"]  # NOT rebound — the guard fired before any mutation
+
+
+def test_rebind_resets_history_for_repurposed_slot_but_keeps_it_for_same_role(tmp_path):
+    """Identity for history carry-forward is (id, name). Reusing an id for a
+    DIFFERENT role (name differs) must reset that slot's history so one role's
+    conversation can't bleed into another; the SAME role (same id+name, even with
+    a tweaked persona) keeps its history."""
+    app = create_app(db_path=tmp_path / "t.sqlite")
+    with TestClient(app) as client:
+        team_a, session = bootstrap_session(client, tmp_path / "repo", graph=_graph("Implementer"))
+        live = app.state.sessions.get(session["id"])
+        cleared: list[str] = []
+
+        async def spy_clear(_s, agent_id):  # spy on the history reset
+            cleared.append(agent_id)
+        live.harness.clear_history = spy_clear
+
+        # same id "lead", DIFFERENT name → repurposed slot → history reset
+        repurposed = client.post("/api/teams", json={"name": "B", "graph": _graph("Frontend Expert")}).json()
+        assert client.post(f"/api/sessions/{session['id']}/rebind", json={"team_id": repurposed["id"]}).status_code == 200
+        assert cleared == ["lead"], "a repurposed (renamed) slot must have its carried history cleared"
+
+        # same id "lead", SAME name → same agent → history preserved (no clear)
+        cleared.clear()
+        same_role = client.post("/api/teams", json={"name": "C", "graph": _graph("Frontend Expert")}).json()
+        assert client.post(f"/api/sessions/{session['id']}/rebind", json={"team_id": same_role["id"]}).status_code == 200
+        assert cleared == [], "same id + same name is the same agent — history must be kept"
+
+
+def test_rebind_persists_team_id_to_db(tmp_path):
+    """The new team_id is persisted (so a resume after restart binds the new team),
+    routed through SessionManager.rebind rather than an ad-hoc write in the endpoint."""
+    app = create_app(db_path=tmp_path / "t.sqlite")
+    with TestClient(app) as client:
+        team_a, session = bootstrap_session(client, tmp_path / "repo", graph=_graph("LeadA"))
+        team_b = client.post("/api/teams", json={"name": "Team B", "graph": _graph("LeadB")}).json()
+        assert client.post(f"/api/sessions/{session['id']}/rebind", json={"team_id": team_b["id"]}).status_code == 200
+        row = app.state.conn.execute(
+            "SELECT team_id FROM sessions WHERE id = ?", (session["id"],)
+        ).fetchone()
+        assert row["team_id"] == team_b["id"]
