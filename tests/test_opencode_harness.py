@@ -454,6 +454,93 @@ async def test_subtree_await_reply_is_final_and_completion_not_premature(conn, f
     sub.cancel()
 
 
+async def test_stop_one_teammate_keeps_sibling_and_completes_task(conn, fake_clock, repo):
+    # Adversarial-review D1: stopping ONE delegated teammate must NOT abort its
+    # siblings or collapse the asker's task. The stopped teammate yields an inline
+    # "[stopped]" note; the asker still integrates the sibling's real answer.
+    client = FakeOpenCodeClient({
+        "lead": [
+            {"parts": [text_part("fan out")], "delegate": [("fe", "ui"), ("be", "api")]},
+            [text_part("lead final: shipped with backend")],
+        ],
+        "fe": [{"park": True}],            # frontend hangs → we Stop it
+        "be": [[text_part("backend done")]],
+    })
+    session = _opencode_session(conn, fake_clock, repo, client, graph=_fanout_graph())
+
+    async def on_delegate(asker_id, requests):
+        await session.harness.dispatch_many(session, asker_id, requests, chain=session.harness.current_chain(asker_id))
+    client.on_delegate = on_delegate
+
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+
+    run = asyncio.create_task(session.harness.run_for_task(session, "lead", "ship it"))
+    # wait until the frontend is parked-running AND the backend has finished
+    for _ in range(200):
+        if session.registry.lifecycle("fe") == "running" and any(
+                e["type"] == "agent_done" and e["data"]["agent_id"] == "be" for e in events):
+            break
+        await asyncio.sleep(0.02)
+    assert session.registry.lifecycle("fe") == "running"
+
+    await session.harness.stop(session, "fe")  # stop ONLY the frontend teammate
+    out = await asyncio.wait_for(run, timeout=3)
+
+    assert "lead final" in out  # the task completed — was NOT collapsed by stopping fe
+    log = session.harness.message_log.for_session(session.id)
+    assert any(m["from_agent"] == "be" and m["to_agent"] == "lead" and "backend done" in m["body"] for m in log)
+    assert any(m["from_agent"] == "fe" and m["to_agent"] == "lead" and "stopped" in m["body"].lower() for m in log)
+    await session.harness.shutdown(session)
+    sub.cancel()
+
+
+async def test_any_busy_is_subtree_aware(conn, fake_clock, repo):
+    # Adversarial-review D2: a delegation drive has gaps where no agent holds a
+    # lock; _any_busy must still report busy (via inflight / pending) so a graph
+    # autosave can't reconfigure (restart) the server mid-subtree.
+    from backend.harness.opencode.harness import _AgentState
+    client = FakeOpenCodeClient({"lead": [[text_part("x")]]})
+    session = _opencode_session(conn, fake_clock, repo, client)
+    rt = await session.harness._ensure(session)
+    assert session.harness._any_busy(rt) is False
+    rt.inflight += 1
+    assert session.harness._any_busy(rt) is True       # a subtree drive is in flight
+    rt.inflight -= 1
+    assert session.harness._any_busy(rt) is False
+    rt.agents.setdefault("lead", _AgentState()).pending.append(("expert", "q", []))
+    assert session.harness._any_busy(rt) is True       # a delegation is queued
+    await session.harness.shutdown(session)
+
+
+async def test_redelegation_cap_settles_the_agent(conn, fake_clock, repo, monkeypatch):
+    # Adversarial-review D3: if an agent re-delegates every turn, the
+    # MAX_DELEGATION_ROUNDS backstop must SETTLE it (agent_done + idle), not leave
+    # it stuck 'waiting-on-agent' forever (badge + edge animation never clearing).
+    import backend.harness.opencode.harness as oc
+    monkeypatch.setattr(oc, "MAX_DELEGATION_ROUNDS", 2)
+    client = FakeOpenCodeClient({
+        "lead": [{"parts": [text_part(f"round {i}")], "delegate": [("expert", "again")]} for i in range(6)],
+        "expert": [[text_part("ok")] for _ in range(6)],
+    })
+    session = _opencode_session(conn, fake_clock, repo, client)
+
+    async def on_delegate(asker_id, requests):
+        await session.harness.dispatch_many(session, asker_id, requests, chain=session.harness.current_chain(asker_id))
+    client.on_delegate = on_delegate
+
+    events: list = []
+    sub = asyncio.create_task(_drain(session, events))
+    await asyncio.sleep(0.02)
+    await asyncio.wait_for(session.harness.run_for_task(session, "lead", "go"), timeout=4)
+    await asyncio.sleep(0.05)
+    assert session.registry.lifecycle("lead") in ("idle", "done")
+    assert any(e["type"] == "agent_done" and e["data"]["agent_id"] == "lead" for e in events)
+    await session.harness.shutdown(session)
+    sub.cancel()
+
+
 async def test_dispatch_marks_asker_waiting_then_clears_on_reply(conn, fake_clock, repo):
     # Request #2 (backend contract): dispatch marks the asker waiting-on-agent with
     # waiting_on naming the teammate (drives the sustained edge animation), and the

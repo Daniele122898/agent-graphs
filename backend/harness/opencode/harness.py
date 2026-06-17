@@ -134,6 +134,12 @@ class _Runtime:
         self.agents: dict[str, _AgentState] = {}
         self.by_oc: dict[str, str] = {}
         self.listener: asyncio.Task | None = None
+        # in-flight subtree drives (`_run_to_quiescence`/`_drain_background`):
+        # a delegation drive has gaps where NO agent holds a lock or is busy
+        # (between a teammate finishing and the asker's re-prompt), so the
+        # lock/busy signal alone is blind to it — `_any_busy` also checks this so
+        # a graph autosave can't reconfigure (restart) the server mid-subtree.
+        self.inflight = 0
         # signature of the graph the server was last configured with — a change
         # (model/persona/capability/edge edit) triggers a reconfigure.
         self.configured_sig: str = ""
@@ -170,11 +176,16 @@ class OpenCodeHarness(Harness):
 
     @staticmethod
     def _any_busy(rt: _Runtime) -> bool:
-        """True if any agent has a run in flight (lock held) or the server
-        reports it busy. A reconfigure restarts the server and drops every OC
-        session — doing that under a live run (e.g. a delegation chain parked on
-        st.idle) orphans the awaiter until the run timeout (the stall)."""
-        return any(st.lock.locked() or st.busy for st in rt.agents.values())
+        """True if any agent has a run in flight (lock held), the server reports
+        it busy, a delegation drive is in flight (`inflight`), or a delegation is
+        queued/running (`pending`/`children`). A reconfigure restarts the server
+        and drops every OC session — doing that under a live run OR mid-delegation
+        subtree orphans/corrupts it, so reconfigure is deferred until ALL of these
+        are clear. `inflight` is the load-bearing one for delegation: a subtree
+        drive has gaps where no agent holds a lock between turns."""
+        return rt.inflight > 0 or any(
+            st.lock.locked() or st.busy or st.pending or st.children for st in rt.agents.values()
+        )
 
     async def _ensure(self, session: "Session") -> _Runtime:
         # Serialize so concurrent first-runs don't spawn two servers and a graph
@@ -655,6 +666,8 @@ class OpenCodeHarness(Harness):
         to drain them). Reuses _drain, then resets the guard."""
         rt = self._runtimes.get(session.id)
         st = rt.agents.get(asker_id) if rt else None
+        if rt is not None:
+            rt.inflight += 1  # keep the server from reconfiguring mid-drain
         try:
             await self._drain(session, asker_id, st.last_output if st else "", [], None)
         except asyncio.CancelledError:
@@ -664,6 +677,8 @@ class OpenCodeHarness(Harness):
         finally:
             if st is not None:
                 st.draining = False
+            if rt is not None:
+                rt.inflight -= 1
 
     async def _run_to_quiescence(self, session: "Session", agent_id: str, prompt: str, *, chain=None, lock_timeout=None) -> str:
         """Run ``agent_id`` then drain any teammates it delegates to — running each
@@ -672,6 +687,11 @@ class OpenCodeHarness(Harness):
         whole subtree, so it returns only when ``agent_id`` and all descendants are
         done."""
         chain = list(chain or [])
+        # _ensure FIRST (before bumping inflight) so a deferred graph edit can
+        # still reconfigure on a genuinely fresh top-level run; then hold inflight
+        # for the WHOLE drive so nothing reconfigures mid-subtree.
+        rt = await self._ensure(session)
+        rt.inflight += 1
         try:
             out = await self.run_to_completion(session, agent_id, prompt, delegation_chain=chain, lock_timeout=lock_timeout)
             return await self._drain(session, agent_id, out, chain, lock_timeout)
@@ -681,14 +701,25 @@ class OpenCodeHarness(Harness):
             # _drain cancels our children, each aborting its own subtree the same way.
             await self._abort_oc(session, agent_id)
             raise
+        finally:
+            rt.inflight -= 1
 
     async def _drain(self, session: "Session", agent_id: str, out: str, chain: list, lock_timeout) -> str:
         rt = self._runtimes.get(session.id)
         st = rt.agents.get(agent_id) if rt else None
         rounds = 0
         while st is not None and st.pending:
+            if st.aborting:  # a stop landed since the last turn — tear down, don't re-prompt
+                raise asyncio.CancelledError()
             if rounds >= MAX_DELEGATION_ROUNDS:
-                st.pending = []  # backstop: stop a pathological re-delegation loop
+                # Backstop a pathological re-delegation loop: drop the pending AND
+                # settle the agent — session.idle suppressed agent_done while
+                # pending was set, so without this the agent is stuck
+                # 'waiting-on-agent' forever (badge + edge animation never clear).
+                st.pending = []
+                if st.error is None and not st.aborting:
+                    session.bus.publish("agent_done", {"agent_id": agent_id, "output": out})
+                    self._lifecycle(session, agent_id, "idle")
                 break
             rounds += 1
             pending, st.pending = st.pending, []
@@ -696,9 +727,20 @@ class OpenCodeHarness(Harness):
                      for tid, q, ch in pending}
             st.children |= tasks
             try:
-                replies = await asyncio.gather(*tasks)
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            except asyncio.CancelledError:
+                # OUR awaiter was cancelled (stop on this agent / an ancestor / a
+                # task timeout): cancel + drain the children so each aborts its own
+                # OC run and unwinds (no orphaned token-burning run), then propagate.
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
             finally:
                 st.children -= tasks
+            replies = [r for r in results if isinstance(r, tuple)]
+            if st.aborting:  # a stop landed in the post-gather / pre-re-prompt window
+                raise asyncio.CancelledError()
             # Re-prompt the asker with the teammates' FINAL replies so it can
             # integrate them (and possibly delegate again → loop). The run owner's
             # own run_to_completion publishes "running", clearing the waiting badge.
@@ -714,7 +756,15 @@ class OpenCodeHarness(Harness):
         try:
             ans = await self._run_to_quiescence(session, target_id, question, chain=chain, lock_timeout=DELEGATION_BUSY_TIMEOUT)
         except asyncio.CancelledError:
-            raise
+            # The teammate was stopped (directly, or because an ancestor is tearing
+            # down — its OC run was already aborted by _run_to_quiescence). Record
+            # an inline note and RETURN, do NOT re-raise: stopping ONE teammate must
+            # not abort its siblings or collapse the asker's task. A genuine
+            # whole-subtree teardown is driven by the asker's own stop()/timeout,
+            # which raises in _drain AFTER this gather (see _drain's aborting checks).
+            ans = "[stopped]"
+            self._record(session, target_id, asker_id, "reply", ans)
+            return target_id, ans
         except asyncio.TimeoutError:
             ans = f"[{target_id} was busy too long and didn't reply]"
         except Exception as e:  # noqa: BLE001 — surfaced on the target as agent_error too
