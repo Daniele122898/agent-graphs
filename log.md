@@ -1321,10 +1321,10 @@ per-hop and lock_timeout was overloaded as the run bound.
   `session.team_id`, renders as a `.chip-primary` in the header. Reversibility:
   cosmetic, trivial to remove.
 - **Fix B — `flushSave()`:** `useTeamGraph.ts` exposes a `flushSave()` that cancels
-  the 600ms debounce timer and immediately persists. `SessionSwitcher` and
-  `Onboarding` call it before `api.launchSession()`, eliminating the race where a
-  new session could pick up a stale graph. Reversibility: the debounce still runs
-  normally; `flushSave` is only called before launch.
+  the 600ms debounce timer and immediately persists. `SessionSwitcher` calls it
+  before `api.launchSession()`, eliminating the race where a new session could pick
+  up a stale graph. Reversibility: the debounce still runs normally; `flushSave` is
+  only called before launch.
 - **Fix C — team selector dropdown:** replaces the static name chip with a
   `<Select>` listing all teams, allowing the editor to load any team's graph
   (independent of the running session). Editing a non-session team does not affect
@@ -1343,3 +1343,39 @@ per-hop and lock_timeout was overloaded as the run bound.
 - **Cherry-picked from `team-swapping` branch** onto `deepseek-trial` (commit
   `30e29ec`). Frontend conflicts resolved by accepting our version (Fixes A-F
   already complete).
+
+### 2026-06-17 — Team UX fixes follow-ups: rebind button, save-as rebind, dead code, bug fixes
+
+Follow-up refinements to the team UX fixes above:
+
+- **↻ Use for session button:** a `Button` next to the team selector dropdown that
+  appears when `activeTeamId !== session.team_id`. Calls `api.rebindSession()` then
+  `refresh()` so the session immediately reflects the new binding. Previously there
+  was no way to rebind a running session to a different team — the selector was
+  editor-only. Reversibility: one button in `App.tsx`.
+- **Save-as rebinds the session:** after creating a new team via "Save as team…",
+  the session is now rebound to the new team via `api.rebindSession()` and the
+  editor switches to it (`setActiveTeamId(t.id)`) — the new team replaces the old
+  one as the session's definition. Without this, the running session stayed bound
+  to the old team while the editor showed the new one, silently diverging.
+  Reversibility: remove the `rebindSession` call from `saveAs`.
+- **Dead code removed:** `flushSave` prop and call removed from `Onboarding.tsx`
+  entirely — during onboarding, `teamId` is always null (no graph editor), so the
+  flush was always a no-op with a stale `teamId` reference. `SessionSwitcher`
+  retains the flush because it operates on an active team. Reversibility: trivial
+  to re-add if Onboarding ever edits before launching.
+- **Bug fix — session state after rebind:** both rebind call sites (rebind button
+  and save-as) now capture the `SessionInfo` returned by `api.rebindSession()` and
+  call `setSession(info)`, so the UI immediately reflects the new `team_id` in the
+  "(active)" marker. Without this, the header still showed the old team as active
+  until the next poll. Reversibility: the two `setSession` calls.
+- **Bug fix — stale `teamName` closure:** `useTeamGraph`'s save-completion handlers
+  referenced `teamName` from the closure (captured when a `useEffect` or `setTimeout`
+  callback was scheduled), which could be stale. Fixed with a `teamNameRef` pattern
+  (`useRef`, updated on every render): status strings like `"saved — ${teamName}"`
+  always read the latest ref, never a captured value. Reversibility: local ref change.
+- **4 new backend tests** cover rebind: valid rebind (team_id + registry updated),
+  404 on nonexistent team, 404 on nonexistent session, and registry re-seeding when
+  the new graph has different agents (old agents removed, new ones added).
+  `AgentRegistry.unregister()` added for the detach path. 186 tests green, frontend
+  build clean.
