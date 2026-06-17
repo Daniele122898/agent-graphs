@@ -18,14 +18,18 @@ export default function NewTaskDialog({ agents, onCreated }: { agents: AgentLite
   const [agentId, setAgentId] = useState(entryDefault);
   const [signalKind, setSignalKind] = useState<SignalKind>("self_reported");
   const [signalArg, setSignalArg] = useState("");
+  const [timeoutHours, setTimeoutHours] = useState("1");
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
     if (!prompt.trim()) return;
     const completion_signal = signalKind === "self_reported" ? "self_reported" : `${signalKind}:${signalArg}`;
+    // hours; blank/invalid → default 1h, 0 → no limit (some work takes a while)
+    const parsed = parseFloat(timeoutHours);
+    const timeout_hours = Number.isFinite(parsed) && parsed >= 0 ? parsed : 1;
     setBusy(true);
     try {
-      await api.createTask({ prompt, assigned_agent_id: agentId, completion_signal });
+      await api.createTask({ prompt, assigned_agent_id: agentId, completion_signal, timeout_hours });
       setPrompt("");
       setSignalArg("");
       onCreated();
@@ -60,6 +64,18 @@ export default function NewTaskDialog({ agents, onCreated }: { agents: AgentLite
         {signalKind === "check" && (
           <TextInput value={signalArg} onChange={(e) => setSignalArg(e.target.value)} placeholder="pytest -q" style={{ flex: 1, minWidth: 120, width: "auto" }} />
         )}
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "var(--text-faint)" }} title="Wall-clock budget for this task, in hours (0 = no limit)">
+          timeout
+          <TextInput
+            type="number"
+            value={timeoutHours}
+            onChange={(e) => setTimeoutHours(e.target.value)}
+            min={0}
+            step={0.5}
+            style={{ width: 64 }}
+          />
+          h
+        </label>
         <Button variant="primary" onClick={submit} disabled={busy || !prompt.trim()} style={{ marginLeft: "auto" }}>
           {busy ? "…" : "Create task"}
         </Button>

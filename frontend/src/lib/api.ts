@@ -127,6 +127,7 @@ export const api = {
     title?: string;
     assigned_agent_id?: string | null;
     completion_signal?: string;
+    timeout_hours?: number;
   }) =>
     fetch(withSession("/api/tasks"), {
       method: "POST",
@@ -163,6 +164,7 @@ export interface TaskRow {
   assigned_agent_id: string;
   status: string;
   completion_signal: string;
+  timeout_hours: number;
   todos: { content: string; status: "pending" | "in_progress" | "completed" }[];
   parent_task_id: string | null;
   result: string;

@@ -248,6 +248,7 @@ export default function App() {
                 edges={graph.edges}
                 lifecycles={lifecycles}
                 waitingOnNames={waitingOnNames}
+                waitingOn={waitingOn}
                 onNodesChange={graph.onNodesChange}
                 onEdgesChange={graph.onEdgesChange}
                 onConnect={graph.onConnect}
