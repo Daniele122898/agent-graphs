@@ -1308,3 +1308,38 @@ per-hop and lock_timeout was overloaded as the run bound.
   [Planner], Planner on [Backend, Frontend]) so the edge animation lights through
   the whole subtree; **no "operation timed out" / "did not complete within Ns"**
   (the failures reported). Subtree-await confirmed on real models.
+
+### 2026-06-17 — Team UX fixes: name in header, flush-save, selector, rebind
+
+- **Bug investigation (user) identified 5 issues:** (1) no team name in header, (2)
+  debounce timing race causing stale graphs on session launch, (3) "Save as team"
+  didn't switch `activeTeamId`, (4) no way to change teams/sessions, (5) save
+  indicator vague.
+- **Backend verified correct:** `apply_team_graph()` persists correctly, `launch_session()`
+  reads latest from DB. All tests pass. The bugs were frontend + a timing gap.
+- **Fix A — team name chip:** `App.tsx` derives `teamName` from `teams` array and
+  `session.team_id`, renders as a `.chip-primary` in the header. Reversibility:
+  cosmetic, trivial to remove.
+- **Fix B — `flushSave()`:** `useTeamGraph.ts` exposes a `flushSave()` that cancels
+  the 600ms debounce timer and immediately persists. `SessionSwitcher` and
+  `Onboarding` call it before `api.launchSession()`, eliminating the race where a
+  new session could pick up a stale graph. Reversibility: the debounce still runs
+  normally; `flushSave` is only called before launch.
+- **Fix C — team selector dropdown:** replaces the static name chip with a
+  `<Select>` listing all teams, allowing the editor to load any team's graph
+  (independent of the running session). Editing a non-session team does not affect
+  the running session by design (`apply_team_graph` only syncs bound sessions).
+  Reversibility: could revert to chip if selector proves confusing.
+- **Fix D — save-as switches editor:** after `api.createTeam()`, `activeTeamId` is
+  updated to the new team's id so subsequent edits go to the right team.
+  Reversibility: one-line removal.
+- **Fix E — session rebind endpoint:** `POST /api/sessions/{id}/rebind` updates a
+  session's `team_id` and `graph`, re-seeds the agent registry (preserving agents
+  that exist in both graphs, registering new ones, detaching removed ones).
+  Persists to DB. Frontend `api.rebindSession()` wraps it. Reversibility: the
+  endpoint can be removed; sessions revert to pin-at-launch.
+- **Fix F — save indicator:** status changed from `"saved"` to `"saved — ${teamName}"`
+  so users know where edits land. Reversibility: string change.
+- **Cherry-picked from `team-swapping` branch** onto `deepseek-trial` (commit
+  `30e29ec`). Frontend conflicts resolved by accepting our version (Fixes A-F
+  already complete).
