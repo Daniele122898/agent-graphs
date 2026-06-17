@@ -103,6 +103,7 @@ export default function App() {
     if (!name) return;
     const t = await api.createTeam(name, graph.snapshot());
     setActiveTeamId(t.id);
+    await api.rebindSession(activeSessionId!, t.id);
     await refresh();
   };
 
@@ -137,20 +138,36 @@ export default function App() {
         {session && (
           <>
             <div style={{ width: 1, height: 22, background: "var(--border)" }} />
-            <Select
-              value={activeTeamId ?? ""}
-              onChange={(e) => {
-                const newTeamId = e.target.value;
-                if (newTeamId && newTeamId !== activeTeamId) setActiveTeamId(newTeamId);
-              }}
-              style={{ minWidth: 160 }}
-            >
-              {teams.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}{t.id === session?.team_id ? " (active)" : ""}
-                </option>
-              ))}
-            </Select>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <Select
+                value={activeTeamId ?? ""}
+                onChange={(e) => {
+                  const newTeamId = e.target.value;
+                  if (newTeamId && newTeamId !== activeTeamId) setActiveTeamId(newTeamId);
+                }}
+                style={{ minWidth: 160 }}
+              >
+                {teams.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}{t.id === session?.team_id ? " (active)" : ""}
+                  </option>
+                ))}
+              </Select>
+              {activeTeamId !== session?.team_id && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  title="Rebind this session to use the selected team"
+                  onClick={async () => {
+                    if (!activeTeamId || !activeSessionId) return;
+                    await api.rebindSession(activeSessionId, activeTeamId);
+                    await refresh();
+                  }}
+                >
+                  ↻ Use for session
+                </Button>
+              )}
+            </div>
             <SessionSwitcher
               activeSessionId={activeSessionId}
               sessions={sessions}
@@ -254,7 +271,7 @@ export default function App() {
         <Onboarding teams={teams} onChanged={refresh} onLaunched={async (id) => {
           await refresh();
           selectSession(id);
-        }} flushSave={graph.flushSave} />
+        }} />
       ) : (
         <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
           <div style={{ flex: 1, minWidth: 0 }}>

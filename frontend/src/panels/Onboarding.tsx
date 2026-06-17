@@ -9,12 +9,10 @@ export default function Onboarding({
   teams,
   onChanged,
   onLaunched,
-  flushSave,
 }: {
   teams: TeamRow[];
   onChanged: () => Promise<void> | void;
   onLaunched: (sessionId: string) => void;
-  flushSave: () => Promise<void>;
 }) {
   const [teamId, setTeamId] = useState("");
   const [repo, setRepo] = useState("");
@@ -40,7 +38,6 @@ export default function Onboarding({
     setBusy(true);
     setError(null);
     try {
-      await flushSave();
       const s = await api.launchSession(teamId, repo.trim(), mode, harness);
       onLaunched(s.id);
     } catch (e) {
