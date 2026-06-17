@@ -11,10 +11,12 @@ lifespan/CORS setup.
   localhost callbacks the OpenCode `ask_agent`/`ask_team` tools POST to.
   Authenticated by a per-session token (`x-ag-token` vs
   `session.harness.token_for(session)`, shared `_authed_session` helper); route
-  through the harness's NON-BLOCKING `dispatch`/`dispatch_many` (validate guards
-  synchronously → 409 on violation; run the target(s) in the background and inject
-  the reply into the asker — the HTTP response is an immediate ACK, not the
-  answer), threading the asker's delegation chain via `current_chain` so cross-hop
+  through the harness's SUBTREE-AWARE `dispatch`/`dispatch_many` (validate guards
+  synchronously → 409 on violation; otherwise just ENQUEUE the request on the
+  asker and return an immediate ACK, NOT the answer — the asker's run owner later
+  runs the teammate to full quiescence and re-prompts the asker with the final
+  reply, see `harness/CLAUDE.md`), threading the asker's delegation chain via
+  `current_chain` so cross-hop
   cycle/depth caps accumulate. Falls back to blocking `delegate`/`delegate_many`
   if the harness lacks `dispatch`. NOT used by the native harness (its delegation
   is in-process + blocking via `Delegator`).

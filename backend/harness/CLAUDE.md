@@ -31,15 +31,16 @@ no caller ever holds a harness-specific worker object. A `Session` owns one
   `"native"`); `make_harness(id, ...)` is the factory. The choice survives
   resume.
 - **Delegation parity**: native agents delegate through the in-process
-  `ask_agent`/`ask_team` tools → `Delegator` (`ask`/`ask_many`);
-  `Harness.delegate()`/`delegate_many()` are the parallel paths used by the
-  OpenCode `ask_agent`/`ask_team` callbacks — both enforce the same
-  `check_delegation` guards. The cross-hop cycle/depth guard requires the
-  chain to be threaded across OpenCode's HTTP callback: `run_to_completion`
-  stashes the in-flight `delegation_chain` on the agent's `_AgentState`, and
-  `/internal/ask_agent` reads it via `OpenCodeHarness.current_chain(asker)` and
-  passes it to `delegate()` so the chain accumulates A→B→C (without this the cap
-  never accumulates across hops).
+  `ask_agent`/`ask_team` tools → `Delegator` (`ask`/`ask_many`), the blocking
+  in-process path; OpenCode agents go through the `/internal/ask_agent`+`ask_team`
+  callbacks → `dispatch`/`dispatch_many` (the subtree-aware path below), falling
+  back to the shared blocking `Harness.delegate()`/`delegate_many()` only if a
+  harness lacks `dispatch`. All paths enforce the same `check_delegation` guards.
+  The cross-hop cycle/depth guard requires the chain to be threaded across
+  OpenCode's HTTP callback: `run_to_completion` stashes the in-flight
+  `delegation_chain` on the agent's `_AgentState`, and `/internal/ask_agent` reads
+  it via `OpenCodeHarness.current_chain(asker)` and passes it on so the chain
+  accumulates A→B→C (without this the cap never accumulates across hops).
 - **Delegation accepts a teammate by display NAME or id** (`base.resolve_target`,
   shared by both harnesses): instructions show `Name (\`id\`)`, so models reach
   for the name. Resolution is scoped to the asker's neighbors (resolution set ==
@@ -118,20 +119,41 @@ no caller ever holds a harness-specific worker object. A `Session` owns one
   final backstop; `lock_timeout` bounds only LOCK ACQUISITION (the busy-target
   deadlock backstop), no longer the whole run. The native harness uses DeepSeek
   directly and is unaffected.
-- **Delegation is NON-BLOCKING on opencode** (`dispatch`/`dispatch_many`, used by
+- **Delegation is SUBTREE-AWARE on opencode** (`dispatch`/`dispatch_many`, used by
   the `/internal/ask_agent`+`ask_team` callbacks). The tool call validates the
   guards SYNCHRONOUSLY (a violation still 409s so the model self-corrects), then
-  runs the target(s) in a background task (`_run_delegation` via `run_to_completion`)
-  and INJECTS their combined reply back into the asker's session as a follow-up
-  (`submit` → steer if the asker is still running, else a fresh run). So the
-  asker's tool fetch returns immediately — a deep chain never holds nested fetches
-  + locks open for the whole subtree (the blocking fragility: Bun's ~255s fetch
-  timeout orphaning subtrees, per-hop 900s caps). Cross-hop cycle/depth guard
-  survives: the chain is captured at dispatch and threaded into the target's run
-  (`delegation_chain`→`st.chain`), and a target that itself dispatches reads its
-  own in-flight chain via `current_chain`. **Contract change:** a delegated reply
-  arrives as a NEW message, not an inline tool return — the tool descriptions +
-  prompt guidance tell the model not to wait inline. The `ask_*.ts` fetches keep
-  `timeout:false` as belt-and-suspenders. The blocking `delegate`/`delegate_many`
-  remain as the shared primitive (still used by the native harness via `Delegator`,
-  which keeps the in-process blocking path — far less fragile).
+  only **enqueues** the request on the asker (`_enqueue`: append to `st.pending`,
+  mark the asker `waiting-on-agent` with `waiting_on`) and returns an immediate
+  ACK — the asker's tool fetch never blocks (no nested HTTP fetch held open for
+  the subtree: the Bun "operation timed out" fragility stays fixed). The asker's
+  run OWNER drains the queue once the asker's turn ends: `_run_to_quiescence` =
+  `run_to_completion` then `_drain`, which runs each teammate to its OWN
+  quiescence (`_delegated_reply` → `_run_to_quiescence(target)`, recursively),
+  records their FINAL replies, and re-prompts the asker with them — looping (cap
+  `MAX_DELEGATION_ROUNDS`) until the asker stops delegating.
+  - **Why this shape:** a delegate that itself delegates must reply to its parent
+    with its FINAL integrated answer, and a task must be "done" only when the
+    whole subtree is. Inferring completion from "the teammate's run ended" gives
+    its *first turn* (it just kicked off its own sub-delegations) — the premature
+    reply / premature task-completion bug. Driving the subtree by **awaiting the
+    coroutine tree** and re-prompting is Dijkstra–Scholten diffusing-computation
+    termination — and needs **no model-facing `reply` tool**, so it never depends
+    on a weak model emitting a terminal call (the decisive reason vs. a
+    correlation-id registry; see `specs/async-delegation-design.md`).
+  - **Who drains:** every top-level run goes through `_run_to_quiescence`
+    (`run_for_task`, `_submit_bg`); a teammate's run is driven by its parent's
+    `_drain`. A standalone `/internal` call (asker idle, e.g. a test) has no run
+    owner, so `_enqueue` spawns a one-shot `_drain_background` (guarded by
+    `st.draining`). `session.idle` SUPPRESSES the premature `agent_done`/idle
+    while `st.pending` is non-empty (keeps `waiting-on-agent`, transcript open).
+  - **Cancellation:** `_run_to_quiescence` aborts its OC run on `CancelledError`
+    (the `gather` in `_drain` cancels children, each aborting its own subtree);
+    `stop()` cascade-cancels `st.children`. So a user Stop or a per-task timeout
+    (`asyncio.wait_for` in `TaskRunner.run`, the per-task **hours** budget) tears
+    down the whole subtree, not just the entry run, and parks the task blocked.
+  - Cross-hop cycle/depth guard survives: the chain is captured at dispatch and
+    threaded into each teammate's run (`delegation_chain`→`st.chain`), read back
+    via `current_chain`. The `ask_*.ts` fetches keep `timeout:false`. The blocking
+    `delegate`/`delegate_many` remain as the shared primitive used by the native
+    harness via `Delegator` (its in-process blocking path is already correct +
+    far less fragile, so it's untouched).

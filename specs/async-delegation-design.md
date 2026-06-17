@@ -1,6 +1,20 @@
 # Async Delegation: Subtree-Aware Completion (Design Decision)
 
-**Status:** Design only — no code changes. **Author:** Lead architect, agent-graphs. **Date:** 2026-06-17.
+> **SHIPPED 2026-06-17.** v1 (Subtree-Await) was implemented — but as a
+> **parent-driven quiescence loop** (`_run_to_quiescence`/`_drain` in
+> `backend/harness/opencode/harness.py`), not the draft's "await `entry.children`
+> in `run_for_task`". On closer tracing the draft's lighter form was insufficient:
+> a delegating teammate's integration run escaped via fire-and-forget `submit`, so
+> the bubbled-up reply was still its *first turn*. The correct shape: `dispatch`
+> only ENQUEUEs (`st.pending`); the asker's run owner drains the queue, running
+> each teammate to its own quiescence and **re-prompting the asker** with their
+> final replies until it stops delegating. Same Dijkstra–Scholten termination by
+> awaiting the coroutine tree, no model-facing reply tool. Per-task timeout (hours)
+> + the sustained waiting-edge animation shipped alongside. The correlation-id
+> registry (§10) remains deferred to v2 behind the §9 trigger. See `log.md`
+> 2026-06-17 and `backend/harness/CLAUDE.md`.
+
+**Status:** Design + shipped v1 (see banner above). **Author:** Lead architect, agent-graphs. **Date:** 2026-06-17.
 **Scope:** the OpenCode harness's non-blocking delegation (`dispatch`/`dispatch_many` in `backend/harness/opencode/harness.py`) and the task-completion gate (`backend/runtime/tasks.py`). The native harness keeps its in-process blocking path (`backend/harness/base.py` `delegate`/`_consult_one`, `backend/agents/a2a.py` `Delegator`) — it already captures full-subtree completion for free and is untouched.
 
 ---

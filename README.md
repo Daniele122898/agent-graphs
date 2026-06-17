@@ -20,9 +20,16 @@ Built incrementally, phase by phase. Current progress is tracked in `plan.md`.
   request handlers.
 - **Tasks** with a status lifecycle and per-task completion gates
   (self-reported / reviewer agent / shell check), revision loops with hard
-  caps, and one-click **Retry** for blocked tasks.
-- **Delegation**: agents consult graph neighbors via `ask_agent` (cycle/depth
-  guarded); delegated work runs on the target's real worker, fully visible.
+  caps, a per-task **timeout in hours** (set in the New Task dialog; 0 = no
+  limit — big work legitimately takes time), and one-click **Retry** for
+  blocked tasks.
+- **Delegation**: agents consult graph neighbors via `ask_agent`, or fan work
+  out to several at once with `ask_team` (cycle/depth guarded); delegated work
+  runs on the target's real worker, fully visible. A teammate that itself
+  delegates only reports back once its **whole subtree** is done, so a task
+  completes when the work is actually finished — never on a premature first
+  turn. While a delegation is outstanding the canvas edge stays animated and
+  the asker shows who it's **waiting on**.
 - **ask_user**: an agent that needs a decision parks its run and asks the
   human — the control room renders the questions (multiple choice + free
   text) and the run resumes with the answers.
@@ -109,19 +116,18 @@ headless) and, for local-model agents, LM Studio running.
 
 ## Running
 
-Two terminals.
+Always start the backend via **`python -m backend`** (not raw `uvicorn`): the
+entrypoint bakes in `timeout_graceful_shutdown`, without which an open SSE
+`/events` stream wedges shutdown forever at "Waiting for connections to close".
 
-**Backend** (FastAPI on :8000):
+### Dev (two terminals, hot reload)
+
+**Backend** (FastAPI on :8000, auto-reload):
 
 ```bash
 source .venv/bin/activate
-# the graceful-shutdown cap matters: the SSE /events stream never finishes on
-# its own, so without it --reload hangs at "Waiting for connections to close"
-uvicorn backend.main:app --reload --port 8000 --timeout-graceful-shutdown 3
+python -m backend --reload
 ```
-
-The backend starts empty — nothing is auto-created. Persisted sessions are
-rehydrated on startup so your work survives restarts.
 
 **Frontend** (Vite dev server on :5173, proxies `/api`, `/health`, `/events`):
 
@@ -130,9 +136,31 @@ cd frontend
 npm run dev
 ```
 
-Open http://localhost:5173. On first run you'll be guided to **create a team**
-(an agent graph) and **launch a session** that binds it to a repo folder on
-disk. The team then works in that folder.
+Open http://localhost:5173.
+
+### Single-process (serve the built UI, **no hot reload**)
+
+For dogfooding the tool **on its own repo**: build the frontend, then run the
+backend **without** `--reload`. It serves the built UI from :8000 too, so it's
+one process and one URL. This is the mode to use when the team edits *this*
+codebase — there's no Vite HMR and no `--reload`, so an agent changing the
+source can't hot-swap code mid-run and kill the live session (rebuild + restart
+to pick up changes; that's intentional).
+
+```bash
+cd frontend && npm run build && cd ..
+source .venv/bin/activate
+python -m backend            # serves API + the built UI on http://127.0.0.1:8000
+```
+
+(The static mount is skipped if `frontend/dist` is absent, so the dev flow above
+still works without a build. Host/port are overridable via
+`AGENT_GRAPHS_HOST` / `AGENT_GRAPHS_PORT`.)
+
+The backend starts empty — nothing is auto-created. Persisted sessions are
+rehydrated on startup so your work survives restarts. On first run you'll be
+guided to **create a team** (an agent graph) and **launch a session** that binds
+it to a repo folder on disk. The team then works in that folder.
 
 ## Tests
 

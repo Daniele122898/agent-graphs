@@ -1208,3 +1208,63 @@ per-hop and lock_timeout was overloaded as the run bound.
 - Minor follow-up applied: `agent_lifecycle "running"` was re-published on every
   OpenCode busy tick (95 events/run) — now published only on the idle→busy
   transition.
+
+### 2026-06-17 — Replaced non-blocking dispatch (Phase B) with subtree-aware quiescence
+
+- **What:** the opencode delegation now drives the subtree itself instead of
+  inferring completion from a teammate's first idle. `dispatch`/`dispatch_many`
+  only ENQUEUE the request on the asker (`st.pending`) + mark it
+  `waiting-on-agent`, returning an immediate ACK. The asker's run owner drains:
+  `_run_to_quiescence` = `run_to_completion` then `_drain`, which runs each
+  teammate to its OWN quiescence (recursively), records their FINAL replies, and
+  re-prompts the asker with them, looping (cap `MAX_DELEGATION_ROUNDS=8`) until
+  the asker stops delegating. `session.idle` suppresses the premature
+  `agent_done` while `st.pending` is non-empty; `stop()` cascade-cancels
+  `st.children` and `_run_to_quiescence` aborts its OC run on cancel.
+- **Why:** Phase B (background `_run_delegation` + `submit`-inject) shipped and
+  passed the live E2E, but on reflection (and a deep design investigation,
+  `specs/async-delegation-design.md`) it was subtly wrong: a delegating teammate
+  replied to its parent with its FIRST turn ("I delegated to X, Y") because the
+  integration run escaped via fire-and-forget `submit`, and the TaskRunner gate
+  returned at the entry agent's first idle while the subtree ran detached → both
+  premature/incomplete replies AND premature task completion (the user's exact
+  complaint). The user proposed correlation-ids (a `reply` tool); the
+  investigation showed that's Dijkstra–Scholten termination detection but bets
+  correctness on a weak model emitting a terminal tool call — and its one unique
+  benefit (cross-restart auto-resume) is illusory (a reattached OC session
+  restores the transcript, not a running loop; "resume" = re-prompt = Retry).
+  Subtree-await gets the SAME DS termination by awaiting the coroutine tree, with
+  NO model-facing reply tool, and keeps the non-blocking transport (the asker's
+  tool fetch still returns immediately, so no Bun fetch-timeout / lock-pin
+  fragility). Reverting to pure blocking would reintroduce that fragility.
+- **Reversibility:** high. `delegate`/`delegate_many` (the blocking primitive)
+  are untouched and still back the native harness; pointing `/internal` at them
+  reverts opencode to blocking. The correlation-id registry remains a documented
+  v2 (build only on a concrete trigger — see the spec's §9).
+
+### 2026-06-17 — Per-task timeout configurable in hours
+
+- **What:** `Task.timeout_hours` (default 1.0, `0` = no limit) + `tasks` column
+  (additive migration) + New Task dialog field. `TaskRunner.run` wraps each
+  `run_agent` in `asyncio.wait_for(timeout_hours*3600)`; on timeout the run is
+  cancelled (opencode aborts the whole subtree) and the task parks `blocked`,
+  Retry-able. Distinct from `OPENCODE_RUN_TIMEOUT` (per single model run); the
+  task budget bounds the whole task incl. nudges + delegation.
+- **Why:** the user asked for it — "some work just takes time"; the old hidden
+  1h per-run cap surfaced as a confusing "did not complete within 900s". Now the
+  budget is explicit and per-task.
+- **Reversibility:** trivial (default 1h preserves prior behavior; set 0 to
+  disable). Harness-agnostic (native gets the same task-level budget for free).
+
+### 2026-06-17 — Sustained waiting-edge animation (request #2)
+
+- **What:** the canvas now animates an asker→target edge for the WHOLE time a
+  delegation is outstanding (driven by the asker's `waiting-on-agent` + id-keyed
+  `waiting_on`, published by `dispatch`), not just the brief 2.5s `a2a_message`
+  pulse — clearing exactly when the reply lands. No new bus event (kept on the
+  universal `agent_lifecycle` channel so native parity holds).
+- **Why:** the user wanted the graph to stay animated while an agent waits and
+  stop on reply; the opencode dispatch path previously published no `waiting_on`
+  at all (only native did), so its edges only flickered.
+- **Reversibility:** trivial (frontend-only animation derived from existing
+  state; backend just adds the lifecycle publish the native path already did).
