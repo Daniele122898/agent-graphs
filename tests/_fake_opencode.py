@@ -41,6 +41,11 @@ class FakeOpenCodeClient:
         self.replied: list[tuple[str, list]] = []
         self._n = 0
         self._closed = False
+        # Optional hook: a turn dict with a "delegate" key invokes this (async)
+        # AFTER emitting its parts and BEFORE going idle — modelling the real
+        # tool-call-during-a-run that POSTs to /internal/ask_*. The harness's run
+        # owner then drains it. Signature: on_delegate(agent_id, [(target, q), ...]).
+        self.on_delegate = None
 
     async def create_session(self, *, agent: str, directory: str, title: str = "") -> str:
         self._n += 1
@@ -59,6 +64,25 @@ class FakeOpenCodeClient:
         # for stop() and listener-death tests.
         if isinstance(turn, dict) and turn.get("park"):
             await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "busy"}}})
+            return
+
+        # A silent turn emits NOTHING — models a model that never responds (bad
+        # id/key, no-op). The first-event watchdog must fire.
+        if isinstance(turn, dict) and turn.get("silent"):
+            return
+
+        # A retry turn surfaces OpenCode's transient-retry status, then completes —
+        # for asserting the retry row is published (not a mute "running").
+        if isinstance(turn, dict) and "retry" in turn:
+            await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "busy"}}})
+            await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "retry", "message": turn["retry"]}}})
+            assistant = {"info": {"role": "assistant", "id": f"msg_{session_id}_r", "tokens": {"input": 5, "output": 3}},
+                         "parts": [text_part("recovered after retry")]}
+            self._messages[session_id].append(assistant)
+            await self._events.put({"type": "message.part.updated", "properties": {"sessionID": session_id, "part": assistant["parts"][0]}})
+            await self._events.put({"type": "message.updated", "properties": {"sessionID": session_id, "info": assistant["info"]}})
+            await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "idle"}}})
+            await self._events.put({"type": "session.idle", "properties": {"sessionID": session_id}})
             return
 
         # An error turn goes busy then emits session.error (+ idle).
@@ -81,6 +105,7 @@ class FakeOpenCodeClient:
 
         parts = turn["parts"] if isinstance(turn, dict) else turn
         todos = turn.get("todos") if isinstance(turn, dict) else None
+        delegate = turn.get("delegate") if isinstance(turn, dict) else None
 
         await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "busy"}}})
         assistant = {"info": {"role": "assistant", "id": f"msg_{session_id}_{idx}", "tokens": {"input": 10, "output": 5}}, "parts": []}
@@ -91,6 +116,10 @@ class FakeOpenCodeClient:
         await self._events.put({"type": "message.updated", "properties": {"sessionID": session_id, "info": assistant["info"]}})
         if todos is not None:
             await self._events.put({"type": "todo.updated", "properties": {"sessionID": session_id, "todos": todos}})
+        # Fire the delegation hook while the run is still in flight (busy + lock
+        # held), exactly as the real OpenCode tool callback POSTs mid-run, THEN idle.
+        if delegate and self.on_delegate is not None:
+            await self.on_delegate(agent, list(delegate))
         await self._events.put({"type": "session.status", "properties": {"sessionID": session_id, "status": {"type": "idle"}}})
         await self._events.put({"type": "session.idle", "properties": {"sessionID": session_id}})
 

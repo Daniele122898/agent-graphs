@@ -20,7 +20,9 @@ import json
 import os
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from ..base import Harness, HistoryView, find_spec
+from pydantic_ai import ModelRetry
+
+from ..base import DELEGATION_BUSY_TIMEOUT, MAX_FANOUT, Harness, HistoryView, check_delegation, find_spec
 from ...providers.registry import split_model_string
 from ...runtime.tasks import ReviewVerdict
 from ...util import new_id
@@ -36,10 +38,27 @@ if TYPE_CHECKING:
 
 CONTINUATION_NUDGES = 2
 
+# Backstop on how many times ONE agent may delegate-and-integrate in a single
+# run-to-quiescence (a teammate replies, the asker integrates and delegates
+# AGAIN, …). Bounds a pathological re-delegation loop; normal fan-out within a
+# round is unbounded by this (it's bounded by MAX_FANOUT). Depth across DIFFERENT
+# agents is bounded separately by MAX_DELEGATION_DEPTH.
+MAX_DELEGATION_ROUNDS = 8
+
 # A run must not await session.idle forever: if the server dies or the SSE
-# stream drops without a terminal event, the awaiter would hang. Generous (a
-# weak local model is slow) but finite — mirrors the native finite read timeout.
-OPENCODE_RUN_TIMEOUT = float(os.environ.get("AGENT_GRAPHS_OPENCODE_RUN_TIMEOUT", "900"))
+# stream drops without a terminal event, the awaiter would hang. Generous (big
+# implementation work + a weak local model are slow) but finite — mirrors the
+# native finite read timeout. Default 1h; env-tunable. This is the BACKSTOP; the
+# first-event watchdog + per-request provider timeouts (config.py) catch the
+# common stuck-DeepSeek failures far sooner.
+OPENCODE_RUN_TIMEOUT = float(os.environ.get("AGENT_GRAPHS_OPENCODE_RUN_TIMEOUT", "3600"))
+
+# After prompt_async the run must produce SOME event (busy / a message part /
+# error) quickly. If nothing arrives, the model never actually ran (bad id/key,
+# rate-limited at connect, a no-op) — fail fast with a clear error instead of
+# waiting out the whole run budget (the old silent-900s hang). Generous enough
+# for a cold first step on the laptop; env-tunable.
+OPENCODE_FIRST_EVENT_TIMEOUT = float(os.environ.get("AGENT_GRAPHS_OPENCODE_FIRST_EVENT_TIMEOUT", "120"))
 
 REVIEW_PROMPT = (
     "You are reviewing whether a task result fully satisfies the task. Reply with "
@@ -89,10 +108,18 @@ class _AgentState:
         self.oc_session_id: str | None = None
         self.lock = asyncio.Lock()
         self.idle = asyncio.Event()
+        self.started = asyncio.Event()  # set on the first event of a run (watchdog)
         self.busy = False
         self.error: str | None = None
         self.aborting = False  # set by stop() → run_to_completion raises CancelledError
         self.chain: list[str] = []  # delegation chain of the in-flight run (for nested ask_agent)
+        # Subtree-aware delegation: teammates this agent asked during its current
+        # run (drained by the run owner once the turn ends), the in-flight
+        # delegation-subtree tasks (cancelled on stop), and a guard so an idle
+        # asker spawns only ONE background drainer.
+        self.pending: list[tuple[str, str, list[str]]] = []  # (target_id, question, child_chain)
+        self.children: set[asyncio.Task] = set()
+        self.draining = False
         self.last_output = ""
         self.todos: list[dict] = []
         self.usage = {"requests": 0, "input_tokens": 0, "output_tokens": 0}
@@ -107,6 +134,12 @@ class _Runtime:
         self.agents: dict[str, _AgentState] = {}
         self.by_oc: dict[str, str] = {}
         self.listener: asyncio.Task | None = None
+        # in-flight subtree drives (`_run_to_quiescence`/`_drain_background`):
+        # a delegation drive has gaps where NO agent holds a lock or is busy
+        # (between a teammate finishing and the asker's re-prompt), so the
+        # lock/busy signal alone is blind to it — `_any_busy` also checks this so
+        # a graph autosave can't reconfigure (restart) the server mid-subtree.
+        self.inflight = 0
         # signature of the graph the server was last configured with — a change
         # (model/persona/capability/edge edit) triggers a reconfigure.
         self.configured_sig: str = ""
@@ -133,6 +166,7 @@ class OpenCodeHarness(Harness):
         self._runtimes: dict[str, _Runtime] = {}
         self._tokens: dict[str, str] = {}
         self._ensure_locks: dict[str, asyncio.Lock] = {}
+        self._bg: set[asyncio.Task] = set()  # strong refs to background runs/drains
 
     # --- connection / session lifecycle --------------------------------------
 
@@ -142,11 +176,16 @@ class OpenCodeHarness(Harness):
 
     @staticmethod
     def _any_busy(rt: _Runtime) -> bool:
-        """True if any agent has a run in flight (lock held) or the server
-        reports it busy. A reconfigure restarts the server and drops every OC
-        session — doing that under a live run (e.g. a delegation chain parked on
-        st.idle) orphans the awaiter until the run timeout (the stall)."""
-        return any(st.lock.locked() or st.busy for st in rt.agents.values())
+        """True if any agent has a run in flight (lock held), the server reports
+        it busy, a delegation drive is in flight (`inflight`), or a delegation is
+        queued/running (`pending`/`children`). A reconfigure restarts the server
+        and drops every OC session — doing that under a live run OR mid-delegation
+        subtree orphans/corrupts it, so reconfigure is deferred until ALL of these
+        are clear. `inflight` is the load-bearing one for delegation: a subtree
+        drive has gaps where no agent holds a lock between turns."""
+        return rt.inflight > 0 or any(
+            st.lock.locked() or st.busy or st.pending or st.children for st in rt.agents.values()
+        )
 
     async def _ensure(self, session: "Session") -> _Runtime:
         # Serialize so concurrent first-runs don't spawn two servers and a graph
@@ -288,6 +327,7 @@ class OpenCodeHarness(Harness):
             return  # server-level event or not one of our agent sessions
         st = rt.agents[agent_id]
         bus = session.bus
+        st.started.set()  # any event for this agent means the run actually started (watchdog)
 
         if etype == "message.part.updated":
             self._emit_part(bus, st, agent_id, props.get("part", {}) or {})
@@ -297,8 +337,17 @@ class OpenCodeHarness(Harness):
         elif etype == "session.status":
             stat = (props.get("status", {}) or {}).get("type")
             if stat == "busy":
+                if not st.busy:  # publish only on the idle→busy TRANSITION, not every tick
+                    self._lifecycle(session, agent_id, "running")
                 st.busy = True
-                self._lifecycle(session, agent_id, "running")
+            elif stat == "retry":
+                # OpenCode is retrying a transient model error (rate limit / 5xx /
+                # "Overloaded"). Its retry loop is UNBOUNDED, so surface it as a
+                # visible row — otherwise a rate-limited DeepSeek run just shows
+                # "running" forever ("running but doing nothing"). Lifecycle stays
+                # running (it may recover); the run budget is the ultimate bound.
+                detail = (props.get("status", {}) or {}).get("message") or "transient model error (rate limit / overloaded)"
+                bus.publish("retry", {"agent_id": agent_id, "text": f"retrying — {detail}"})
             elif stat == "idle":
                 st.busy = False
         elif etype == "message.updated":
@@ -340,8 +389,17 @@ class OpenCodeHarness(Harness):
             except Exception:  # noqa: BLE001 — never let final-output fetch stall the stream
                 pass
             if st.error is None and not st.aborting:
-                bus.publish("agent_done", {"agent_id": agent_id, "output": st.last_output})
-                self._lifecycle(session, agent_id, "idle")
+                if st.pending:
+                    # The turn ended but the agent has outstanding delegations: it
+                    # is NOT done — it's waiting on teammates (the run owner's
+                    # _drain runs them, then re-prompts this agent with their
+                    # replies). Suppress the premature agent_done/idle so a task
+                    # never completes mid-subtree and the transcript stays open.
+                    self._set_lifecycle(session, agent_id, "waiting-on-agent",
+                                        waiting_on=[t for t, _, _ in st.pending])
+                else:
+                    bus.publish("agent_done", {"agent_id": agent_id, "output": st.last_output})
+                    self._lifecycle(session, agent_id, "idle")
             st.idle.set()
 
     def _on_question_asked(self, session: "Session", rt: _Runtime, agent_id: str, props: dict) -> None:
@@ -368,9 +426,13 @@ class OpenCodeHarness(Harness):
             cid = part.get("callID") or part.get("id") or ""
             state = part.get("state", {}) or {}
             status = state.get("status")
-            if cid and cid not in st.seen_tool_call:
+            inp = state.get("input") or {}
+            # Emit the call once we ACTUALLY have args (input populated) or the
+            # tool has started/finished — NOT on the first "pending" update where
+            # input is still {} (that produced the empty "read {}" rows).
+            if cid and cid not in st.seen_tool_call and (inp or status in ("running", "completed", "error")):
                 st.seen_tool_call.add(cid)
-                bus.publish("tool_call", {"agent_id": agent_id, "tool": part.get("tool", ""), "args": state.get("input", {}) or {}})
+                bus.publish("tool_call", {"agent_id": agent_id, "tool": part.get("tool", ""), "args": inp})
             if status in ("completed", "error") and cid and cid not in st.seen_tool_result:
                 st.seen_tool_result.add(cid)
                 out = state.get("output") if status == "completed" else state.get("error", "error")
@@ -408,8 +470,19 @@ class OpenCodeHarness(Harness):
             raise HTTPException(404, f"no agent '{agent_id}' in this session")
         rt = await self._ensure(session)
         st = await self._oc_session(rt, session, agent_id)
-        async with st.lock:
+        # Acquire the per-agent lock. ``lock_timeout`` bounds LOCK ACQUISITION
+        # ONLY (a delegation passes it as a deadlock backstop for a BUSY target →
+        # TimeoutError → "busy" ModelRetry); a normal run waits for the lock. The
+        # RUN itself is bounded by the run budget below, NOT lock_timeout — those
+        # were conflated before, so a delegated run's whole execution was wrongly
+        # capped at the (short) busy-timeout.
+        if lock_timeout is not None:
+            await asyncio.wait_for(st.lock.acquire(), timeout=lock_timeout)
+        else:
+            await st.lock.acquire()
+        try:
             st.idle.clear()
+            st.started.clear()
             st.error = None
             st.aborting = False
             st.seen_tool_call.clear()
@@ -423,12 +496,28 @@ class OpenCodeHarness(Harness):
                 st.oc_session_id, agent=agent_id, model=self._model_dict(spec.model), text=prompt
             )
             try:
-                await asyncio.wait_for(st.idle.wait(), timeout=lock_timeout or OPENCODE_RUN_TIMEOUT)
+                # Watchdog: the prompt must produce SOME event quickly; if not, the
+                # model never ran (bad id/key, rate-limited at connect, no-op) —
+                # fail fast instead of burning the whole run budget (the silent
+                # 900s hang). idle implies started, so a very fast run is fine.
+                try:
+                    await asyncio.wait_for(st.started.wait(), timeout=OPENCODE_FIRST_EVENT_TIMEOUT)
+                except asyncio.TimeoutError:
+                    await rt.conn.client.abort(st.oc_session_id)
+                    msg = (
+                        f"no response from the model in {int(OPENCODE_FIRST_EVENT_TIMEOUT)}s "
+                        f"— check the model id / API key / rate limit for {spec.model}"
+                    )
+                    session.bus.publish("agent_error", {"agent_id": agent_id, "error": msg})
+                    self._lifecycle(session, agent_id, "blocked")
+                    raise RuntimeError(msg)
+                # Then wait for completion, bounded by the (generous) run budget.
+                await asyncio.wait_for(st.idle.wait(), timeout=OPENCODE_RUN_TIMEOUT)
             except asyncio.TimeoutError:
-                # the run never signalled completion — abort it server-side and
-                # surface as an error so the agent lands blocked, never hung.
+                # the run started but never signalled completion — abort server-side
+                # and surface as an error so the agent lands blocked, never hung.
                 await rt.conn.client.abort(st.oc_session_id)
-                msg = f"run did not complete within {int(lock_timeout or OPENCODE_RUN_TIMEOUT)}s"
+                msg = f"run did not complete within {int(OPENCODE_RUN_TIMEOUT)}s"
                 session.bus.publish("agent_error", {"agent_id": agent_id, "error": msg})
                 self._lifecycle(session, agent_id, "blocked")
                 raise RuntimeError(msg)
@@ -444,6 +533,8 @@ class OpenCodeHarness(Harness):
             if st.error:
                 raise RuntimeError(st.error)
             return st.last_output
+        finally:
+            st.lock.release()
 
     async def submit(self, session: "Session", agent_id: str, prompt: str) -> None:
         # validate up front (404 surfaces to the caller), then dispatch:
@@ -474,14 +565,20 @@ class OpenCodeHarness(Harness):
         # Not busy: fresh tracked run in the background (HTTP response returns
         # immediately). The per-agent lock inside run_to_completion serializes
         # concurrent fresh submits (native's one-run-at-a-time inbox semantics).
-        task = asyncio.create_task(self._submit_bg(session, agent_id, prompt))
-        self._bg = getattr(self, "_bg", set())
+        self._spawn_bg(self._submit_bg(session, agent_id, prompt))
+
+    def _spawn_bg(self, coro) -> None:
+        """Run a coroutine in the background, holding a strong ref so it isn't
+        GC'd mid-flight and dropping it when done."""
+        task = asyncio.create_task(coro)
         self._bg.add(task)
         task.add_done_callback(self._bg.discard)
 
     async def _submit_bg(self, session: "Session", agent_id: str, prompt: str) -> None:
         try:
-            await self.run_to_completion(session, agent_id, prompt)
+            # Quiescence (not bare run_to_completion) so a human message that makes
+            # the agent delegate still drains the subtree + integrates the replies.
+            await self._run_to_quiescence(session, agent_id, prompt)
         except asyncio.CancelledError:
             pass  # user stopped this run (deliberate abort signal, not a task cancel)
         except Exception as e:  # noqa: BLE001
@@ -490,8 +587,212 @@ class OpenCodeHarness(Harness):
             # prompt_async POST) so a dropped submit is visible, never swallowed.
             session.bus.publish("agent_error", {"agent_id": agent_id, "error": str(e)})
 
+    # --- subtree-aware delegation (opencode) ---------------------------------
+    # ask_agent/ask_team DISPATCH: validate the guards synchronously (a violation
+    # 409s so the model self-corrects), then ENQUEUE the request on the asker and
+    # return an immediate ACK — the asker's tool fetch never blocks (no nested
+    # HTTP fetch held open for the subtree; that was the Bun "operation timed out"
+    # fragility). The asker's run OWNER (run_for_task / _submit_bg / a parent's
+    # delegation) drains the queue once the asker's turn ends: it runs each
+    # teammate to FULL quiescence (the teammate AND its own descendants), records
+    # their final replies, and re-prompts the asker with them — looping until the
+    # asker stops delegating. So a parent's reply is its FINAL integrated answer
+    # (never a premature first turn) and the task is "done" only when the whole
+    # subtree is. This is Dijkstra-Scholten diffusing-computation termination by
+    # awaiting the coroutine tree — no model-facing "reply" tool, so it never
+    # depends on a weak model emitting a terminal call. The native harness keeps
+    # its in-process blocking Delegator.
+    #
+    # Cross-hop cycle/depth guard: the chain is captured at dispatch and threaded
+    # into each teammate's run (delegation_chain → st.chain), so a teammate that
+    # itself dispatches reads its own in-flight chain via current_chain.
+
+    async def dispatch(self, session: "Session", asker_id: str, target_id: str, question: str, *, chain=None) -> str:
+        chain = list(chain or [])
+        spec = check_delegation(session.graph, asker_id, target_id, chain)  # raises ModelRetry → 409
+        rt = await self._ensure(session)
+        self._record(session, asker_id, spec.id, "question", question)
+        self._enqueue(session, rt, asker_id, [(spec.id, question)], chain)
+        names = {n.spec.id: n.spec.name for n in session.graph.nodes}
+        return (
+            f"Delegated to {names.get(spec.id, spec.id)} (`{spec.id}`). Their reply will be delivered "
+            "to you as a follow-up message when ready — do NOT wait inline; continue with any "
+            "independent work or end your turn, and you'll be re-prompted with their answer."
+        )
+
+    async def dispatch_many(self, session: "Session", asker_id: str, requests: list, *, chain=None) -> str:
+        chain = list(chain or [])
+        if not requests:
+            raise ModelRetry("ask_team needs at least one (teammate, task) pair.")
+        if len(requests) > MAX_FANOUT:
+            raise ModelRetry(f"ask_team is capped at {MAX_FANOUT} teammates at once; split the work across turns.")
+        resolved: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for ref, q in requests:
+            spec = check_delegation(session.graph, asker_id, ref, chain)  # raises ModelRetry → 409
+            if spec.id in seen:
+                raise ModelRetry(f"'{spec.id}' is listed twice — one teammate does one thing at a time; ask them once.")
+            seen.add(spec.id)
+            resolved.append((spec.id, q))
+        rt = await self._ensure(session)
+        for tid, q in resolved:
+            self._record(session, asker_id, tid, "question", q)
+        self._enqueue(session, rt, asker_id, resolved, chain)
+        names = {n.spec.id: n.spec.name for n in session.graph.nodes}
+        who = ", ".join(names.get(t, t) for t, _ in resolved)
+        return (
+            f"Delegated to {who}. Their replies will be delivered to you together as a follow-up "
+            "message when all are done — do NOT wait inline; continue with any independent work or "
+            "end your turn, and you'll be re-prompted with their answers."
+        )
+
+    def _enqueue(self, session: "Session", rt: _Runtime, asker_id: str, resolved: list, chain: list) -> None:
+        """Record a delegation request on the asker + mark it waiting on the
+        teammate(s) (drives the sustained edge animation). If the asker is NOT in
+        a managed run that will drain it (idle — e.g. a standalone /internal call),
+        kick off a background drainer; otherwise the asker's run owner drains when
+        its turn ends."""
+        st = rt.agents.setdefault(asker_id, _AgentState())
+        child_chain = list(chain) + [asker_id]
+        for tid, q in resolved:
+            st.pending.append((tid, q, child_chain))
+        self._set_lifecycle(session, asker_id, "waiting-on-agent", waiting_on=[t for t, _ in resolved])
+        if not self.is_busy(session, asker_id) and not st.draining:
+            st.draining = True  # set before spawning so a 2nd enqueue doesn't double-drain
+            self._spawn_bg(self._drain_background(session, asker_id))
+
+    async def _drain_background(self, session: "Session", asker_id: str) -> None:
+        """Drive an idle asker's pending delegations (the asker has no managed run
+        to drain them). Reuses _drain, then resets the guard."""
+        rt = self._runtimes.get(session.id)
+        st = rt.agents.get(asker_id) if rt else None
+        if rt is not None:
+            rt.inflight += 1  # keep the server from reconfiguring mid-drain
+        try:
+            await self._drain(session, asker_id, st.last_output if st else "", [], None)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            session.bus.publish("agent_error", {"agent_id": asker_id, "error": f"delegation drain failed: {e}"})
+        finally:
+            if st is not None:
+                st.draining = False
+            if rt is not None:
+                rt.inflight -= 1
+
+    async def _run_to_quiescence(self, session: "Session", agent_id: str, prompt: str, *, chain=None, lock_timeout=None) -> str:
+        """Run ``agent_id`` then drain any teammates it delegates to — running each
+        to its OWN quiescence and re-prompting ``agent_id`` with their replies —
+        until it stops delegating. Returns ``agent_id``'s FINAL output. Awaits the
+        whole subtree, so it returns only when ``agent_id`` and all descendants are
+        done."""
+        chain = list(chain or [])
+        # _ensure FIRST (before bumping inflight) so a deferred graph edit can
+        # still reconfigure on a genuinely fresh top-level run; then hold inflight
+        # for the WHOLE drive so nothing reconfigures mid-subtree.
+        rt = await self._ensure(session)
+        rt.inflight += 1
+        try:
+            out = await self.run_to_completion(session, agent_id, prompt, delegation_chain=chain, lock_timeout=lock_timeout)
+            return await self._drain(session, agent_id, out, chain, lock_timeout)
+        except asyncio.CancelledError:
+            # Stopped (this agent / an ancestor / a per-task timeout). Abort our OC
+            # run server-side so cancelled work stops burning tokens; the gather in
+            # _drain cancels our children, each aborting its own subtree the same way.
+            await self._abort_oc(session, agent_id)
+            raise
+        finally:
+            rt.inflight -= 1
+
+    async def _drain(self, session: "Session", agent_id: str, out: str, chain: list, lock_timeout) -> str:
+        rt = self._runtimes.get(session.id)
+        st = rt.agents.get(agent_id) if rt else None
+        rounds = 0
+        while st is not None and st.pending:
+            if st.aborting:  # a stop landed since the last turn — tear down, don't re-prompt
+                raise asyncio.CancelledError()
+            if rounds >= MAX_DELEGATION_ROUNDS:
+                # Backstop a pathological re-delegation loop: drop the pending AND
+                # settle the agent — session.idle suppressed agent_done while
+                # pending was set, so without this the agent is stuck
+                # 'waiting-on-agent' forever (badge + edge animation never clear).
+                st.pending = []
+                if st.error is None and not st.aborting:
+                    session.bus.publish("agent_done", {"agent_id": agent_id, "output": out})
+                    self._lifecycle(session, agent_id, "idle")
+                break
+            rounds += 1
+            pending, st.pending = st.pending, []
+            tasks = {asyncio.create_task(self._delegated_reply(session, agent_id, tid, q, ch))
+                     for tid, q, ch in pending}
+            st.children |= tasks
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            except asyncio.CancelledError:
+                # OUR awaiter was cancelled (stop on this agent / an ancestor / a
+                # task timeout): cancel + drain the children so each aborts its own
+                # OC run and unwinds (no orphaned token-burning run), then propagate.
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+            finally:
+                st.children -= tasks
+            replies = [r for r in results if isinstance(r, tuple)]
+            if st.aborting:  # a stop landed in the post-gather / pre-re-prompt window
+                raise asyncio.CancelledError()
+            # Re-prompt the asker with the teammates' FINAL replies so it can
+            # integrate them (and possibly delegate again → loop). The run owner's
+            # own run_to_completion publishes "running", clearing the waiting badge.
+            out = await self.run_to_completion(
+                session, agent_id, self._combined_reply_text(session, replies),
+                delegation_chain=chain, lock_timeout=lock_timeout,
+            )
+        return out
+
+    async def _delegated_reply(self, session: "Session", asker_id: str, target_id: str, question: str, chain: list) -> tuple[str, str]:
+        """Run ONE teammate to full quiescence and record its final reply. A
+        per-target failure is an inline note (never aborts its siblings)."""
+        try:
+            ans = await self._run_to_quiescence(session, target_id, question, chain=chain, lock_timeout=DELEGATION_BUSY_TIMEOUT)
+        except asyncio.CancelledError:
+            # The teammate was stopped (directly, or because an ancestor is tearing
+            # down — its OC run was already aborted by _run_to_quiescence). Record
+            # an inline note and RETURN, do NOT re-raise: stopping ONE teammate must
+            # not abort its siblings or collapse the asker's task. A genuine
+            # whole-subtree teardown is driven by the asker's own stop()/timeout,
+            # which raises in _drain AFTER this gather (see _drain's aborting checks).
+            ans = "[stopped]"
+            self._record(session, target_id, asker_id, "reply", ans)
+            return target_id, ans
+        except asyncio.TimeoutError:
+            ans = f"[{target_id} was busy too long and didn't reply]"
+        except Exception as e:  # noqa: BLE001 — surfaced on the target as agent_error too
+            ans = f"[consulting {target_id} failed: {e}]"
+        self._record(session, target_id, asker_id, "reply", ans)
+        return target_id, ans
+
+    def _combined_reply_text(self, session: "Session", replies: list) -> str:
+        names = {n.spec.id: n.spec.name for n in session.graph.nodes}
+        combined = "\n\n".join(f"From {names.get(tid, tid)} (`{tid}`):\n{ans}" for tid, ans in replies)
+        header = (
+            "Reply from the teammate you delegated to:"
+            if len(replies) == 1
+            else "Replies from the teammates you delegated to:"
+        )
+        return f"{header}\n\n{combined}"
+
+    async def _abort_oc(self, session: "Session", agent_id: str) -> None:
+        rt = self._runtimes.get(session.id)
+        st = rt.agents.get(agent_id) if rt else None
+        if st and st.oc_session_id and rt.conn.running:
+            try:
+                await rt.conn.client.abort(st.oc_session_id)
+            except Exception:  # noqa: BLE001
+                pass
+
     async def run_for_task(self, session: "Session", agent_id: str, prompt: str) -> str:
-        output = await self.run_to_completion(session, agent_id, prompt)
+        output = await self._run_to_quiescence(session, agent_id, prompt, chain=[])
         rt = self._runtimes.get(session.id)
         for _ in range(CONTINUATION_NUDGES):
             st = rt.agents.get(agent_id) if rt else None
@@ -499,13 +800,14 @@ class OpenCodeHarness(Harness):
             if not open_items:
                 break
             bullet = "\n".join(f"- [{t.get('status')}] {t.get('content')}" for t in open_items)
-            output = await self.run_to_completion(
+            output = await self._run_to_quiescence(
                 session,
                 agent_id,
                 "Your run ended but your todo list still has open items:\n"
                 f"{bullet}\n\nContinue working through them now. If an item is genuinely "
                 "done, mark it completed. If you need the user, use the question tool. If "
                 "something blocks you, state exactly what.",
+                chain=[],
             )
         return output
 
@@ -523,14 +825,23 @@ class OpenCodeHarness(Harness):
         if rt is None:
             return
         st = rt.agents.get(agent_id)
-        if st and st.oc_session_id:
-            # mark aborting so an in-flight run_to_completion raises
-            # CancelledError (→ task parks blocked, Retry-able) and the listener
-            # suppresses a spurious agent_done; then abort + free the awaiter.
-            st.aborting = True
+        if st is None:
+            return
+        # mark aborting so an in-flight run_to_completion raises CancelledError
+        # (→ task parks blocked, Retry-able) and the listener suppresses a
+        # spurious agent_done.
+        st.aborting = True
+        # Cascade: cancel any delegation subtree this agent is waiting on. Each
+        # cancelled child's _run_to_quiescence aborts its own OC run + grandchildren,
+        # so stopping a delegator doesn't leave orphaned teammate runs burning tokens.
+        for t in list(st.children):
+            t.cancel()
+        st.children.clear()
+        st.pending = []
+        if st.oc_session_id and rt.conn.running:
             await rt.conn.client.abort(st.oc_session_id)
-            self._lifecycle(session, agent_id, "idle")
-            st.idle.set()
+        self._lifecycle(session, agent_id, "idle")
+        st.idle.set()
 
     def current_chain(self, agent_id: str) -> list[str]:
         """The delegation chain of the agent's in-flight run, so a nested

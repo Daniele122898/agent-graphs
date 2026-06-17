@@ -1128,3 +1128,183 @@ a2a.py) stayed coherent.
 - **Covered by the green deterministic suite (not separately live-driven, to spare
   the laptop):** the stall fix (graph-edit-mid-run), interject steering, and
   `ask_team` fan-out / name resolution — each has a fast-suite regression.
+
+## Big-task failures on OpenCode (DeepSeek 900s hangs, ask_team timeouts) — 2026-06-14
+
+Second multi-agent research+verify pass on why big/long DeepSeek tasks fail. The
+**"unknown-id no-op" theory was REFUTED** (verified against vendored source): our
+config declares the deepseek models so they resolve; an unknown id would fail
+fast, not hang. Real causes: (1) no per-request HTTP timeout -> a stuck DeepSeek
+fetch hangs the run; (2) OpenCode's unbounded retry loop (rate-limit/5xx) pinned
+at status:retry, which we ignored -> "running but doing nothing"; (3) blocking
+delegation holds the tool fetch for the whole subtree -> Bun's ~255s fetch default
+fires -> "The operation timed out" and orphans the subtree; (4) the 900s cap was
+per-hop and lock_timeout was overloaded as the run bound.
+
+### 2026-06-14 — Phase A: fail-fast + sane timeouts (shipped)
+
+- **What:** (A1) config._request_timeout_opts wires timeout/headerTimeout/
+  chunkTimeout (env-tunable ms) into the deepseek + lmstudio provider blocks, so a
+  stuck/no-progress model fetch aborts instead of hanging. (A2) session.status
+  "retry" is surfaced as a `retry` bus row (visible, not a mute "running"). (A3) a
+  first-event watchdog (OPENCODE_FIRST_EVENT_TIMEOUT, 120s) aborts a prompt that
+  produces NO events with a clear "no response from the model — check id/key/rate
+  limit" error instead of waiting the run budget. (A4) the ask_agent/ask_team tool
+  fetches set timeout:false so Bun's ~255s default can't orphan a long subtree
+  (the backend owns the deadline). (A5) run_to_completion uses lock_timeout ONLY
+  for lock ACQUISITION (busy-target backstop) and the full run budget for the run;
+  OPENCODE_RUN_TIMEOUT default raised 900s->3600s (env-tunable). (A6) corrected the
+  stale DeepSeek caveat in harness/CLAUDE.md.
+- **Why:** removes the acute symptoms (silent 900s, invisible retries, Bun
+  "operation timed out") and is needed regardless of the delegation model — a
+  no-fail-fast model call hangs under blocking AND non-blocking delegation alike.
+- **Reversibility:** easy; all timeouts env-tunable (0 disables).
+- **Still open (Phase B, the user's instinct):** delegation is still BLOCKING (the
+  asker parked inside the tool fetch for the whole subtree). Structural fix =
+  non-blocking dispatch + steer-injection of results (reuses the interject path +
+  _submit_bg); pending the user's blocking-vs-callback-vs-task-graph decision.
+
+### 2026-06-14 — Phase B: non-blocking (dispatch + steer-injection) delegation on opencode (shipped)
+
+- **What:** ask_agent/ask_team on the OpenCode harness are now NON-BLOCKING.
+  `/internal/ask_agent|ask_team` → `OpenCodeHarness.dispatch`/`dispatch_many`:
+  validate the guards synchronously (violation → 409, model self-corrects), record
+  the question, spawn a background task (`_run_delegation`) that runs the target(s)
+  concurrently via `run_to_completion`, and INJECT their combined reply into the
+  asker's session as a follow-up (`submit` → steer a live asker run, or a fresh
+  run if it already ended). The tool fetch returns an immediate ACK. The blocking
+  `delegate`/`delegate_many` stay as the shared primitive (native still uses the
+  in-process blocking `Delegator`, which is far less fragile).
+- **Why:** the structural fault behind the deep-chain failures (user's instinct):
+  blocking delegation parked the asker inside the tool fetch for the WHOLE nested
+  subtree, holding nested HTTP fetches + per-agent locks — so Bun's ~255s fetch
+  default fired ("operation timed out") and orphaned the subtree, and the per-hop
+  900s caps stacked. Non-blocking removes the held fetch entirely; each run keeps
+  its own budget; deep chains don't pin connections.
+- **Cross-hop guard preserved:** the chain is captured at dispatch and threaded
+  into the target's run (`delegation_chain`→`st.chain`); a target that itself
+  dispatches reads its own in-flight chain via `current_chain`. Verified by test.
+- **Contract change (documented in tool descriptions + prompt guidance):** a
+  delegated reply now arrives as a NEW message, not an inline tool return — the
+  model is told not to wait inline; it ends its turn and is re-prompted with the
+  reply. Risk: a model that ignores this and assumes an inline answer; mitigated
+  by explicit tool/prompt wording (to confirm with the live DeepSeek E2E).
+- **Reversibility:** moderate. `delegate`/`delegate_many` remain; reverting is
+  pointing `/internal` back at them. Native unaffected. Task-graph delegation
+  (the eventual model) deferred to the plan.md backlog.
+
+### 2026-06-14 — Live E2E on the real team + DeepSeek (Phase A+B validated)
+
+- Ran the user's actual 6-agent `agent-graphs` team (lead→Planner→Frontend+Backend
+  experts, +Review/Documenter, all deepseek-v4-pro/flash) on the OpenCode harness
+  via an isolated stack (fresh DB, scratch repo — their data untouched), driving a
+  real "build a guess-the-number game" task.
+- RESULT: the delegation chain fired (lead→Planner, Planner→Backend+Frontend),
+  the **non-blocking ask_team fan-out ran the two experts CONCURRENTLY**, real
+  files (`frontend/`, `backend/`) were created, 39 tool calls, replies injected
+  back — **zero errors, zero 900s hangs, zero "operation timed out"** (the exact
+  failures reported). Playwright confirmed the control room renders the 6-agent
+  team + opencode chip + the Planner's ask_team transcript.
+- Minor follow-up applied: `agent_lifecycle "running"` was re-published on every
+  OpenCode busy tick (95 events/run) — now published only on the idle→busy
+  transition.
+
+### 2026-06-17 — Replaced non-blocking dispatch (Phase B) with subtree-aware quiescence
+
+- **What:** the opencode delegation now drives the subtree itself instead of
+  inferring completion from a teammate's first idle. `dispatch`/`dispatch_many`
+  only ENQUEUE the request on the asker (`st.pending`) + mark it
+  `waiting-on-agent`, returning an immediate ACK. The asker's run owner drains:
+  `_run_to_quiescence` = `run_to_completion` then `_drain`, which runs each
+  teammate to its OWN quiescence (recursively), records their FINAL replies, and
+  re-prompts the asker with them, looping (cap `MAX_DELEGATION_ROUNDS=8`) until
+  the asker stops delegating. `session.idle` suppresses the premature
+  `agent_done` while `st.pending` is non-empty; `stop()` cascade-cancels
+  `st.children` and `_run_to_quiescence` aborts its OC run on cancel.
+- **Why:** Phase B (background `_run_delegation` + `submit`-inject) shipped and
+  passed the live E2E, but on reflection (and a deep design investigation,
+  `specs/async-delegation-design.md`) it was subtly wrong: a delegating teammate
+  replied to its parent with its FIRST turn ("I delegated to X, Y") because the
+  integration run escaped via fire-and-forget `submit`, and the TaskRunner gate
+  returned at the entry agent's first idle while the subtree ran detached → both
+  premature/incomplete replies AND premature task completion (the user's exact
+  complaint). The user proposed correlation-ids (a `reply` tool); the
+  investigation showed that's Dijkstra–Scholten termination detection but bets
+  correctness on a weak model emitting a terminal tool call — and its one unique
+  benefit (cross-restart auto-resume) is illusory (a reattached OC session
+  restores the transcript, not a running loop; "resume" = re-prompt = Retry).
+  Subtree-await gets the SAME DS termination by awaiting the coroutine tree, with
+  NO model-facing reply tool, and keeps the non-blocking transport (the asker's
+  tool fetch still returns immediately, so no Bun fetch-timeout / lock-pin
+  fragility). Reverting to pure blocking would reintroduce that fragility.
+- **Reversibility:** high. `delegate`/`delegate_many` (the blocking primitive)
+  are untouched and still back the native harness; pointing `/internal` at them
+  reverts opencode to blocking. The correlation-id registry remains a documented
+  v2 (build only on a concrete trigger — see the spec's §9).
+
+### 2026-06-17 — Per-task timeout configurable in hours
+
+- **What:** `Task.timeout_hours` (default 1.0, `0` = no limit) + `tasks` column
+  (additive migration) + New Task dialog field. `TaskRunner.run` wraps each
+  `run_agent` in `asyncio.wait_for(timeout_hours*3600)`; on timeout the run is
+  cancelled (opencode aborts the whole subtree) and the task parks `blocked`,
+  Retry-able. Distinct from `OPENCODE_RUN_TIMEOUT` (per single model run); the
+  task budget bounds the whole task incl. nudges + delegation.
+- **Why:** the user asked for it — "some work just takes time"; the old hidden
+  1h per-run cap surfaced as a confusing "did not complete within 900s". Now the
+  budget is explicit and per-task.
+- **Reversibility:** trivial (default 1h preserves prior behavior; set 0 to
+  disable). Harness-agnostic (native gets the same task-level budget for free).
+
+### 2026-06-17 — Sustained waiting-edge animation (request #2)
+
+- **What:** the canvas now animates an asker→target edge for the WHOLE time a
+  delegation is outstanding (driven by the asker's `waiting-on-agent` + id-keyed
+  `waiting_on`, published by `dispatch`), not just the brief 2.5s `a2a_message`
+  pulse — clearing exactly when the reply lands. No new bus event (kept on the
+  universal `agent_lifecycle` channel so native parity holds).
+- **Why:** the user wanted the graph to stay animated while an agent waits and
+  stop on reply; the opencode dispatch path previously published no `waiting_on`
+  at all (only native did), so its edges only flickered.
+- **Reversibility:** trivial (frontend-only animation derived from existing
+  state; backend just adds the lifecycle publish the native path already did).
+
+### 2026-06-17 — Adversarial review of the rewrite + four hardening fixes
+
+- A 12-agent adversarial-review workflow (4 lenses → independent refutation →
+  triage) over the quiescence rewrite found four real defects, all fixed with
+  regression tests (full suite green):
+  - **D1 (HIGH)** stopping ONE sub-delegated teammate collapsed the whole task +
+    orphaned siblings (gather propagated the child's CancelledError; the finally
+    dropped siblings untracked, still burning tokens). Fix: `_delegated_reply`
+    swallows CancelledError → records a `[stopped]` note + returns; teardown is
+    the asker's own `stop()`/timeout (the `aborting` checks in `_drain`).
+  - **D2 (HIGH)** a delegation drive has gaps where no agent holds a lock, so a
+    graph autosave could reconfigure (restart) the server mid-subtree and corrupt
+    the task result. Fix: `_Runtime.inflight` counts in-flight drives and
+    `_any_busy` also checks `inflight`/`pending`/`children` → reconfigure deferred
+    until the whole subtree is idle.
+  - **D3 (MED)** the `MAX_DELEGATION_ROUNDS` backstop left the asker stuck
+    `waiting-on-agent` forever; fix settles it (`agent_done` + idle).
+  - **D4 (MED)** a stop in the post-gather/pre-re-prompt window was clobbered by
+    `run_to_completion`'s `aborting=False` prologue; fix checks `st.aborting` in
+    `_drain` before re-prompting.
+- **Reversibility:** these are corrections within the rewrite; no interface change.
+
+### 2026-06-17 — Live DeepSeek E2E validated the subtree-await fix
+
+- Ran the user's real 6-agent `test` team (Lead→Planner→{Backend,Frontend}
+  experts, deepseek-v4-pro/flash) on the OpenCode harness via an isolated stack
+  (a COPY of `backend/db.sqlite`, a scratch repo, callback URL on :8021 — their
+  DB/servers/repos untouched; the copy deleted after), one tiny delegation-forcing
+  task assigned to the Lead.
+- RESULT (task done in 48s, zero errors): the a2a sequence was lead→Planner
+  (question), Planner→Backend + Planner→Frontend (questions), Backend→Planner +
+  Frontend→Planner (replies), THEN **Planner→lead (reply)** — i.e. the Planner
+  reported up to the Lead ONLY after BOTH experts replied (the exact premature-
+  reply bug, now fixed). `agent_done` order was Frontend, Backend, Planner, Lead
+  (bottom-up termination); both files (`backend/ping.py`, `frontend/index.html`)
+  were created by the experts; the waiting-on-agent lifecycles fired (lead on
+  [Planner], Planner on [Backend, Frontend]) so the edge animation lights through
+  the whole subtree; **no "operation timed out" / "did not complete within Ns"**
+  (the failures reported). Subtree-await confirmed on real models.

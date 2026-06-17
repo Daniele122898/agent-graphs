@@ -9,7 +9,7 @@ import { tool } from "@opencode-ai/plugin"
 // asker is known without a session map.
 export default tool({
   description:
-    "Consult a teammate agent and get their concise answer. Use this when a question is outside your expertise; only the teammates listed in your instructions are reachable.",
+    "Delegate a task/question to a teammate. Returns IMMEDIATELY with an acknowledgement — their reply is delivered to you as a follow-up message when ready, so do NOT wait for it inline; continue with any independent work or end your turn and you'll be re-prompted with their answer. Use this when something is outside your expertise; only the teammates listed in your instructions are reachable.",
   args: {
     target_id: tool.schema.string().describe("the teammate to ask — their id (in backticks) or display name; both resolve"),
     question: tool.schema.string().describe("the question to ask them"),
@@ -21,13 +21,17 @@ export default tool({
     const res = await fetch(`${base}/internal/ask_agent`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-ag-token": token },
+      // timeout:false (Bun) — the backend owns the deadline; without this Bun's
+      // ~255s fetch default kills this call mid-delegation and orphans the
+      // target run ("The operation timed out").
+      timeout: false,
       body: JSON.stringify({
         session_id: sessionId,
         asker_id: ctx.agent,
         target_id: args.target_id,
         question: args.question,
       }),
-    })
+    } as RequestInit)
     const text = await res.text()
     if (!res.ok) throw new Error(text || `ask_agent failed (${res.status})`)
     return text

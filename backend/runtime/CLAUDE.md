@@ -40,7 +40,15 @@
 - **`TaskRunner` takes its effectful steps as injected callables**
   (`run_agent`/`run_reviewer`/`run_check`) so the completion-gate +
   revision-loop + blocked-on-cap orchestration is tested without
-  models/subprocess. `wiring.py` supplies the real callables.
+  models/subprocess. `wiring.py` supplies the real callables. Each `run_agent`
+  call is wrapped in `asyncio.wait_for(task.timeout_hours * 3600)` — a
+  **per-task wall-clock budget in HOURS** (default 1.0; `0` = no limit). On
+  timeout the agent run is cancelled (the opencode harness aborts the whole
+  delegation subtree on that `CancelledError`) and the task parks `blocked`,
+  Retry-able. This is distinct from the opencode per-*run* budget
+  (`OPENCODE_RUN_TIMEOUT`, which bounds a single hung model run); the task
+  budget bounds the whole task incl. nudges + delegation, so keep it ≥ the run
+  budget for long single runs.
 - **Interjections queue, they don't splice**: Pydantic AI runs a whole
   multi-turn `iter` to completion, so a message submitted mid-run is processed
   right after the current run with full history. To truly interrupt, `stop()`.

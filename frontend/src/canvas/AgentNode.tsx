@@ -16,6 +16,7 @@ const LIFECYCLE: Record<AgentLifecycle, { color: string; label: string }> = {
 export default function AgentNode({ data, selected }: NodeProps) {
   const spec = (data as AgentNodeData).spec;
   const lifecycle: AgentLifecycle = (data as { lifecycle?: AgentLifecycle }).lifecycle ?? "idle";
+  const waitingOnNames = (data as { waitingOnNames?: string[] }).waitingOnNames;
   const lc = LIFECYCLE[lifecycle];
   const model = spec.model.split(":").pop();
 
@@ -43,6 +44,11 @@ export default function AgentNode({ data, selected }: NodeProps) {
         )}
       </div>
       <div className="mono" style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5 }}>{model}</div>
+      {lifecycle === "waiting-on-agent" && waitingOnNames && waitingOnNames.length > 0 && (
+        <div style={{ fontSize: 10.5, color: lc.color, marginTop: 4, fontWeight: 600 }}>
+          ⏳ waiting on {waitingOnNames.join(", ")}
+        </div>
+      )}
       <Handle type="source" position={Position.Right} style={{ background: "var(--primary)", width: 8, height: 8 }} />
     </div>
   );

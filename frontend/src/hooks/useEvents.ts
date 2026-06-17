@@ -27,6 +27,7 @@ const EVENT_TYPES = [
   "tool_call",
   "tool_result",
   "todos",
+  "retry",
   "agent_done",
   "agent_error",
   "a2a_message",
@@ -38,6 +39,10 @@ const EVENT_TYPES = [
 export function useEvents(sessionId: string | null) {
   const [events, setEvents] = useState<BusEvent[]>([]);
   const [lifecycles, setLifecycles] = useState<Record<string, AgentLifecycle>>({});
+  // Per-agent: the teammate ids it's currently blocked on (so the UI shows WHO,
+  // not just "waiting"). Set on a waiting-on-agent lifecycle that carries
+  // waiting_on; cleared the moment the agent moves to any other state.
+  const [waitingOn, setWaitingOn] = useState<Record<string, string[]>>({});
   // Edges with a recent delegation message, keyed `from->to`, for canvas animation.
   const [activeEdges, setActiveEdges] = useState<Set<string>>(new Set());
   const esRef = useRef<EventSource | null>(null);
@@ -49,6 +54,7 @@ export function useEvents(sessionId: string | null) {
     // Reset accumulated state when switching sessions.
     setEvents([]);
     setLifecycles({});
+    setWaitingOn({});
     setActiveEdges(new Set());
     if (!sessionId) return; // nothing to subscribe to yet (boot/reconcile)
     const es = new EventSource(`/events?session_id=${sessionId}`);
@@ -60,11 +66,22 @@ export function useEvents(sessionId: string | null) {
         setEvents((prev) => [...prev, parsed]);
         const agentId = parsed.data?.agent_id as string | undefined;
         if (parsed.type === "agent_lifecycle" && agentId) {
-          setLifecycles((p) => ({ ...p, [agentId]: parsed.data.lifecycle as AgentLifecycle }));
+          const lc = parsed.data.lifecycle as AgentLifecycle;
+          setLifecycles((p) => ({ ...p, [agentId]: lc }));
+          const wo = parsed.data.waiting_on as string[] | undefined;
+          setWaitingOn((p) => {
+            if (lc === "waiting-on-agent" && wo?.length) return { ...p, [agentId]: wo };
+            if (!(agentId in p)) return p;
+            const next = { ...p };
+            delete next[agentId]; // moved off waiting → no longer blocked on anyone
+            return next;
+          });
         } else if (parsed.type === "agent_done" && agentId) {
           setLifecycles((p) => ({ ...p, [agentId]: "done" }));
+          setWaitingOn((p) => { const n = { ...p }; delete n[agentId]; return n; });
         } else if (parsed.type === "agent_error" && agentId) {
           setLifecycles((p) => ({ ...p, [agentId]: "blocked" }));
+          setWaitingOn((p) => { const n = { ...p }; delete n[agentId]; return n; });
         } else if (parsed.type === "a2a_message") {
           const key = `${parsed.data.from}->${parsed.data.to}`;
           setActiveEdges((p) => new Set(p).add(key));
@@ -94,5 +111,5 @@ export function useEvents(sessionId: string | null) {
     };
   }, [sessionId]);
 
-  return { events, lifecycles, activeEdges };
+  return { events, lifecycles, waitingOn, activeEdges };
 }

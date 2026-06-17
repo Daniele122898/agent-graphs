@@ -9,7 +9,7 @@ import { tool } from "@opencode-ai/plugin"
 // our agent id (the asker).
 export default tool({
   description:
-    "Delegate to SEVERAL teammates AT ONCE, in parallel, and get all their answers back together. Use this to fan out independent work (e.g. a frontend task and a backend task simultaneously) instead of asking one teammate, waiting, then the next. Only the teammates listed in your instructions are reachable.",
+    "Delegate to SEVERAL teammates AT ONCE, in parallel. Returns IMMEDIATELY with an acknowledgement — their replies are delivered to you together as a follow-up message when all are done, so do NOT wait inline; continue with independent work or end your turn and you'll be re-prompted with their answers. Use this to fan out independent work (e.g. a frontend task and a backend task simultaneously) instead of asking one teammate, waiting, then the next. Only the teammates listed in your instructions are reachable.",
   args: {
     assignments: tool.schema
       .array(
@@ -27,12 +27,16 @@ export default tool({
     const res = await fetch(`${base}/internal/ask_team`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-ag-token": token },
+      // timeout:false (Bun) — the backend owns the deadline; without this Bun's
+      // ~255s fetch default kills this call mid-fan-out and orphans the target
+      // runs ("The operation timed out").
+      timeout: false,
       body: JSON.stringify({
         session_id: sessionId,
         asker_id: ctx.agent,
         assignments: args.assignments,
       }),
-    })
+    } as RequestInit)
     const text = await res.text()
     if (!res.ok) throw new Error(text || `ask_team failed (${res.status})`)
     return text

@@ -25,6 +25,10 @@ export default function Canvas(props: {
   nodes: RFNode[];
   edges: Edge[];
   lifecycles: Record<string, AgentLifecycle>;
+  waitingOnNames: Record<string, string[]>;
+  /** Per-agent teammate IDS it's waiting on (id-keyed, to match edge ids) —
+   * drives the sustained edge animation while a delegation is outstanding. */
+  waitingOn: Record<string, string[]>;
   onNodesChange: (c: NodeChange<RFNode>[]) => void;
   onEdgesChange: (c: EdgeChange<Edge>[]) => void;
   onConnect: (c: Connection) => void;
@@ -34,19 +38,24 @@ export default function Canvas(props: {
   status: string;
   activeEdges: Set<string>;
 }) {
-  // Inject the live lifecycle into each node's data so AgentNode can color its badge.
+  // Inject the live lifecycle + who-it's-waiting-on into each node's data so
+  // AgentNode can color its badge and name the blocker(s).
   const nodes = props.nodes.map((n) => ({
     ...n,
-    data: { ...n.data, lifecycle: props.lifecycles[n.id] ?? "idle" },
+    data: { ...n.data, lifecycle: props.lifecycles[n.id] ?? "idle", waitingOnNames: props.waitingOnNames[n.id] },
   }));
   // Render-time edge decoration (the persisted graph stays plain except the
   // user-dragged `curve`): floating edge type + arrowhead; reciprocal pairs
   // flagged so FloatingEdge arcs them apart (derived fresh from the full
-  // list, so drawing a reverse edge separates the pair instantly);
-  // recently-active delegation edges animate.
+  // list, so drawing a reverse edge separates the pair instantly). An edge
+  // animates while a delegation is in flight: a SUSTAINED state for the whole
+  // wait (source is waiting-on-agent on this target) OR the brief 2.5s pulse
+  // from a discrete a2a message — the sustained state is what stays lit until
+  // the reply lands.
   const edges = props.edges.map((e) => {
     const reciprocal = props.edges.some((o) => o.source === e.target && o.target === e.source);
-    const active = props.activeEdges.has(`${e.source}->${e.target}`);
+    const waiting = (props.waitingOn[e.source] ?? []).includes(e.target);
+    const active = waiting || props.activeEdges.has(`${e.source}->${e.target}`);
     return {
       ...e,
       type: "floating",

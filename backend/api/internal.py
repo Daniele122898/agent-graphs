@@ -30,31 +30,39 @@ def install(app: FastAPI) -> None:
             raise HTTPException(403, "invalid or missing callback token")
         return session
 
-    @app.post("/internal/ask_agent", response_class=PlainTextResponse)
-    async def internal_ask_agent(body: AskAgentInternalRequest, x_ag_token: str = Header(default="")) -> str:
-        session = _authed_session(body.session_id, x_ag_token)
+    def _chain_for(session, asker_id: str):
         # Thread the asker's in-flight delegation chain so the cross-hop
         # cycle/depth guards accumulate across HTTP callbacks (A→B→C…).
         current = getattr(session.harness, "current_chain", None)
-        chain = current(body.asker_id) if current else None
+        return current(asker_id) if current else None
+
+    @app.post("/internal/ask_agent", response_class=PlainTextResponse)
+    async def internal_ask_agent(body: AskAgentInternalRequest, x_ag_token: str = Header(default="")) -> str:
+        session = _authed_session(body.session_id, x_ag_token)
+        chain = _chain_for(session, body.asker_id)
+        # NON-BLOCKING on opencode (dispatch): validate synchronously, run the
+        # target in the background, inject its reply into the asker when ready —
+        # so the asker's tool fetch returns immediately (deep chains don't pin
+        # nested fetches/locks). Fall back to blocking delegate for any harness
+        # without dispatch (native never reaches /internal — its ask_agent is
+        # in-process).
+        run = getattr(session.harness, "dispatch", None) or session.harness.delegate
         try:
-            return await session.harness.delegate(
-                session, body.asker_id, body.target_id, body.question, chain=chain
-            )
+            return await run(session, body.asker_id, body.target_id, body.question, chain=chain)
         except ModelRetry as e:
-            # guard violation / busy / consult failure → corrective message the
-            # model can act on (surfaced as a tool error on the OpenCode side).
+            # guard violation → corrective message (surfaced as a tool error on
+            # the OpenCode side so the model self-corrects).
             raise HTTPException(409, str(e))
 
     @app.post("/internal/ask_team", response_class=PlainTextResponse)
     async def internal_ask_team(body: AskTeamInternalRequest, x_ag_token: str = Header(default="")) -> str:
         """Parallel-delegation callback: fan work out to several teammates at once
-        via Harness.delegate_many (shared guards + concurrent target runs)."""
+        (non-blocking dispatch_many — background runs, replies injected together)."""
         session = _authed_session(body.session_id, x_ag_token)
-        current = getattr(session.harness, "current_chain", None)
-        chain = current(body.asker_id) if current else None
+        chain = _chain_for(session, body.asker_id)
         pairs = [(a.target_id, a.task) for a in body.assignments]
+        run = getattr(session.harness, "dispatch_many", None) or session.harness.delegate_many
         try:
-            return await session.harness.delegate_many(session, body.asker_id, pairs, chain=chain)
+            return await run(session, body.asker_id, pairs, chain=chain)
         except ModelRetry as e:
             raise HTTPException(409, str(e))

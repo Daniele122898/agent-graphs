@@ -18,6 +18,31 @@ from backend.agents.tools import DevTools
 from tests.conftest import make_sequence_model
 
 
+async def test_bus_close_ends_subscribers_for_clean_shutdown():
+    # An SSE response is an infinite generator; on shutdown the bus must END its
+    # subscribers (so the /events connection closes and uvicorn doesn't wedge at
+    # "Waiting for connections to close").
+    bus = EventBus("s")
+    got: list[dict] = []
+
+    async def consume():
+        async for e in bus.subscribe():
+            got.append(e)
+        return "ended"  # only reached when the subscriber loop breaks
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.02)
+    bus.publish("text", {"text": "hi"})
+    await asyncio.sleep(0.02)
+    bus.close()  # signal shutdown
+    result = await asyncio.wait_for(task, timeout=1)  # must end promptly, not hang
+    assert result == "ended"
+    assert any(e["type"] == "text" for e in got)
+    # publishing after close is a no-op; a fresh subscribe ends immediately
+    bus.publish("text", {"text": "late"})
+    assert [e async for e in bus.subscribe()] == []
+
+
 def test_format_sse_is_well_formed():
     frame = format_sse({"type": "text", "data": {"text": "hi"}, "session_id": "s"})
     assert frame.startswith("event: text\n")

@@ -36,6 +36,7 @@ def install(app: FastAPI) -> None:
             prompt=body.prompt,
             assigned_agent_id=agent_id,
             completion_signal=body.completion_signal,
+            timeout_hours=body.timeout_hours,
         )
         _spawn_run(session, task.id)
         return task.model_dump()

@@ -19,6 +19,7 @@ Mapping decisions:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from ...domain.models import Capabilities, TeamGraph
@@ -70,6 +71,30 @@ def opencode_model_id(model_str: str) -> str:
     return f"{backend}/{name}" if backend else name
 
 
+def _request_timeout_opts() -> dict:
+    """Per-request HTTP timeouts OpenCode wires into the provider fetch (resolveSDK
+    reads options.timeout/headerTimeout/chunkTimeout). Without these the model
+    fetch has NO deadline, so a stuck / no-progress DeepSeek call hangs the run
+    until the (long) run budget — the silent-900s hang. ``headerTimeout`` bounds
+    time-to-first-response; ``chunkTimeout`` bounds a mid-stream stall (catches a
+    hung stream without capping a legitimately long-but-progressing reasoning
+    response); ``timeout`` is a generous hard total cap. All env-tunable in ms;
+    set an env to 0 to disable that one."""
+    opts: dict = {}
+    for key, env, default in (
+        ("timeout", "AGENT_GRAPHS_OPENCODE_REQUEST_TIMEOUT_MS", "1800000"),   # 30 min hard cap / request
+        ("headerTimeout", "AGENT_GRAPHS_OPENCODE_HEADER_TIMEOUT_MS", "120000"),  # 2 min to first byte
+        ("chunkTimeout", "AGENT_GRAPHS_OPENCODE_CHUNK_TIMEOUT_MS", "180000"),    # 3 min between chunks
+    ):
+        try:
+            val = int(os.environ.get(env, default))
+        except ValueError:
+            val = 0
+        if val > 0:
+            opts[key] = val
+    return opts
+
+
 def _provider_block(graph: TeamGraph) -> dict:
     """Provider config covering the model backends the team's agents use."""
     providers: dict = {}
@@ -78,24 +103,25 @@ def _provider_block(graph: TeamGraph) -> dict:
         backend, name = split_model_string(node.spec.model)
         used.setdefault(backend, set()).add(name)
 
+    timeouts = _request_timeout_opts()
     if "lmstudio" in used:
         providers["lmstudio"] = {
             "npm": "@ai-sdk/openai-compatible",
             "name": "LM Studio (local)",
-            "options": {"baseURL": lmstudio_base_url()},
+            "options": {"baseURL": lmstudio_base_url(), **timeouts},
             "models": {m: {} for m in sorted(used["lmstudio"])},
         }
     if "deepseek" in used:
         # DeepSeek is a built-in OpenCode provider (models.dev); we inject the
-        # key and DECLARE the models we use — OpenCode's registry may not know
-        # newer ids (e.g. deepseek-v4-flash), and declaring them here registers
-        # them so prompt_async doesn't silently no-op on an unknown model.
-        # Omit the block entirely if unconfigured (OpenCode errors clearly on
-        # use rather than us shipping an empty key).
+        # key and DECLARE the models we use so OpenCode's registry knows them.
+        # We ALSO set per-request timeouts (above) — without them a stuck DeepSeek
+        # call has no deadline and hangs the whole run. Omit the block entirely if
+        # unconfigured (OpenCode errors clearly on use rather than us shipping an
+        # empty key).
         key = deepseek_api_key()
         if key:
             providers["deepseek"] = {
-                "options": {"apiKey": key},
+                "options": {"apiKey": key, **timeouts},
                 "models": {m: {} for m in sorted(used["deepseek"])},
             }
     return providers

@@ -18,11 +18,13 @@ isolated app against a temp DB. Run for real with::
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .agents.a2a import MessageLog
 from .api import install_routes
@@ -76,12 +78,21 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
         try:
             yield
         finally:
+            # End every SSE /events stream first: those are infinite generators,
+            # so an open one makes uvicorn's graceful shutdown wait forever for the
+            # connection to close ("Waiting for connections to close"). Closing the
+            # bus pushes a sentinel that ends each subscriber. (The run entrypoint
+            # `python -m backend` also bakes in --timeout-graceful-shutdown as a
+            # backstop — see backend/__main__.py.)
+            for s in sessions.list():
+                s.bus.close()
             # Tear down each session's harness — native stops its RunningAgents,
-            # opencode kills its server process + cleans up. (The old loop only
-            # stopped native workers, leaking opencode servers/temp dirs.)
+            # opencode kills its server process + cleans up. Bounded so a wedged
+            # harness can't hang shutdown itself (the lifespan runs AFTER the
+            # connection wait, so a hang here is unbounded by the graceful cap).
             for s in sessions.list():
                 try:
-                    await s.harness.shutdown(s)
+                    await asyncio.wait_for(s.harness.shutdown(s), timeout=10)
                 except Exception:  # noqa: BLE001 — best-effort teardown
                     pass
             conn.close()
@@ -106,6 +117,18 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
         }
 
     install_routes(app)
+
+    # Single-process mode: if the frontend has been built, serve it from this
+    # same process so you can run ONE server (uvicorn WITHOUT --reload) for both
+    # API and UI. The point is dogfooding — when an agent edits THIS repo, there's
+    # no Vite HMR and no --reload to hot-swap code mid-run and kill the live
+    # session. Mounted LAST so the API/SSE routes above always win; skipped when
+    # dist/ is absent (then use the Vite dev server as usual). Rebuild + restart
+    # to pick up UI changes (intentional: stability during a run).
+    dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    if dist.is_dir():
+        app.mount("/", StaticFiles(directory=str(dist), html=True), name="frontend")
+
     return app
 
 

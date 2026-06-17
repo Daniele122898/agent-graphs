@@ -16,6 +16,7 @@ class NewTaskRequest(BaseModel):
     title: str = ""
     assigned_agent_id: str | None = None
     completion_signal: str = "self_reported"
+    timeout_hours: float = 1.0  # per-task wall-clock budget in hours (0 = no limit)
 
 
 class NewTeamRequest(BaseModel):

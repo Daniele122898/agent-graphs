@@ -131,9 +131,26 @@ def main() -> int:
         page.wait_for_timeout(500)
         task_prompt = "Verify the detail drawer shows this full prompt text."
         page.get_by_placeholder("What should the team do?").fill(task_prompt)
+        # per-task timeout field (hours) — set a distinctive value and confirm it
+        # persists onto the created task via the API.
+        timeout_input = page.locator("input[type='number']").first
+        if not timeout_input.is_visible():
+            failures.append("per-task timeout (hours) field missing from the New Task dialog")
+        else:
+            timeout_input.fill("3")
         page.get_by_role("button", name="Create task").click()
         page.wait_for_timeout(800)
         page.screenshot(path=str(SHOTS / "05_task_board.png"))
+        try:
+            sid = json.load(urllib.request.urlopen(f"{API}/api/sessions"))["sessions"][0]["id"]
+            tasks = json.load(urllib.request.urlopen(f"{API}/api/tasks?session_id={sid}"))["tasks"]
+            newest = tasks[-1]
+            if newest.get("timeout_hours") != 3:
+                failures.append(f"task timeout_hours did not persist (got {newest.get('timeout_hours')})")
+            else:
+                print("per-task timeout (hours) field persisted to the task")
+        except Exception as e:  # noqa: BLE001
+            failures.append(f"could not verify task timeout persistence: {e}")
         try:
             page.locator("button[aria-label^='Task:']").first.click()
             page.get_by_text("PROMPT", exact=True).wait_for(timeout=4000)

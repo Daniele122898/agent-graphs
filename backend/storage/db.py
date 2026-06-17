@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     assigned_agent_id   TEXT NOT NULL,
     status              TEXT NOT NULL DEFAULT 'queued',
     completion_signal   TEXT NOT NULL DEFAULT 'self_reported',
+    timeout_hours       REAL NOT NULL DEFAULT 1.0,    -- per-task wall-clock budget (0 = no limit)
     todos               TEXT NOT NULL DEFAULT '[]',  -- JSON
     parent_task_id      TEXT,
     delegation_chain    TEXT NOT NULL DEFAULT '[]',  -- JSON
@@ -128,6 +129,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE sessions ADD COLUMN harness TEXT NOT NULL DEFAULT 'native'")
     if "oc_session_id" not in column_names(conn, "agent_state"):
         conn.execute("ALTER TABLE agent_state ADD COLUMN oc_session_id TEXT NOT NULL DEFAULT ''")
+    if "timeout_hours" not in column_names(conn, "tasks"):
+        conn.execute("ALTER TABLE tasks ADD COLUMN timeout_hours REAL NOT NULL DEFAULT 1.0")
 
 
 def table_names(conn: sqlite3.Connection) -> set[str]:

@@ -236,7 +236,7 @@ class Harness(ABC):
         chain = list(chain or [])
         spec = check_delegation(session.graph, asker_id, target_id, chain)  # raises ModelRetry
         target_id = spec.id  # canonical id (target_id may have been a display name)
-        self._set_lifecycle(session, asker_id, "waiting-on-agent")
+        self._set_lifecycle(session, asker_id, "waiting-on-agent", waiting_on=[target_id])
         try:
             return await self._consult_one(
                 session, asker_id, target_id, question, usage=usage, chain=chain + [asker_id]
@@ -288,7 +288,7 @@ class Harness(ABC):
             except ModelRetry as e:  # isolate: a failed teammate must not sink the others
                 return tid, f"[consulting {tid} failed: {e}]"
 
-        self._set_lifecycle(session, asker_id, "waiting-on-agent")
+        self._set_lifecycle(session, asker_id, "waiting-on-agent", waiting_on=[tid for tid, _ in resolved])
         try:
             results = await asyncio.gather(*(_one(tid, q) for tid, q in resolved))
         finally:
@@ -326,9 +326,14 @@ class Harness(ABC):
 
     # --- shared event helpers (publish to the universal bus + registry) ------
 
-    def _set_lifecycle(self, session: "Session", agent_id: str, lifecycle: AgentLifecycle) -> None:
+    def _set_lifecycle(
+        self, session: "Session", agent_id: str, lifecycle: AgentLifecycle, *, waiting_on: list[str] | None = None
+    ) -> None:
         session.registry.set_lifecycle(agent_id, lifecycle)
-        session.bus.publish("agent_lifecycle", {"agent_id": agent_id, "lifecycle": lifecycle})
+        evt: dict = {"agent_id": agent_id, "lifecycle": lifecycle}
+        if waiting_on:  # who this agent is blocked on (so the UI shows WHO, not just "waiting")
+            evt["waiting_on"] = list(waiting_on)
+        session.bus.publish("agent_lifecycle", evt)
 
     def _record(self, session: "Session", frm: str, to: str, kind: str, body: str) -> None:
         session.bus.publish("a2a_message", {"from": frm, "to": to, "kind": kind, "body": body})

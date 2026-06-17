@@ -196,7 +196,7 @@ class Delegator:
         # The asker is visibly waiting, the target visibly working: delegation
         # runs through the target's RunningAgent (streamed events, shared
         # history, persisted state), not an invisible throwaway agent.
-        self._set_lifecycle(asker_id, "waiting-on-agent")
+        self._set_lifecycle(asker_id, "waiting-on-agent", waiting_on=[spec.id])
         try:
             return await self._run_one(asker_id, spec, question, usage, list(chain) + [asker_id])
         finally:
@@ -230,7 +230,7 @@ class Delegator:
             except ModelRetry as e:
                 return spec.id, f"[consulting {spec.id} failed: {e}]"
 
-        self._set_lifecycle(asker_id, "waiting-on-agent")
+        self._set_lifecycle(asker_id, "waiting-on-agent", waiting_on=[s.id for s, _ in specs])
         try:
             results = await asyncio.gather(*(_one(spec, q) for spec, q in specs))
         finally:
@@ -238,9 +238,12 @@ class Delegator:
         names = {n.spec.id: n.spec.name for n in self.session.graph.nodes}
         return "\n\n".join(f"From {names.get(tid, tid)} (`{tid}`):\n{ans}" for tid, ans in results)
 
-    def _set_lifecycle(self, agent_id: str, lifecycle: str) -> None:
+    def _set_lifecycle(self, agent_id: str, lifecycle: str, *, waiting_on: list[str] | None = None) -> None:
         self.session.registry.set_lifecycle(agent_id, lifecycle)
-        self.session.bus.publish("agent_lifecycle", {"agent_id": agent_id, "lifecycle": lifecycle})
+        evt: dict = {"agent_id": agent_id, "lifecycle": lifecycle}
+        if waiting_on:  # who this agent is blocked on (UI shows WHO, not just "waiting")
+            evt["waiting_on"] = list(waiting_on)
+        self.session.bus.publish("agent_lifecycle", evt)
 
     def _publish(self, frm: str, to: str, kind: str, body: str) -> None:
         self.session.bus.publish(

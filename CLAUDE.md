@@ -26,7 +26,7 @@ own `CLAUDE.md` with subsystem detail (loaded when you open files there).
 - **Team = definition (template); Session = running instance bound to a repo.** This image-vs-container split is the spine of the data model and runtime — designed in from day one so multi-repo is UI work, not a rewrite. One process holds `dict[session_id, Session]`.
 - **Nothing is a global singleton.** Each `Session` owns its own write-lock, LLM execution gateway, event bus, agent registry, usage tally. A global lock would wrongly serialize unrelated repos.
 - **Agents are long-lived background workers**, not request handlers. The UI observes and interjects.
-- **Tasks are first-class** with a status lifecycle and per-task completion gate (self-reported / reviewer agent / `check:` command). Code-level caps (turn/depth/revision) prevent runaway loops.
+- **Tasks are first-class** with a status lifecycle and per-task completion gate (self-reported / reviewer agent / `check:` command). Code-level caps (turn/depth/revision) plus a per-task **timeout in hours** (default 1h, 0 = no limit) prevent runaway loops. On opencode, a delegating agent's task is "done" only when its **whole delegation subtree** is (subtree-aware quiescence — see `backend/harness/CLAUDE.md`), never on a premature first turn.
 - **The LLM execution gateway is separate from the task system**: tasks = *what work exists*; gateway = *how model calls dispatch against compute* (serial on low-spec, else parallel). Don't conflate them.
 - **Models are per-agent, provider-agnostic, and injected** (never constructed in place) so tests use a scripted fake model.
 - **The agent harness is pluggable per session** (`backend/harness/`): `native` (our Pydantic AI engine) or `opencode` (a headless OpenCode server, pinned at `vendor/opencode`). Every agent operation routes through `session.harness`; both publish the SAME bus events + lifecycle, so the product (tasks, delegation, ask_user, control room) is harness-agnostic. See `backend/harness/CLAUDE.md`.
@@ -37,12 +37,21 @@ own `CLAUDE.md` with subsystem detail (loaded when you open files there).
 
 ## Run & test
 ```bash
-# backend (FastAPI :8000) — starts empty; create team + launch session in the UI
-# (the graceful-shutdown cap matters: open SSE /events streams never finish, so
-#  without it --reload wedges at "Waiting for connections to close" forever)
-./.venv/bin/python -m uvicorn backend.main:app --reload --port 8000 --timeout-graceful-shutdown 3
+# backend (FastAPI :8000) — starts empty; create team + launch session in the UI.
+# ALWAYS run via `python -m backend` (NOT raw `uvicorn backend.main:app`): the
+# entrypoint bakes in timeout_graceful_shutdown, without which an open SSE
+# /events stream wedges shutdown at "Waiting for connections to close" forever
+# (backend/__main__.py + runtime/bus.py explain why). --reload for dev.
+./.venv/bin/python -m backend --reload
 # frontend (Vite :5173, proxies /api /health /events)
 cd frontend && npm run dev
+# SINGLE-PROCESS (self-host) mode — for dogfooding the tool ON THIS REPO: build
+# the UI, then run the backend WITHOUT --reload; it serves the built frontend
+# from :8000 too (StaticFiles, added last so /api,/health,/events still win). No
+# Vite HMR + no --reload means an agent editing this repo can't hot-swap code
+# mid-run and kill the live session. Rebuild + restart for UI changes
+# (intentional). Skipped automatically if frontend/dist is absent.
+cd frontend && npm run build && cd .. && ./.venv/bin/python -m backend   # open :8000
 # backend tests — deterministic, token-free (FunctionModel); MUST be green
 ./.venv/bin/python -m pytest
 # frontend — type-check + build (no unit-test runner)

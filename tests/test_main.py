@@ -95,6 +95,25 @@ def test_retry_reruns_a_blocked_task_in_place(tmp_path, monkeypatch):
         assert client.post("/api/tasks/nope/retry").status_code == 404
 
 
+def test_single_process_serves_built_frontend_without_shadowing_api(tmp_path):
+    """Single-process mode: when frontend/dist exists, the backend serves the SPA
+    at '/' (so an agent editing this repo can't HMR/reload-break a live session),
+    but the API/SSE routes still win — the static mount is last."""
+    from pathlib import Path
+
+    dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    app = create_app(db_path=tmp_path / "app.sqlite")
+    with TestClient(app) as client:
+        # API/health always work regardless
+        assert client.get("/health").json()["status"] == "ok"
+        assert client.get("/api/teams").status_code == 200
+        root = client.get("/")
+        if dist.is_dir():  # only when the UI has been built
+            assert root.status_code == 200 and "text/html" in root.headers.get("content-type", "")
+        else:  # no dist → no SPA mount; '/' is simply not a route
+            assert root.status_code in (404, 405)
+
+
 def test_session_required_for_scoped_endpoints(tmp_path):
     app = create_app(db_path=tmp_path / "app.sqlite")
     with TestClient(app) as client:
