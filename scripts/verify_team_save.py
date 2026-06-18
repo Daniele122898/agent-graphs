@@ -45,6 +45,9 @@ def main() -> int:
             page.wait_for_timeout(600)
         page.get_by_placeholder("/Users/you/code/my-project").fill(REPO)
         page.wait_for_timeout(200)
+        # UI default is now opencode; this autosave check is harness-independent,
+        # so launch native to stay hermetic (no opencode server needed).
+        page.locator("label:has(span.field-label:text-is('Agent harness')) select").select_option("native")
         page.get_by_role("button", name="Launch session").click()
         page.locator("button.fab").wait_for(state="visible", timeout=15000)
 

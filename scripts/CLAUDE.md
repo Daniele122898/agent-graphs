@@ -35,6 +35,22 @@ wait on `networkidle` (the SSE `/events` stream never goes idle).
   behind persisting `oc_session_id` — OpenCode's on-disk store survives a respawn
   — without the backend/UI/model. Run: `./.venv/bin/python scripts/verify_oc_reattach.py`
   (needs the `opencode` binary). Verified passing 2026-06-14.
+- `verify_team_manage.py` — browser verification for the **Team Manager**
+  (`ManageTeamsDialog`): onboards a session, opens the header "Manage teams"
+  dialog and exercises create+describe / rename / describe / search /
+  block-if-bound (the in-use team shows which session holds it + has delete
+  DISABLED) / delete-unbound, asserting persistence via the API. Also checks the
+  agent-count + "used by {repo · mode}" line and the **opencode** harness default.
+  Needs a backend + Vite; point at an isolated stack via `AG_UI_URL` (defaults
+  :5181). Verified passing 2026-06-18.
+- `verify_shutdown.py` — **regression guard for the shutdown hang** (the
+  "Waiting for connections to close" bug that kept coming back). Launches the
+  backend WITHOUT `timeout_graceful_shutdown` on purpose, opens an SSE stream,
+  SIGINTs it, and asserts a bounded exit — proving the app-level signal fix
+  (`backend.main._install_sse_shutdown`) holds for native AND a live opencode
+  session (whose `serve` subprocess must also be torn down, none leaked). No
+  model needed. Run: `./.venv/bin/python scripts/verify_shutdown.py`. Bounded
+  measured ~0.3s native / ~0.5s opencode (vs ∞ before).
 - `verify_team_save.py` — browser regression for the **team-save data-loss
   class**: edits a team, switches the header team-selector to another team within
   the 600 ms autosave debounce window and back, then asserts via the API that the

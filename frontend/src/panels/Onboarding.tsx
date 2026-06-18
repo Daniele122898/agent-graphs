@@ -8,16 +8,18 @@ import { Button, Field, Select, TextInput } from "../lib/ui";
 export default function Onboarding({
   teams,
   onChanged,
+  onManage,
   onLaunched,
 }: {
   teams: TeamRow[];
   onChanged: () => Promise<void> | void;
+  onManage: () => void;
   onLaunched: (sessionId: string) => void;
 }) {
   const [teamId, setTeamId] = useState("");
   const [repo, setRepo] = useState("");
   const [mode, setMode] = useState<"parallel" | "serial">("parallel");
-  const [harness, setHarness] = useState<"native" | "opencode">("native");
+  const [harness, setHarness] = useState<"native" | "opencode">("opencode");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,7 +30,7 @@ export default function Onboarding({
   const createTeam = async () => {
     const name = window.prompt("Name your team:", "My Team");
     if (!name) return;
-    const t = await api.createTeam(name); // starter graph (one lead agent)
+    const t = await api.createTeam({ name }); // starter graph (one lead agent)
     await onChanged();
     setTeamId(t.id);
   };
@@ -69,11 +71,14 @@ export default function Onboarding({
               <div style={{ display: "flex", gap: 8 }}>
                 <Select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
                   {teams.map((t) => (
-                    <option key={t.id} value={t.id}>{t.name}</option>
+                    <option key={t.id} value={t.id} title={t.description || undefined}>{t.name}</option>
                   ))}
                 </Select>
                 <Button variant="secondary" onClick={createTeam} style={{ whiteSpace: "nowrap" }}>
                   + New
+                </Button>
+                <Button variant="ghost" onClick={onManage} style={{ whiteSpace: "nowrap" }} title="Rename, describe or delete teams">
+                  Manage
                 </Button>
               </div>
             </Field>
@@ -95,8 +100,8 @@ export default function Onboarding({
 
             <Field label="Agent harness">
               <Select value={harness} onChange={(e) => setHarness(e.target.value as "native" | "opencode")}>
-                <option value="native">native — built-in Pydantic AI engine</option>
                 <option value="opencode">opencode — drive a headless OpenCode server</option>
+                <option value="native">native — built-in Pydantic AI engine</option>
               </Select>
             </Field>
 

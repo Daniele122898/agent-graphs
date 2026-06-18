@@ -345,3 +345,29 @@ class SessionManager:
         """
         target = str(Path(repo_path).resolve())
         return [s for s in self._sessions.values() if str(s.repo_root) == target]
+
+    def sessions_using_team(self, team_id: str) -> list[SessionInfo]:
+        """Every PERSISTED session bound to this team (read straight from the
+        sessions table, which this manager owns — so it catches sessions that
+        haven't been rehydrated into memory too). Backs the block-if-bound guard
+        on team deletion: deleting a team a session uses would orphan it (a
+        resume after restart 404s, "team no longer exists"). Returns serializable
+        info so the endpoint can name the offending session(s)."""
+        rows = self._conn.execute(
+            "SELECT * FROM sessions WHERE team_id = ?", (team_id,)
+        ).fetchall()
+        infos: list[SessionInfo] = []
+        for row in rows:
+            keys = row.keys()
+            infos.append(
+                SessionInfo(
+                    id=row["id"],
+                    team_id=row["team_id"],
+                    repo_path=row["repo_path"],
+                    mode=row["mode"],
+                    status=row["status"],
+                    created_at=row["created_at"],
+                    harness=row["harness"] if "harness" in keys else "native",
+                )
+            )
+        return infos

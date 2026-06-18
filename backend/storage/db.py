@@ -31,6 +31,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS teams (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',     -- free-text "what this team is for"
     graph       TEXT NOT NULL DEFAULT '{}',   -- JSON: TeamGraph
     created_at  TEXT NOT NULL DEFAULT '',
     updated_at  TEXT NOT NULL DEFAULT ''
@@ -125,6 +126,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     column added to the schema above must also be back-filled here for the
     user's pre-existing ``db.sqlite``. Each step is guarded by a column check.
     """
+    if "description" not in column_names(conn, "teams"):
+        conn.execute("ALTER TABLE teams ADD COLUMN description TEXT NOT NULL DEFAULT ''")
     if "harness" not in column_names(conn, "sessions"):
         conn.execute("ALTER TABLE sessions ADD COLUMN harness TEXT NOT NULL DEFAULT 'native'")
     if "oc_session_id" not in column_names(conn, "agent_state"):

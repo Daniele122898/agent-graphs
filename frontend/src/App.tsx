@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import Canvas from "./canvas/Canvas";
+import ManageTeamsDialog from "./panels/ManageTeamsDialog";
 import Onboarding from "./panels/Onboarding";
 import Sidebar from "./panels/Sidebar";
 import SessionSwitcher from "./panels/SessionSwitcher";
@@ -28,6 +29,18 @@ function SaveDot({ status }: { status: string }) {
   );
 }
 
+// Sliders — "manage / configure the set of teams".
+function ManageIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <circle cx="6" cy="4.5" r="1.6" fill="var(--surface)" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="10.5" cy="8" r="1.6" fill="var(--surface)" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="5" cy="11.5" r="1.6" fill="var(--surface)" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  );
+}
+
 // Two overlapping rounded squares — the universal "copy / duplicate" glyph.
 function CopyIcon() {
   return (
@@ -48,6 +61,7 @@ export default function App() {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [activeTeamId, setActiveTeamId] = useState<string | null>(null);
   const [view, setView] = useState<"canvas" | "board">("canvas");
+  const [manageOpen, setManageOpen] = useState(false);
 
   const graph = useTeamGraph(activeTeamId);
   const { events, lifecycles, waitingOn, activeEdges } = useEvents(activeSessionId);
@@ -112,10 +126,21 @@ export default function App() {
   const saveAs = async () => {
     const name = window.prompt("Save the current graph as a NEW team (a copy):");
     if (!name) return;
-    const t = await api.createTeam(name, graph.snapshot());
+    const t = await api.createTeam({ name, graph: graph.snapshot() });
     setActiveTeamId(t.id);
     await refresh();
   };
+
+  // Reconcile the EDITED team against what exists: deleting the team currently
+  // on the canvas (allowed for any non-session team) would otherwise leave the
+  // editor pointed at a ghost id (a 404 on the next graph load). Fall back to the
+  // running session's team, else the first team.
+  useEffect(() => {
+    if (!teams.length || !activeTeamId) return;
+    if (!teams.some((t) => t.id === activeTeamId)) {
+      setActiveTeamId(session?.team_id ?? teams[0].id);
+    }
+  }, [teams, activeTeamId, session]);
 
   const agents = graph.nodes.map((n) => ({
     id: n.data.spec.id,
@@ -161,7 +186,7 @@ export default function App() {
                 style={{ width: "auto", minWidth: 150, maxWidth: 220 }}
               >
                 {teams.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
+                  <option key={t.id} value={t.id} title={t.description || undefined}>{t.name}</option>
                 ))}
               </Select>
               <SaveDot status={graph.status} />
@@ -184,6 +209,9 @@ export default function App() {
               )}
               <IconButton title="Save the current graph as a NEW team (a copy). Does not switch the running session." onClick={saveAs}>
                 <CopyIcon />
+              </IconButton>
+              <IconButton title="Manage teams — rename, describe, delete, or create a new team" onClick={() => setManageOpen(true)}>
+                <ManageIcon />
               </IconButton>
             </div>
 
@@ -286,7 +314,7 @@ export default function App() {
       </header>
 
       {!activeSessionId ? (
-        <Onboarding teams={teams} onChanged={refresh} onLaunched={async (id) => {
+        <Onboarding teams={teams} onChanged={refresh} onManage={() => setManageOpen(true)} onLaunched={async (id) => {
           await refresh();
           selectSession(id);
         }} />
@@ -326,6 +354,14 @@ export default function App() {
           />
         </div>
       )}
+
+      <ManageTeamsDialog
+        open={manageOpen}
+        teams={teams}
+        sessions={sessions}
+        onClose={() => setManageOpen(false)}
+        onChanged={refresh}
+      />
     </div>
   );
 }
