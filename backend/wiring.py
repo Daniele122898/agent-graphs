@@ -63,6 +63,28 @@ def default_entry_point(session: Session) -> str:
     return entry[0]
 
 
+# --- shared "refuse while busy" guards ---------------------------------------
+# ONE definition of the rule, reused by every endpoint that mutates state a live
+# run depends on (an agent's history, or the session's team/graph). Mutating
+# under a run corrupts the conversation the run is building (and can orphan the
+# worker). Any NEW session/agent-mutating endpoint MUST guard with one of these
+# rather than re-deriving the check (that omission is exactly how the rebind
+# endpoint first shipped able to corrupt a running session).
+
+def require_agent_idle(session: Session, agent_id: str) -> None:
+    """409 if this agent has a run in flight."""
+    if session.harness.is_busy(session, agent_id):
+        raise HTTPException(409, f"agent '{agent_id}' is mid-run — stop it first")
+
+
+def require_session_idle(session: Session) -> None:
+    """409 if ANY of the session's agents has a run in flight (session-wide
+    mutations like rebind need the whole session quiet, not just one agent)."""
+    busy = [n.spec.id for n in session.graph.nodes if session.harness.is_busy(session, n.spec.id)]
+    if busy:
+        raise HTTPException(409, f"session is busy (running: {', '.join(busy)}) — stop those agents first")
+
+
 def apply_team_graph(app: FastAPI, team_id: str, graph: TeamGraph) -> dict:
     """Validate + persist a team's graph. If the team is the one a running
     session is currently bound to, also sync the session's *pinned* graph so the

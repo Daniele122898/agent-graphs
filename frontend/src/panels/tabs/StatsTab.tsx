@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { api, type LMStudioModel } from "../../lib/api";
 import { bareModelId, type AgentSpec } from "../../lib/types";
 
@@ -19,43 +19,67 @@ export default function StatsTab({ spec }: { spec: AgentSpec }) {
     api.usage(spec.id).then(setUsage).catch(() => setUsage(null));
   }, [spec.model, spec.id]);
 
+  const truncated =
+    model?.loaded_context_length != null &&
+    model?.max_context_length != null &&
+    model.loaded_context_length < model.max_context_length;
+
   return (
-    <div style={{ padding: 16, fontSize: 13, display: "flex", flexDirection: "column", gap: 12 }}>
+    <div style={{ padding: 18, fontSize: 13, display: "flex", flexDirection: "column", gap: 18 }}>
       <div>
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>Model — {spec.model}</div>
-        {error && <div style={{ color: "#9ca3af" }}>LM Studio unreachable ({error})</div>}
+        <div className="field-label">MODEL</div>
+        <div className="mono" style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10, wordBreak: "break-all" }}>{spec.model}</div>
+        {error && <div style={{ color: "var(--text-faint)" }}>LM Studio unreachable ({error})</div>}
         {model ? (
-          <ul style={{ paddingLeft: 18, margin: 0 }}>
-            <li>state: {model.state}</li>
-            <li>arch: {model.arch}</li>
-            <li>quantization: {model.quantization}</li>
-            <li>capabilities: {model.capabilities?.join(", ") || "—"}</li>
-            <li>
-              context: {model.loaded_context_length} loaded / {model.max_context_length} max
-              {model.loaded_context_length != null &&
-                model.max_context_length != null &&
-                model.loaded_context_length < model.max_context_length && (
-                  <span style={{ color: "#d97706" }}> ⚠ raise in LM Studio to avoid truncation</span>
-                )}
-            </li>
-          </ul>
+          <KV
+            rows={[
+              ["State", model.state],
+              ["Architecture", model.arch],
+              ["Quantization", model.quantization],
+              ["Capabilities", model.capabilities?.join(", ") || "—"],
+              [
+                "Context",
+                <>
+                  {model.loaded_context_length} loaded / {model.max_context_length} max
+                  {truncated && <span style={{ color: "var(--warning)" }}> · ⚠ raise in LM Studio</span>}
+                </>,
+              ],
+            ]}
+          />
         ) : (
-          !error && <div style={{ color: "#9ca3af" }}>not a loaded LM Studio model</div>
+          !error && <div style={{ color: "var(--text-faint)" }}>Not a loaded LM Studio model.</div>
         )}
       </div>
 
       <div>
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>Usage (this session)</div>
+        <div className="field-label">USAGE (THIS SESSION)</div>
         {usage ? (
-          <ul style={{ paddingLeft: 18, margin: 0 }}>
-            <li>requests: {usage.requests}</li>
-            <li>input tokens: {usage.input_tokens}</li>
-            <li>output tokens: {usage.output_tokens}</li>
-          </ul>
+          <KV
+            rows={[
+              ["Requests", String(usage.requests)],
+              ["Input tokens", usage.input_tokens.toLocaleString()],
+              ["Output tokens", usage.output_tokens.toLocaleString()],
+            ]}
+          />
         ) : (
-          <div style={{ color: "#9ca3af" }}>no runs yet</div>
+          <div style={{ color: "var(--text-faint)" }}>No runs yet.</div>
         )}
       </div>
+    </div>
+  );
+}
+
+// A compact, scannable label/value grid — replaces the raw debug-style bullet
+// lists so the tab reads to the same standard as the rest of the app.
+function KV({ rows }: { rows: [string, ReactNode][] }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {rows.map(([k, v], i) => (
+        <div key={i} style={{ display: "flex", gap: 12, alignItems: "baseline" }}>
+          <span style={{ color: "var(--text-faint)", minWidth: 104, flexShrink: 0 }}>{k}</span>
+          <span style={{ color: "var(--text)", minWidth: 0 }}>{v}</span>
+        </div>
+      ))}
     </div>
   );
 }

@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 
 from .. import wiring
-from .schemas import LaunchSessionRequest, ModeRequest
+from .schemas import LaunchSessionRequest, ModeRequest, RebindSessionRequest
 
 
 def install(app: FastAPI) -> None:
@@ -67,4 +67,21 @@ def install(app: FastAPI) -> None:
         (default) or serial (low-spec, one model call at a time)."""
         session = wiring.resolve_session(app, session_id)
         session.gateway.set_mode(body.mode)
+        return session.info().model_dump()
+
+    @app.post("/api/sessions/{session_id}/rebind")
+    async def rebind_session(session_id: str, body: RebindSessionRequest) -> dict:
+        """Rebind a session to a different team. ASYNC so the session.graph swap
+        runs on the event loop, serialized with the harness's mid-run reads of it
+        (same reason PUT /api/teams/{id}/graph is async). 409 if the session is
+        busy — a rebind mid-run would corrupt the running conversation, and the
+        guard guarantees no removed agent has a worker to orphan. The in-memory
+        rebind + DB persistence are bundled in SessionManager.rebind (the
+        endpoint never touches the sessions table directly)."""
+        team = app.state.teams.get(body.team_id)
+        if team is None:
+            raise HTTPException(404, f"no team '{body.team_id}'")
+        session = wiring.resolve_session(app, session_id)
+        wiring.require_session_idle(session)
+        await app.state.sessions.rebind(session, body.team_id, team.graph)
         return session.info().model_dump()

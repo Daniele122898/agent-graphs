@@ -35,3 +35,11 @@ wait on `networkidle` (the SSE `/events` stream never goes idle).
   behind persisting `oc_session_id` — OpenCode's on-disk store survives a respawn
   — without the backend/UI/model. Run: `./.venv/bin/python scripts/verify_oc_reattach.py`
   (needs the `opencode` binary). Verified passing 2026-06-14.
+- `verify_team_save.py` — browser regression for the **team-save data-loss
+  class**: edits a team, switches the header team-selector to another team within
+  the 600 ms autosave debounce window and back, then asserts via the API that the
+  edit persisted (the bug the team-UX work both fixed and re-introduced). Needs a
+  backend + Vite up; point at the stack via `AG_UI_URL` (defaults to :5181 — an
+  isolated scripted stack, e.g. `scripted_backend.py 8011` + `npm run dev -- --port 5181`).
+  Verified passing 2026-06-18. Fold future autosave/state-switch checks here or
+  into `verify_ui.py` so there's one canonical UI gate.

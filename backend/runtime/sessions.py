@@ -56,6 +56,11 @@ class AgentRegistry:
     def detach_running(self, agent_id: str) -> None:
         self._running.pop(agent_id, None)
 
+    def unregister(self, agent_id: str) -> None:
+        """Remove an agent entirely from the registry (lifecycle + running worker)."""
+        self._lifecycle.pop(agent_id, None)
+        self._running.pop(agent_id, None)
+
     def running(self, agent_id: str) -> "RunningAgent | None":
         return self._running.get(agent_id)
 
@@ -138,6 +143,40 @@ class Session:
             created_at=self.created_at,
             harness=getattr(self.harness, "id", "native"),
         )
+
+
+    def repurposed_ids(self, new_graph: TeamGraph) -> list[str]:
+        """Agent ids present in BOTH the current and the new graph whose role
+        (display name) differs — i.e. the slot is being repurposed for a
+        different agent. Their stored conversation must NOT carry over (one
+        role's history bleeding into another). Identity for history-carry is
+        ``(id, name)``: same id + same name = the same agent evolving (keep
+        history through a persona/model tweak, mirroring native ``spec_changed``);
+        same id + different name = a different person reusing the slot (reset)."""
+        old = {n.spec.id: n.spec for n in self.graph.nodes}
+        new = {n.spec.id: n.spec for n in new_graph.nodes}
+        return [i for i in old.keys() & new.keys() if (old[i].name or "") != (new[i].name or "")]
+
+    def rebind(self, team_id: str, graph: TeamGraph) -> None:
+        """Rebind this session to a different team definition: update team_id +
+        graph and re-seed the registry (register new agents, keep shared ones,
+        unregister removed ones). The IN-MEMORY half only — history resets +
+        DB persistence are orchestrated by ``SessionManager.rebind`` (which is
+        async, so the ``self.graph`` swap is serialized on the event loop with
+        harness reads of it; see that method). Callers MUST go through the
+        manager, never mutate ``self.graph`` directly off the event loop."""
+        old_ids = set(self.registry.agent_ids())
+        self.team_id = team_id
+        self.graph = graph
+        new_ids = {node.spec.id for node in graph.nodes}
+        for node in graph.nodes:
+            if node.spec.id not in old_ids:
+                self.registry.register(node.spec.id, "idle")
+        # Removed agents: drop them from the registry. Safe only because rebind
+        # is guarded against a busy session (api/sessions.py), so no removed
+        # agent has a run in flight to orphan.
+        for removed_id in old_ids - new_ids:
+            self.registry.unregister(removed_id)
 
 
 class SessionManager:
@@ -228,6 +267,38 @@ class SessionManager:
             harness=self._build_harness(harness_id, repo_root),
         )
         self._sessions[session_id] = session
+        return session
+
+    async def rebind(self, session: Session, team_id: str, graph: TeamGraph) -> Session:
+        """Rebind a live session to a different team: reset history for any
+        REPURPOSED agent slot, re-seed the registry, and persist the new team_id
+        — the in-memory mutation and the DB write bundled here (the API endpoint
+        must NOT reach into the sessions table itself; table CRUD lives with its
+        owner). ASYNC so the ``session.graph`` swap runs on the event loop,
+        serialized against the harness's mid-run reads of ``session.graph`` (the
+        same reason ``PUT /api/teams/{id}/graph`` is async; a sync handler ran it
+        on a worker thread, racing those reads). Caller guards busy first
+        (``wiring.require_session_idle``)."""
+        old_ids = {n.spec.id for n in session.graph.nodes}
+        new_ids = {n.spec.id for n in graph.nodes}
+        repurposed = session.repurposed_ids(graph)
+        removed = old_ids - new_ids
+        session.rebind(team_id, graph)
+        # A repurposed slot keeps its id but is a different agent now → clear its
+        # carried-over conversation so the new role starts fresh (native: wipe
+        # stored messages; opencode: drop the reattach pointer + OC session).
+        for agent_id in repurposed:
+            try:
+                await session.harness.clear_history(session, agent_id)
+            except Exception:  # noqa: BLE001 — a clear failure must not abort the rebind
+                pass
+        # A removed id has no live identity to carry — drop its persisted row so
+        # re-adding that id later (even for a different role) can't inherit the
+        # stale transcript / OC session (history identity is (id, name)).
+        for agent_id in removed:
+            self._state_store.delete(session.id, agent_id)
+        self._conn.execute("UPDATE sessions SET team_id = ? WHERE id = ?", (team_id, session.id))
+        self._conn.commit()
         return session
 
     def _row_to_session(self, row: sqlite3.Row, graph: TeamGraph) -> Session:

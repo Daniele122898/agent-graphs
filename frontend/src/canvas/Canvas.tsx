@@ -35,7 +35,6 @@ export default function Canvas(props: {
   onSelectionChange: (p: OnSelectionChangeParams) => void;
   onUpdateEdgeCurve: (edgeId: string, curve: number) => void;
   addNode: () => void;
-  status: string;
   activeEdges: Set<string>;
 }) {
   // Inject the live lifecycle + who-it's-waiting-on into each node's data so
@@ -94,12 +93,6 @@ export default function Canvas(props: {
       >
         +
       </button>
-      <span
-        className={props.status.includes("error") ? "chip chip-danger" : "chip"}
-        style={{ position: "absolute", bottom: 24, left: 72, zIndex: 5 }}
-      >
-        {props.status}
-      </span>
     </div>
   );
 }

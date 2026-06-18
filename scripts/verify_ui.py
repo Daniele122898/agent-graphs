@@ -85,17 +85,24 @@ def main() -> int:
                 failures.append(f"FAB on RIGHT (x={box['x']:.0f})")
             print(f"FAB at x={box['x']:.0f} y={box['y']:.0f}")
 
-        # select lead, open Agent tab, send a message, confirm user bubble
+        # select lead, open Agent tab, send a message via the ENTER KEY (standard
+        # chat UX — Enter sends, Shift+Enter is a newline), confirm the user bubble
         page.get_by_text("Lead", exact=True).first.click()
         page.wait_for_timeout(300)
         page.get_by_role("button", name="Agent", exact=True).click()
         page.wait_for_timeout(300)
-        page.locator("textarea").fill("Say hello in one short sentence.")
-        page.get_by_role("button", name="Run").click()
+        ta = page.locator("textarea").first
+        ta.fill("Say hello in one short sentence.")
+        ta.press("Shift+Enter")  # must NOT send (newline)
+        if ta.input_value().strip() == "":
+            failures.append("Shift+Enter sent the message (should insert a newline)")
+        ta.press("Enter")        # must send
         try:
-            page.get_by_text("Say hello in one short sentence.").wait_for(timeout=8000)
+            page.get_by_text("Say hello in one short sentence.").first.wait_for(timeout=8000)
         except Exception:
-            failures.append("user message bubble did not appear")
+            failures.append("Enter did not send the message (no user bubble)")
+        if page.locator("textarea").first.input_value().strip() != "":
+            failures.append("composer did not clear after Enter-to-send")
         page.wait_for_timeout(600)
         page.screenshot(path=str(SHOTS / "03_agent_chat.png"))
         try:

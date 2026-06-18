@@ -33,11 +33,9 @@ def install(app: FastAPI) -> None:
         await session.harness.submit(session, agent_id, body.prompt)
         return {"status": "queued", "agent_id": agent_id}
 
-    def _require_not_busy(session, agent_id: str) -> None:
-        # Mutating history under a run would corrupt the conversation the run
-        # is building.
-        if session.harness.is_busy(session, agent_id):
-            raise HTTPException(409, "agent is mid-run — stop it first")
+    # The "refuse history mutation while the agent is mid-run" guard lives in
+    # wiring (require_agent_idle) — one definition shared with the session-level
+    # rebind guard, so the rule can't drift between endpoints.
 
     @app.get("/api/agent/{agent_id}/history")
     async def agent_history(agent_id: str, session_id: str | None = None) -> dict:
@@ -52,7 +50,7 @@ def install(app: FastAPI) -> None:
         capabilities, neighbors, environment) are rebuilt every request, so
         the agent keeps its identity — it just forgets the conversation."""
         session = wiring.resolve_session(app, session_id)
-        _require_not_busy(session, agent_id)
+        wiring.require_agent_idle(session, agent_id)
         await session.harness.clear_history(session, agent_id)
         return {"status": "cleared", "agent_id": agent_id}
 
@@ -61,7 +59,7 @@ def install(app: FastAPI) -> None:
         """Compact the conversation: ask the agent's model to summarize it,
         then replace the history with just the summary."""
         session = wiring.resolve_session(app, session_id)
-        _require_not_busy(session, agent_id)
+        wiring.require_agent_idle(session, agent_id)
         try:
             rows = await session.harness.summarize_history(session, agent_id)
         except HTTPException:

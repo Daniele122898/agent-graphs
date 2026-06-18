@@ -15,16 +15,19 @@ const COLUMNS: { key: string; label: string; statuses: string[] }[] = [
   { key: "done", label: "Done", statuses: ["done", "failed", "cancelled"] },
 ];
 
+// Status dot colours, drawn from the design tokens (not raw hex) so the board
+// stays coherent with the rest of the app.
 const STATUS_COLOR: Record<string, string> = {
-  queued: "#9aa4b2",
-  running: "#15803d",
-  needs_revision: "#b45309",
-  needs_review: "#2563eb",
-  blocked: "#c2341d",
-  done: "#15803d",
-  failed: "#c2341d",
-  cancelled: "#9aa4b2",
+  queued: "var(--text-faint)",
+  running: "var(--success)",
+  needs_revision: "var(--warning)",
+  needs_review: "var(--primary)",
+  blocked: "var(--danger)",
+  done: "var(--success)",
+  failed: "var(--danger)",
+  cancelled: "var(--text-faint)",
 };
+const dotColor = (status: string) => STATUS_COLOR[status] ?? "var(--text-faint)";
 
 const TODO_MARK: Record<string, string> = { pending: "☐", in_progress: "◐", completed: "☑" };
 
@@ -127,9 +130,13 @@ function TaskCard({
         width: "100%",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-        <span style={{ width: 8, height: 8, borderRadius: "50%", background: STATUS_COLOR[task.status] ?? "#9aa4b2", flexShrink: 0 }} />
-        <strong style={{ fontSize: 12.5 }}>{task.title}</strong>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 7 }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor(task.status), flexShrink: 0, marginTop: 4 }} />
+        {/* clamp to 2 lines + ellipsis — an untitled task uses prompt[:60], which
+            otherwise wraps to 5 lines and cuts mid-word */}
+        <strong style={{ fontSize: 12.5, lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "break-word" }}>
+          {task.title}
+        </strong>
       </div>
       {/* untitled tasks get title = prompt[:60]; skip the redundant preview then */}
       {!task.prompt.startsWith(task.title) && (
@@ -191,7 +198,7 @@ function TaskDetail({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
-        <span style={{ width: 9, height: 9, borderRadius: "50%", background: STATUS_COLOR[task.status] ?? "#9aa4b2" }} />
+        <span style={{ width: 9, height: 9, borderRadius: "50%", background: dotColor(task.status) }} />
         <strong style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {task.title}
         </strong>
@@ -237,8 +244,8 @@ function TaskDetail({
                 wordBreak: "break-word",
                 padding: 10,
                 borderRadius: "var(--r-sm)",
-                background: failed ? "#fee2e2" : "#dcfce7",
-                color: failed ? "#991b1b" : "#166534",
+                background: failed ? "var(--danger-soft)" : "var(--success-soft)",
+                color: failed ? "var(--danger)" : "var(--success)",
               }}
             >
               {task.result}
@@ -255,7 +262,7 @@ function TaskDetail({
                 className="card"
                 style={{ padding: 8, textAlign: "left", cursor: "pointer", font: "inherit", width: "100%", marginBottom: 6 }}
               >
-                <span style={{ width: 7, height: 7, borderRadius: "50%", display: "inline-block", marginRight: 6, background: STATUS_COLOR[s.status] ?? "#9aa4b2" }} />
+                <span style={{ width: 7, height: 7, borderRadius: "50%", display: "inline-block", marginRight: 6, background: dotColor(s.status) }} />
                 {s.title} <span className="muted">({s.status})</span>
               </button>
             ))}

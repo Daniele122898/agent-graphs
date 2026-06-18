@@ -1308,3 +1308,153 @@ per-hop and lock_timeout was overloaded as the run bound.
   [Planner], Planner on [Backend, Frontend]) so the edge animation lights through
   the whole subtree; **no "operation timed out" / "did not complete within Ns"**
   (the failures reported). Subtree-await confirmed on real models.
+
+### 2026-06-17 — Team UX fixes: name in header, flush-save, selector, rebind
+
+- **Bug investigation (user) identified 5 issues:** (1) no team name in header, (2)
+  debounce timing race causing stale graphs on session launch, (3) "Save as team"
+  didn't switch `activeTeamId`, (4) no way to change teams/sessions, (5) save
+  indicator vague.
+- **Backend verified correct:** `apply_team_graph()` persists correctly, `launch_session()`
+  reads latest from DB. All tests pass. The bugs were frontend + a timing gap.
+- **Fix A — team name chip:** `App.tsx` derives `teamName` from `teams` array and
+  `session.team_id`, renders as a `.chip-primary` in the header. Reversibility:
+  cosmetic, trivial to remove.
+- **Fix B — `flushSave()`:** `useTeamGraph.ts` exposes a `flushSave()` that cancels
+  the 600ms debounce timer and immediately persists. `SessionSwitcher` calls it
+  before `api.launchSession()`, eliminating the race where a new session could pick
+  up a stale graph. Reversibility: the debounce still runs normally; `flushSave` is
+  only called before launch.
+- **Fix C — team selector dropdown:** replaces the static name chip with a
+  `<Select>` listing all teams, allowing the editor to load any team's graph
+  (independent of the running session). Editing a non-session team does not affect
+  the running session by design (`apply_team_graph` only syncs bound sessions).
+  Reversibility: could revert to chip if selector proves confusing.
+- **Fix D — save-as switches editor:** after `api.createTeam()`, `activeTeamId` is
+  updated to the new team's id so subsequent edits go to the right team.
+  Reversibility: one-line removal.
+- **Fix E — session rebind endpoint:** `POST /api/sessions/{id}/rebind` updates a
+  session's `team_id` and `graph`, re-seeds the agent registry (preserving agents
+  that exist in both graphs, registering new ones, detaching removed ones).
+  Persists to DB. Frontend `api.rebindSession()` wraps it. Reversibility: the
+  endpoint can be removed; sessions revert to pin-at-launch.
+- **Fix F — save indicator:** status changed from `"saved"` to `"saved — ${teamName}"`
+  so users know where edits land. Reversibility: string change.
+- **Cherry-picked from `team-swapping` branch** onto `deepseek-trial` (commit
+  `30e29ec`). Frontend conflicts resolved by accepting our version (Fixes A-F
+  already complete).
+
+### 2026-06-17 — Team UX fixes follow-ups: rebind button, save-as rebind, dead code, bug fixes
+
+Follow-up refinements to the team UX fixes above:
+
+- **↻ Use for session button:** a `Button` next to the team selector dropdown that
+  appears when `activeTeamId !== session.team_id`. Calls `api.rebindSession()` then
+  `refresh()` so the session immediately reflects the new binding. Previously there
+  was no way to rebind a running session to a different team — the selector was
+  editor-only. Reversibility: one button in `App.tsx`.
+- **Save-as rebinds the session:** after creating a new team via "Save as team…",
+  the session is now rebound to the new team via `api.rebindSession()` and the
+  editor switches to it (`setActiveTeamId(t.id)`) — the new team replaces the old
+  one as the session's definition. Without this, the running session stayed bound
+  to the old team while the editor showed the new one, silently diverging.
+  Reversibility: remove the `rebindSession` call from `saveAs`.
+- **Dead code removed:** `flushSave` prop and call removed from `Onboarding.tsx`
+  entirely — during onboarding, `teamId` is always null (no graph editor), so the
+  flush was always a no-op with a stale `teamId` reference. `SessionSwitcher`
+  retains the flush because it operates on an active team. Reversibility: trivial
+  to re-add if Onboarding ever edits before launching.
+- **Bug fix — session state after rebind:** both rebind call sites (rebind button
+  and save-as) now capture the `SessionInfo` returned by `api.rebindSession()` and
+  call `setSession(info)`, so the UI immediately reflects the new `team_id` in the
+  "(active)" marker. Without this, the header still showed the old team as active
+  until the next poll. Reversibility: the two `setSession` calls.
+- **Bug fix — stale `teamName` closure:** `useTeamGraph`'s save-completion handlers
+  referenced `teamName` from the closure (captured when a `useEffect` or `setTimeout`
+  callback was scheduled), which could be stale. Fixed with a `teamNameRef` pattern
+  (`useRef`, updated on every render): status strings like `"saved — ${teamName}"`
+  always read the latest ref, never a captured value. Reversibility: local ref change.
+- **4 new backend tests** cover rebind: valid rebind (team_id + registry updated),
+  404 on nonexistent team, 404 on nonexistent session, and registry re-seeding when
+  the new graph has different agents (old agents removed, new ones added).
+  `AgentRegistry.unregister()` added for the detach path. 186 tests green, frontend
+  build clean.
+
+### 2026-06-18 — Review of the team-UX changes + STRUCTURAL prevention pass
+
+An adversarial review of the above team-UX work (deepseek-trial) found that,
+while the headline #1 fix was real, the changes shipped/left several bugs. Fixed
+each at the STRUCTURAL level (so the class is prevented, not just the instance),
+and added durable guards in code + CLAUDE.md.
+
+- **The deeper pattern (the why):** every bug here was a correctness invariant
+  that lived only as a *convention/comment* or was wired into *one* of several
+  call sites, so the next call site silently inherited nothing — and a clean
+  `tsc`/build looked "done" because the only automatic gate (type-check) is blind
+  to a dropped autosave or an unguarded endpoint. Fix the meta-cause, not just the
+  instances: **move invariants to a choke point the code is forced through, and
+  add an executable gate that can SEE the failure.**
+- **Data loss on team-switch (HIGHEST):** the debounced autosave only flushed
+  before launch; the new selector switched teams without flushing → edits dropped.
+  Fix: `useTeamGraph` now OWNS flush-on-switch + flush-on-unmount (a `[teamId]`
+  cleanup), so every control inherits it. Browser regression `verify_team_save.py`.
+- **Rebind concurrency + layering:** rebind was a sync `def` mutating
+  `session.graph` off the loop + reaching into `sessions._conn`. Fix: `async`
+  `SessionManager.rebind` (event-loop swap, bundled DB write).
+- **Rebind busy-guard:** none → could corrupt a running session. Fix: shared
+  `wiring.require_session_idle`/`require_agent_idle` (one rule, also adopted by
+  the history endpoints).
+- **History bleed (id-only identity):** fixed first only in rebind, but the review
+  found the SAME class one call site over — an in-place RENAME via
+  `apply_team_graph`→`obtain_worker` still carried the old role's transcript. Fix:
+  gate the carry on identity `(id, name)` at `obtain_worker` (the one
+  get-or-create choke point → covers run/task/delegation/rename/rebind); removed
+  ids drop their `agent_state` row (`AgentStateStore.delete`).
+- **Save-as UX:** "Save as team…" silently rebound the session → made it a pure
+  fork ("Save as new team…", editor-only); save indicator hoisted to the header.
+- **Executable backstops:** `tests/test_endpoint_contracts.py` asserts the
+  `session.graph` mutators are `async` and that every POST/PUT under
+  `/api/session(s)|/api/agent` is classified guarded/exempt (a new route fails
+  until classified). A **Definition of Done** checklist added to the root
+  `CLAUDE.md` (build is necessary, never sufficient; UI-behavior change ⇒ a
+  browser regression; mutating endpoint ⇒ guard+async+owner+contract-test).
+  Invariants documented in `backend/{api,runtime}/CLAUDE.md` + `frontend/CLAUDE.md`.
+- **Recorded backlog directions (not done — a documented invariant + the tests
+  above suffice single-user):** extract a reusable `useDebouncedAutosave` hook; a
+  guarded `Session.set_graph` collapsing the two `session.graph` writers; a named
+  `AgentSpec.same_agent_as`/`identity()` imported by every carry point; an
+  `agent_state.name` column so a rename ACROSS a backend restart (no live worker
+  to compare) is also detected (today that narrow edge isn't).
+- **Reversibility:** all fixes are local/within-feature; no interface removed.
+
+### 2026-06-18 — UX/UI refresh of the header + agent composer (with screenshots)
+
+Drove the real app with Playwright (the prior round shipped on type-check alone —
+the DoD now forbids that) and found the reported UX missteps were real:
+
+- **What the screenshots showed:** the "saved — {team}" chip wrapped to TWO lines;
+  the team and session dropdowns were identical bare `<Select>`s (indistinguishable);
+  "+ Session" / "Save as new team…" floated ungrouped; the "native harness" chip
+  also wrapped; the agent STATUS pill showed raw ids ("waiting-on-agent") and the
+  "⏳ on …" list didn't truncate; Enter didn't send in the composer.
+- **Header redesign:** two captioned, hairline-divided zones — TEAM (select +
+  compact `SaveDot` "● Saved" + "running" tag / "↻ Use for session" + a CopyIcon
+  "save as new team") and SESSION (select + "+ New"); right zone = mode/harness
+  chips + Canvas|Tasks toggle. Team-name select width-capped so a long name can't
+  blow up the bar.
+- **Coherence fix at the token level:** `.chip` is now `white-space: nowrap`
+  (chips are single-line tokens; the wrapping was a class-wide bug). New helpers:
+  `.hzone/.hcap/.hdiv`, `.savedot`, `.runtag`, `.chip-button`, `.kbd`.
+- **Agent view:** short status labels (`LIFECYCLE_LABEL`: "Waiting", "Needs you"),
+  the "waiting on …" list truncates with ellipsis + a `title`; the composer sends
+  on **Enter** (Shift+Enter = newline, IME-guarded) with a `.kbd` hint.
+- **Verified in a browser + made permanent:** `verify_team_save.py` now also
+  asserts the Team/Session captions + a compact save dot; `verify_ui.py`'s agent
+  step now drives **Enter-to-send** (Shift+Enter must NOT send; Enter sends +
+  clears). Before/after screenshots confirmed the fixes.
+- **Why it happened (meta):** UI was validated by `tsc` only, which is blind to
+  layout/wrapping/affordance — exactly what the new Definition-of-Done (browser
+  regression for UI changes) exists to prevent. Used the frontend-design skill's
+  rigor (hierarchy, restraint, coherence) within the existing light-theme tokens —
+  no new aesthetic imposed.
+- **Reversibility:** all presentational; tokens + primitives unchanged in spirit.

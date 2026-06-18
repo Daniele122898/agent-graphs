@@ -14,6 +14,17 @@ const LIFECYCLE_TONE: Record<AgentLifecycle, "default" | "primary" | "success" |
   done: "primary",
 };
 
+// Short, fixed labels so the status pill never balloons (the raw lifecycle ids
+// like "waiting-on-agent" overflowed the row).
+const LIFECYCLE_LABEL: Record<AgentLifecycle, string> = {
+  idle: "Idle",
+  running: "Running",
+  "waiting-on-agent": "Waiting",
+  "waiting-on-user": "Needs you",
+  blocked: "Blocked",
+  done: "Done",
+};
+
 // Agent tab: the live work. Give the agent a prompt, then watch it stream
 // thinking / text / tool calls / results, with a live todo checklist. This is
 // the "observe + interject" surface (interjection mid-run lands in Phase 3).
@@ -194,13 +205,17 @@ export default function AgentTab({
 
   return (
     <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, height: "100%" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span className="field-label" style={{ margin: 0 }}>STATUS</span>
-        <Chip tone={LIFECYCLE_TONE[lifecycle]}>{lifecycle}</Chip>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        <Chip tone={LIFECYCLE_TONE[lifecycle]}>{LIFECYCLE_LABEL[lifecycle]}</Chip>
         {lifecycle === "waiting-on-agent" && waitingOnNames && waitingOnNames.length > 0 && (
-          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>⏳ on {waitingOnNames.join(", ")}</span>
+          <span
+            title={`Waiting on ${waitingOnNames.join(", ")}`}
+            style={{ fontSize: 12, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}
+          >
+            ⏳ {waitingOnNames.join(", ")}
+          </span>
         )}
-        <span style={{ flex: 1 }} />
+        <span style={{ flex: 1, minWidth: 8 }} />
         <Button size="sm" onClick={clearHistory} disabled={busy || working !== null || !hasConversation} title="Forget the whole conversation; keep the agent's identity">
           {working === "clear" ? "Clearing…" : "Clear"}
         </Button>
@@ -209,7 +224,7 @@ export default function AgentTab({
         </Button>
       </div>
       {historyError && (
-        <div style={{ fontSize: 12, color: "#991b1b", background: "#fee2e2", borderRadius: "var(--r-sm)", padding: "6px 10px" }}>
+        <div style={{ fontSize: 12, color: "var(--danger)", background: "var(--danger-soft)", borderRadius: "var(--r-sm)", padding: "6px 10px" }}>
           {historyError}
         </div>
       )}
@@ -217,10 +232,18 @@ export default function AgentTab({
       <TextArea
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
+        onKeyDown={(e) => {
+          // Standard chat UX: Enter sends, Shift+Enter inserts a newline. Guard
+          // isComposing so an IME confirm doesn't send a half-typed message.
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            void run();
+          }
+        }}
         rows={3}
         placeholder={busy ? "Interject a message (runs after the current step)…" : "Give this agent a task…"}
       />
-      <div style={{ display: "flex", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <Button variant="primary" onClick={run} disabled={posting || !prompt.trim()}>
           {posting ? "Starting…" : busy ? "Interject" : "Run"}
         </Button>
@@ -229,6 +252,10 @@ export default function AgentTab({
             Stop
           </Button>
         )}
+        <span style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color: "var(--text-faint)" }}>
+          <span className="kbd">Enter</span> send · <span className="kbd">⇧ Enter</span> newline
+        </span>
       </div>
 
       {questions.map((q) => (

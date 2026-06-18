@@ -310,9 +310,22 @@ async def obtain_worker(
     if existing is not None:
         if not existing.spec_changed(spec):
             return existing
-        prior_messages = list(existing.messages)
+        # History carry-forward is gated on identity (id, name), NOT id alone:
+        # a graph editor reuses an id for a DIFFERENT role (rename the node), and
+        # the old role's transcript must not bleed into the new one. Same id +
+        # same name = the same agent evolving (keep history through a
+        # persona/model/caps tweak); same id + different name = a repurposed slot
+        # (reset). This is the choke point for EVERY rebuild path — an in-place
+        # rename via PUT /teams/{id}/graph lands here too, not just rebind. See
+        # backend/runtime/CLAUDE.md ("Agent identity for history carry-forward").
+        renamed = (existing.spec.name or "") != (spec.name or "")
+        prior_messages = [] if renamed else list(existing.messages)
         await existing.stop()
         session.registry.detach_running(spec.id)
+        if renamed and state_store is not None:
+            # also wipe the persisted row so a later reload (load_messages) can't
+            # resurrect the old role's history.
+            state_store.save(session.id, spec.id, messages=[], lifecycle="idle", usage=None)
     else:
         prior_messages = state_store.load_messages(session.id, spec.id) if state_store else []
 

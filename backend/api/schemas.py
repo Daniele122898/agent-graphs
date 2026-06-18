@@ -39,6 +39,11 @@ class LaunchSessionRequest(BaseModel):
     harness: str | None = None  # native | opencode (default from config)
 
 
+
+class RebindSessionRequest(BaseModel):
+    """Request body for rebinding a session to a different team."""
+    team_id: str
+
 class AskAgentInternalRequest(BaseModel):
     """Body of the OpenCode ask_agent callback (see harness/opencode/config.py).
     Localhost-only, authenticated by a per-session token header."""
