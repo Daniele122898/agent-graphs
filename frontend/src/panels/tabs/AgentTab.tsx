@@ -224,7 +224,7 @@ export default function AgentTab({
         </Button>
       </div>
       {historyError && (
-        <div style={{ fontSize: 12, color: "#991b1b", background: "#fee2e2", borderRadius: "var(--r-sm)", padding: "6px 10px" }}>
+        <div style={{ fontSize: 12, color: "var(--danger)", background: "var(--danger-soft)", borderRadius: "var(--r-sm)", padding: "6px 10px" }}>
           {historyError}
         </div>
       )}
