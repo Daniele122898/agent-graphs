@@ -57,7 +57,8 @@ export default function SessionSwitcher({
       <Select
         value={activeSessionId ?? ""}
         onChange={(e) => onSwitch(e.target.value)}
-        style={{ width: "auto", minWidth: 180 }}
+        title="The running session you're operating (a team bound to a repo)"
+        style={{ width: "auto", minWidth: 150, maxWidth: 240 }}
       >
         {sessions.map((s) => (
           <option key={s.id} value={s.id}>
@@ -65,8 +66,8 @@ export default function SessionSwitcher({
           </option>
         ))}
       </Select>
-      <Button variant="ghost" size="sm" onClick={() => setOpen((v) => !v)}>
-        + Session
+      <Button variant="ghost" size="sm" title="Launch a new session" onClick={() => setOpen((v) => !v)}>
+        + New
       </Button>
 
       {open && (

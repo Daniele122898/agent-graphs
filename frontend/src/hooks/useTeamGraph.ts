@@ -27,16 +27,17 @@ function newAgentSpec(id: string): AgentSpec {
   };
 }
 
-export function useTeamGraph(teamId: string | null, teamName?: string) {
+export function useTeamGraph(teamId: string | null) {
   const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  // Short status: "loading…" | "saving…" | "saved" | "save error: …". The team
+  // it refers to is shown by the adjacent header selector, so the name is not
+  // repeated here (a "saved — Long Team Name" string made an oversized chip).
   const [status, setStatus] = useState("loading…");
   const loaded = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const teamNameRef = useRef(teamName);
-  teamNameRef.current = teamName;
   // `dirty` = there are edits not yet known-persisted; `snapshotRef` = the
   // latest graph to persist. Together they let the flush-on-switch effect below
   // save the OUTGOING team before the canvas is replaced — see that effect.
@@ -59,7 +60,7 @@ export function useTeamGraph(teamId: string | null, teamName?: string) {
         setNodes(n);
         setEdges(e);
         loaded.current = true;
-        setStatus(`saved — ${teamNameRef.current || 'team'}`);
+        setStatus("saved");
       })
       .catch((err) => {
         if (!cancelled) setStatus(`load error: ${err}`);
@@ -82,7 +83,7 @@ export function useTeamGraph(teamId: string | null, teamName?: string) {
       const snap = snapshotRef.current!;
       api
         .putTeamGraph(teamId, snap)
-        .then(() => { dirty.current = false; setStatus(`saved — ${teamNameRef.current || 'team'}`); })
+        .then(() => { dirty.current = false; setStatus("saved"); })
         .catch((err) => setStatus(`save error: ${err}`));
     }, 600);
     return () => {
@@ -198,12 +199,12 @@ export function useTeamGraph(teamId: string | null, teamName?: string) {
     try {
       await api.putTeamGraph(teamId, fromReactFlow(nodes, edges));
       dirty.current = false;
-      setStatus(`saved — ${teamName || 'team'}`);
+      setStatus("saved");
     } catch (err) {
       setStatus(`save error: ${err}`);
       throw err;
     }
-  }, [teamId, nodes, edges, teamName]);
+  }, [teamId, nodes, edges]);
 
   return {
     nodes,

@@ -1426,3 +1426,35 @@ and added durable guards in code + CLAUDE.md.
   `agent_state.name` column so a rename ACROSS a backend restart (no live worker
   to compare) is also detected (today that narrow edge isn't).
 - **Reversibility:** all fixes are local/within-feature; no interface removed.
+
+### 2026-06-18 — UX/UI refresh of the header + agent composer (with screenshots)
+
+Drove the real app with Playwright (the prior round shipped on type-check alone —
+the DoD now forbids that) and found the reported UX missteps were real:
+
+- **What the screenshots showed:** the "saved — {team}" chip wrapped to TWO lines;
+  the team and session dropdowns were identical bare `<Select>`s (indistinguishable);
+  "+ Session" / "Save as new team…" floated ungrouped; the "native harness" chip
+  also wrapped; the agent STATUS pill showed raw ids ("waiting-on-agent") and the
+  "⏳ on …" list didn't truncate; Enter didn't send in the composer.
+- **Header redesign:** two captioned, hairline-divided zones — TEAM (select +
+  compact `SaveDot` "● Saved" + "running" tag / "↻ Use for session" + a CopyIcon
+  "save as new team") and SESSION (select + "+ New"); right zone = mode/harness
+  chips + Canvas|Tasks toggle. Team-name select width-capped so a long name can't
+  blow up the bar.
+- **Coherence fix at the token level:** `.chip` is now `white-space: nowrap`
+  (chips are single-line tokens; the wrapping was a class-wide bug). New helpers:
+  `.hzone/.hcap/.hdiv`, `.savedot`, `.runtag`, `.chip-button`, `.kbd`.
+- **Agent view:** short status labels (`LIFECYCLE_LABEL`: "Waiting", "Needs you"),
+  the "waiting on …" list truncates with ellipsis + a `title`; the composer sends
+  on **Enter** (Shift+Enter = newline, IME-guarded) with a `.kbd` hint.
+- **Verified in a browser + made permanent:** `verify_team_save.py` now also
+  asserts the Team/Session captions + a compact save dot; `verify_ui.py`'s agent
+  step now drives **Enter-to-send** (Shift+Enter must NOT send; Enter sends +
+  clears). Before/after screenshots confirmed the fixes.
+- **Why it happened (meta):** UI was validated by `tsc` only, which is blind to
+  layout/wrapping/affordance — exactly what the new Definition-of-Done (browser
+  regression for UI changes) exists to prevent. Used the frontend-design skill's
+  rigor (hierarchy, restraint, coherence) within the existing light-theme tokens —
+  no new aesthetic imposed.
+- **Reversibility:** all presentational; tokens + primitives unchanged in spirit.

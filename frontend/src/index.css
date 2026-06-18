@@ -173,11 +173,45 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
   background: var(--surface-2);
   color: var(--text-muted);
   border: 1px solid var(--border);
+  white-space: nowrap;            /* chips are single-line tokens — never wrap */
+  line-height: 1.4;
 }
+.chip-button { cursor: pointer; transition: background 0.13s ease, color 0.13s ease; }
+.chip-button:hover { background: var(--surface-3); color: var(--text); }
 .chip-primary { background: var(--primary-soft); color: var(--primary); border-color: transparent; }
 .chip-success { background: var(--success-soft); color: var(--success); border-color: transparent; }
 .chip-warning { background: var(--warning-soft); color: var(--warning); border-color: transparent; }
 .chip-danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+
+/* --- header control zones --- */
+/* Each header zone (Team / Session) is a labelled segment: a tiny uppercase
+   caption + its control + that control's own actions, separated from the next
+   zone by a hairline divider — so the two dropdowns read as distinct things. */
+.hzone { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.hcap {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--text-faint); white-space: nowrap;
+}
+.hdiv { width: 1px; height: 26px; background: var(--border); flex-shrink: 0; }
+
+/* compact, fixed save indicator (dot + word) — replaces the wrapping
+   "saved — Long Team Name" chip; the team it refers to is the adjacent select. */
+.savedot { display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+  font-weight: 600; color: var(--text-faint); white-space: nowrap; }
+.savedot .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); flex-shrink: 0; }
+.savedot.is-saved .dot { background: var(--success); }
+.savedot.is-saving .dot { background: var(--warning); animation: pulse 1s ease-in-out infinite; }
+.savedot.is-error { color: var(--danger); }
+.savedot.is-error .dot { background: var(--danger); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* a small static "running" marker on the team that the active session uses */
+.runtag { font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--success); background: var(--success-soft); padding: 2px 7px; border-radius: var(--r-full); white-space: nowrap; }
+
+/* keyboard hint (e.g. "Enter to send") */
+.kbd { font-family: var(--mono); font-size: 10px; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--text-muted); }
 
 /* --- tabs --- */
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); padding: 0 6px; }

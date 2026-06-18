@@ -79,12 +79,21 @@ def main() -> int:
         else:
             print(f"OK: edit persisted across team switch ({nodes_a_before} → {nodes_a_after} nodes)")
 
-        # the save indicator is in the always-visible header (Fix F), and names a team
-        status = page.locator("header").get_by_text("saved", exact=False)
-        if not status.first.is_visible():
-            failures.append("save indicator not visible in the header")
+        # header coherence: the two dropdowns are distinguished by captions, and
+        # the save indicator is compact (a short word, NOT "saved — {team name}").
+        header = page.locator("header")
+        for cap in ("Team", "Session"):
+            if not header.get_by_text(cap, exact=True).first.is_visible():
+                failures.append(f"header is missing the '{cap}' caption (team/session dropdowns indistinguishable)")
+        dot = page.locator("header .savedot")
+        if not dot.first.is_visible():
+            failures.append("compact save indicator (.savedot) not in the header")
         else:
-            print("OK: save indicator visible in header:", status.first.inner_text())
+            txt = dot.first.inner_text()
+            if len(txt) > 14:  # "Saved"/"Saving…"/"Save failed" — never the long team name
+                failures.append(f"save indicator too long ({txt!r}) — should not include the team name")
+            else:
+                print("OK: header has Team/Session captions + a compact save dot:", repr(txt))
 
         page.context.browser.close()
 

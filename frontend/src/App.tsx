@@ -5,29 +5,35 @@ import Sidebar from "./panels/Sidebar";
 import SessionSwitcher from "./panels/SessionSwitcher";
 import TaskBoard from "./panels/TaskBoard";
 import { api, setActiveSession, withRetry, type TeamRow } from "./lib/api";
-import { Button, Select } from "./lib/ui";
+import { Button, IconButton, Select } from "./lib/ui";
 import { useEvents } from "./hooks/useEvents";
 import { useTeamGraph } from "./hooks/useTeamGraph";
 import type { SessionInfo } from "./lib/types";
 
 const LS_KEY = "ag.activeSessionId";
 
-// A crisp circled-"i" cue that a chip has an explanatory tooltip on hover.
-// (The unicode ⓘ glyph renders too thin/faint; this SVG uses currentColor so it
-// picks up the chip's text color and stays legible.)
-function InfoIcon() {
+// Compact, fixed-size autosave indicator (a state dot + one word) for the Team
+// zone — replaces the old "saved — {long team name}" chip that wrapped to two
+// lines. The team it refers to is the adjacent selector.
+function SaveDot({ status }: { status: string }) {
+  const error = status.includes("error");
+  const busy = status.startsWith("saving") || status.startsWith("loading");
+  const cls = error ? "is-error" : busy ? "is-saving" : "is-saved";
+  const label = error ? "Save failed" : status.startsWith("loading") ? "Loading…" : busy ? "Saving…" : "Saved";
   return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden="true"
-      style={{ marginLeft: 5, verticalAlign: "-2px", opacity: 0.8, flexShrink: 0 }}
-    >
-      <circle cx="8" cy="8" r="6.6" stroke="currentColor" strokeWidth="1.4" />
-      <circle cx="8" cy="5" r="1" fill="currentColor" />
-      <rect x="7.25" y="7" width="1.5" height="4.4" rx="0.75" fill="currentColor" />
+    <span className={`savedot ${cls}`} title={error ? status : "Canvas + agent edits auto-save to this team"}>
+      <span className="dot" />
+      {label}
+    </span>
+  );
+}
+
+// Two overlapping rounded squares — the universal "copy / duplicate" glyph.
+function CopyIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="5.5" y="5.5" width="8" height="8" rx="2" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M10.5 5.5V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
     </svg>
   );
 }
@@ -43,8 +49,7 @@ export default function App() {
   const [activeTeamId, setActiveTeamId] = useState<string | null>(null);
   const [view, setView] = useState<"canvas" | "board">("canvas");
 
-  const teamName = teams.find(t => t.id === activeTeamId)?.name;
-  const graph = useTeamGraph(activeTeamId, teamName);
+  const graph = useTeamGraph(activeTeamId);
   const { events, lifecycles, waitingOn, activeEdges } = useEvents(activeSessionId);
 
   const selectSession = useCallback((id: string | null) => {
@@ -142,27 +147,31 @@ export default function App() {
 
         {session && (
           <>
-            <div style={{ width: 1, height: 22, background: "var(--border)" }} />
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div className="hdiv" />
+            {/* TEAM zone — what the canvas is EDITING (its graph auto-saves here) */}
+            <div className="hzone">
+              <span className="hcap">Team</span>
               <Select
                 value={activeTeamId ?? ""}
                 onChange={(e) => {
                   const newTeamId = e.target.value;
                   if (newTeamId && newTeamId !== activeTeamId) setActiveTeamId(newTeamId);
                 }}
-                style={{ minWidth: 160 }}
+                title="The team graph you're editing on the canvas"
+                style={{ width: "auto", minWidth: 150, maxWidth: 220 }}
               >
                 {teams.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}{t.id === session?.team_id ? " (active)" : ""}
-                  </option>
+                  <option key={t.id} value={t.id}>{t.name}</option>
                 ))}
               </Select>
-              {activeTeamId !== session?.team_id && (
+              <SaveDot status={graph.status} />
+              {activeTeamId === session.team_id ? (
+                <span className="runtag" title="You're editing the team this session is running">running</span>
+              ) : (
                 <Button
-                  variant="ghost"
+                  variant="primary"
                   size="sm"
-                  title="This session is running a DIFFERENT team. Click to rebind it to the team you're editing."
+                  title="This session is running a DIFFERENT team. Click to switch it to the team you're editing."
                   onClick={async () => {
                     if (!activeTeamId || !activeSessionId) return;
                     const info = await api.rebindSession(activeSessionId, activeTeamId);
@@ -173,62 +182,55 @@ export default function App() {
                   ↻ Use for session
                 </Button>
               )}
-              {/* Save indicator — lives in the always-visible header (not the
-                  canvas) so it's shown on the Tasks view too, and names the team
-                  edits auto-save to, so "where does auto-save go?" is answered. */}
-              <span
-                className={graph.status.includes("error") ? "chip chip-danger" : "chip"}
-                style={{ fontSize: 11, color: "var(--text-faint)" }}
-                title="Canvas/spec edits auto-save here. Editing a team other than the running one (no '(active)') does not affect the live session."
-              >
-                {graph.status}
-              </span>
+              <IconButton title="Save the current graph as a NEW team (a copy). Does not switch the running session." onClick={saveAs}>
+                <CopyIcon />
+              </IconButton>
             </div>
-            <SessionSwitcher
-              activeSessionId={activeSessionId}
-              sessions={sessions}
-              teams={teams}
-              onSwitch={selectSession}
-              onLaunched={async (id) => {
-                await refresh();
-                selectSession(id);
-              }}
-              flushSave={graph.flushSave}
-            />
+
+            <div className="hdiv" />
+            {/* SESSION zone — what's RUNNING (a team bound to a repo) */}
+            <div className="hzone">
+              <span className="hcap">Session</span>
+              <SessionSwitcher
+                activeSessionId={activeSessionId}
+                sessions={sessions}
+                teams={teams}
+                onSwitch={selectSession}
+                onLaunched={async (id) => {
+                  await refresh();
+                  selectSession(id);
+                }}
+                flushSave={graph.flushSave}
+              />
+            </div>
+
+            {/* right zone — session settings + view switch */}
             <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-              <Button variant="ghost" size="sm" title="Fork the current graph into a new team (a copy). Does not switch the running session." onClick={saveAs}>
-                Save as new team…
-              </Button>
               <button
-                className="chip"
+                className="chip chip-button"
                 title={
-                  "Execution mode (click to toggle) — parallel: model calls run "
-                  + "concurrently; serial: one model call at a time, for low-spec "
-                  + "machines / a single local model."
+                  "Execution mode — parallel: model calls run concurrently; serial: "
+                  + "one at a time (low-spec / single local model). Click to toggle."
                   + (session.harness === "opencode"
-                      ? " (Applies to the native harness; OpenCode manages its own concurrency.)"
+                      ? " (Native-harness setting; OpenCode manages its own concurrency.)"
                       : "")
                 }
                 onClick={() => {
                   const next = session.mode === "serial" ? "parallel" : "serial";
                   api.setMode(next).then(setSession);
                 }}
-                style={{ cursor: "pointer" }}
               >
-                {session.mode}
-                <InfoIcon />
+                {session.mode === "serial" ? "serial" : "parallel"}
               </button>
               <span
                 className={(session.harness ?? "native") === "opencode" ? "chip chip-primary" : "chip"}
                 title={
                   (session.harness ?? "native") === "opencode"
-                    ? "OpenCode harness — this session's agents run on a headless OpenCode server"
-                    : "Native harness — this session's agents run on the built-in Pydantic AI engine"
+                    ? "OpenCode harness — agents run on a headless OpenCode server"
+                    : "Native harness — agents run on the built-in Pydantic AI engine"
                 }
-                style={{ cursor: "help" }}
               >
-                {session.harness ?? "native"} harness
-                <InfoIcon />
+                {session.harness ?? "native"}
               </span>
               {/* sliding-pill segmented toggle between the canvas + task board */}
               <div
