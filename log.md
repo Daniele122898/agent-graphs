@@ -1458,3 +1458,89 @@ the DoD now forbids that) and found the reported UX missteps were real:
   rigor (hierarchy, restraint, coherence) within the existing light-theme tokens —
   no new aesthetic imposed.
 - **Reversibility:** all presentational; tokens + primitives unchanged in spirit.
+
+### 2026-06-18 — Team management (rename / describe / delete) + opencode default
+
+There was no way to rename, describe or delete a team once created, and creating
+a *blank* team was reachable only from onboarding (which you can't return to once
+a session exists). Closed all of that.
+
+- **A "Manage teams" dialog, not a header kebab.** The user wanted a per-team
+  **description** and **search** — neither fits a small popover (search only makes
+  sense over a *list*; a description needs room). So the home is a centered modal
+  (new `.modal`/`.modal-overlay` tokens; first true modal in the app — prior
+  dialogs were inline `.card`s), opened from a sliders `IconButton` in the header
+  TEAM zone **and** from Onboarding (`onManage`), so teams are manageable with or
+  without a running session. It also hosts **"+ New team"** — which is what makes
+  "create a blank team" no longer trapped on the onboarding screen.
+- **Description is a real domain field**, not UI-only: `Team.description`, a
+  `teams.description` column + a guarded `ALTER TABLE` back-fill in `db._migrate`
+  (CREATE TABLE IF NOT EXISTS never alters; same pattern as `harness`). Surfaced
+  as the team `<option>` tooltip in every selector + editable in the manager.
+- **Retired `POST /teams/{id}/rename` for `PATCH /teams/{id}` (name+description).**
+  The user asked for the cleaner shape (one partial-metadata route) over keeping a
+  narrow rename + adding a separate describe — "no shortcuts, clean codebase
+  above all" (now a root-CLAUDE.md working agreement). `TeamStore.rename` →
+  `update_meta(name=?, description=?)`, partial so a rename can't clobber a
+  description.
+- **`DELETE /teams/{id}` is block-if-bound (the user's call over cascade).** It
+  409s, naming the session(s), if ANY session is bound — `SessionManager.
+  sessions_using_team` reads the `sessions` table directly (the manager owns it),
+  so it catches persisted-but-not-rehydrated sessions, not just live ones.
+  Rationale: deleting a bound team orphans the session (resume 404s "team no
+  longer exists"). Metadata/delete are NOT busy-guarded (name/description/row
+  aren't read mid-run, unlike the graph PUT) — classified accordingly in a new
+  `test_mutating_team_routes_are_classified` backstop.
+- **Front-end safety rails:** the manager disables delete + shows an "in use" tag
+  for any bound team (backend stays the source of truth, still 409s); App gained
+  an `activeTeamId` reconcile so deleting the team you're *editing* (allowed for
+  any non-session team) falls back to the session's team instead of stranding the
+  canvas on a ghost id. `createTeam` moved to a `{name,description?,graph?}` body.
+- **Default harness → opencode** in both launch forms (Onboarding + "+ Session")
+  and `api.launchSession`'s fallback, per the user. The verify scripts that
+  relied on the *implicit* native default (`verify_ui.py`, `verify_team_save.py`)
+  now select native explicitly to stay hermetic; they also assert the new default
+  is opencode.
+- **Verified in a real browser:** new `scripts/verify_team_manage.py` exercises
+  create+describe / rename / describe / search / block-if-bound (disabled delete
+  on the in-use team) / delete-unbound, asserting persistence via the API, and the
+  autosave regression (`verify_team_save.py`) still passes — screenshots reviewed.
+- **Reversibility:** additive. The `description` column is non-destructive; the
+  PATCH/DELETE routes can be removed to return to create+graph-only; the opencode
+  default is a one-line flip. Retiring `/rename` is the only breaking change —
+  no caller remained (it was never wired into the UI).
+
+### 2026-06-18 — Shutdown hang fixed at the APP level (it kept coming back)
+
+The "backend hangs on shutdown / Waiting for connections to close" bug recurred
+yet again. **Root cause (measured, not guessed):** uvicorn's
+`timeout_graceful_shutdown` default is `None` = **wait forever**, and our `/events`
+SSE response is an infinite generator. The 2026-spec mitigation (bake the flag
+into `python -m backend`) only covers THAT one launcher — every ad-hoc
+`uvicorn.run(...)` that forgot the flag (e.g. `scripts/scripted_backend.py`, and
+verification helpers) re-introduced an unbounded hang. A per-launcher flag is a
+"keep remembering it" trap; that's why it kept coming back.
+
+- **Fix — make the bound a property of the APP, not the launch command.**
+  `backend.main._install_sse_shutdown` installs a SIGINT/SIGTERM handler in the
+  lifespan that closes every session's event bus (ends all SSE generators) the
+  instant a signal lands — so uvicorn's connection-wait completes immediately
+  regardless of the flag. It **chains** uvicorn's own handler (uvicorn installs
+  `handle_exit` via chainable `signal.signal` in `capture_signals` BEFORE the
+  lifespan runs), guarded to the main thread + a callable predecessor (so
+  TestClient — lifespan off the main thread — skips it, and we never hijack the
+  default SIG_DFL to swallow Ctrl+C). Restored on clean shutdown.
+- **Measured:** with NO graceful-timeout flag, shutdown went from ∞ to **~0.3s
+  (native) / ~0.5s (opencode)** in single-process AND `--reload`, and the live
+  opencode `serve` subprocess is torn down (zero leaked). `python -m backend`
+  keeps its `timeout_graceful_shutdown` as defense-in-depth; `scripted_backend.py`
+  now sets it too.
+- **Regression guard:** `scripts/verify_shutdown.py` launches the backend WITHOUT
+  the flag, opens an SSE stream, SIGINTs, and asserts a bounded exit (native +
+  live opencode incl. no leaked server). Permanent so this can't silently return.
+- **Bonus:** `create_app` now honours `AGENT_GRAPHS_DB_PATH` (explicit arg > env >
+  default) so `python -m backend [--reload]` can run against an isolated DB
+  without touching the user's `backend/db.sqlite` (used by the verify scripts).
+- **Reversibility:** the signal handler is additive + self-restoring; remove
+  `_install_sse_shutdown` to revert to the flag-only behavior. The env override
+  is inert unless set.

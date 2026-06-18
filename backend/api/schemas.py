@@ -21,11 +21,16 @@ class NewTaskRequest(BaseModel):
 
 class NewTeamRequest(BaseModel):
     name: str
+    description: str = ""
     graph: TeamGraph | None = None
 
 
-class RenameRequest(BaseModel):
-    name: str
+class UpdateTeamRequest(BaseModel):
+    """Partial metadata update for a team (PATCH). Omitted fields are left
+    unchanged, so a rename and a description edit are independent."""
+
+    name: str | None = None
+    description: str | None = None
 
 
 class ModeRequest(BaseModel):

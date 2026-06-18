@@ -22,18 +22,20 @@ class TeamStore:
         self._conn = conn
         self._now = clock
 
-    def create(self, name: str, graph: TeamGraph | None = None) -> Team:
+    def create(self, name: str, graph: TeamGraph | None = None, description: str = "") -> Team:
         team = Team(
             id=new_id("team_"),
             name=name,
+            description=description,
             graph=graph or TeamGraph(),
             created_at=self._now(),
             updated_at=self._now(),
         )
         self._conn.execute(
-            "INSERT INTO teams (id, name, graph, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (team.id, team.name, team.graph.model_dump_json(), team.created_at, team.updated_at),
+            "INSERT INTO teams (id, name, description, graph, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (team.id, team.name, team.description, team.graph.model_dump_json(),
+             team.created_at, team.updated_at),
         )
         self._conn.commit()
         return team
@@ -57,10 +59,28 @@ class TeamStore:
             return None
         return self.get(team_id)
 
-    def rename(self, team_id: str, name: str) -> Team | None:
+    def update_meta(
+        self, team_id: str, *, name: str | None = None, description: str | None = None
+    ) -> Team | None:
+        """Partial metadata update (name and/or description). A field left as
+        ``None`` is untouched, so the caller can rename without clobbering the
+        description and vice-versa. Returns the updated team, or ``None`` if no
+        such id (or no row was changed)."""
+        sets: list[str] = []
+        params: list[str] = []
+        if name is not None:
+            sets.append("name = ?")
+            params.append(name)
+        if description is not None:
+            sets.append("description = ?")
+            params.append(description)
+        if not sets:  # nothing to update — just report whether the team exists
+            return self.get(team_id)
+        sets.append("updated_at = ?")
+        params.append(self._now())
+        params.append(team_id)
         cur = self._conn.execute(
-            "UPDATE teams SET name = ?, updated_at = ? WHERE id = ?",
-            (name, self._now(), team_id),
+            f"UPDATE teams SET {', '.join(sets)} WHERE id = ?", params
         )
         self._conn.commit()
         return self.get(team_id) if cur.rowcount else None
@@ -72,9 +92,11 @@ class TeamStore:
 
     @staticmethod
     def _row_to_team(row: sqlite3.Row) -> Team:
+        keys = row.keys()
         return Team(
             id=row["id"],
             name=row["name"],
+            description=row["description"] if "description" in keys else "",
             graph=TeamGraph.model_validate_json(row["graph"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],

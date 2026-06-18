@@ -14,6 +14,12 @@ own `CLAUDE.md` with subsystem detail (loaded when you open files there).
 - `log.md` — the **decision log**. See the maintenance rules below.
 
 ## Working agreements (YOU MUST)
+- **Clean and simple above all — NO SHORTCUTS.** The user values a clean, simple
+  codebase over expedient hacks. Prefer one coherent abstraction over a quick
+  bolt-on (e.g. retire/replace a narrow endpoint rather than accrete a parallel
+  one); don't leave dead code, compatibility shims, or "temporary" workarounds.
+  If the clean path costs more, take it — and if a shortcut is ever genuinely
+  warranted, record *why* in `log.md` rather than letting it pass silently.
 - **Tests must pass before moving to the next task.** No exceptions.
 - **Commit each logical chunk** with a clear message, locally on `main` (no remote configured; do not push unless asked). End commit messages with the Co-Authored-By trailer.
 - **Maintain `log.md`**: when you make a non-obvious design decision, record it — *what, why, and reversibility*. This is how the user reviews and challenges choices later. Newest entries per phase.
@@ -39,10 +45,12 @@ own `CLAUDE.md` with subsystem detail (loaded when you open files there).
 ## Run & test
 ```bash
 # backend (FastAPI :8000) — starts empty; create team + launch session in the UI.
-# ALWAYS run via `python -m backend` (NOT raw `uvicorn backend.main:app`): the
-# entrypoint bakes in timeout_graceful_shutdown, without which an open SSE
-# /events stream wedges shutdown at "Waiting for connections to close" forever
-# (backend/__main__.py + runtime/bus.py explain why). --reload for dev.
+# Prefer `python -m backend` (serves the built UI in single-process mode + bakes
+# in timeout_graceful_shutdown as defense-in-depth). --reload for dev. Shutdown
+# no longer depends on that flag: the APP self-bounds an open SSE /events stream
+# on SIGINT/SIGTERM (backend.main._install_sse_shutdown), so it can't wedge at
+# "Waiting for connections to close" regardless of launcher (scripts/verify_shutdown.py
+# guards this). Set AGENT_GRAPHS_DB_PATH to run against an isolated DB.
 ./.venv/bin/python -m backend --reload
 # frontend (Vite :5173, proxies /api /health /events)
 cd frontend && npm run dev

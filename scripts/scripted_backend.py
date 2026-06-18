@@ -45,4 +45,7 @@ if __name__ == "__main__":
     from backend.main import create_app
 
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8001
-    uvicorn.run(create_app(db_path=DB), port=port, log_level="warning")
+    # timeout_graceful_shutdown is defense-in-depth; the app also self-bounds SSE
+    # on a signal (backend.main._install_sse_shutdown), so an open /events stream
+    # can't wedge shutdown here either.
+    uvicorn.run(create_app(db_path=DB), port=port, log_level="warning", timeout_graceful_shutdown=3)

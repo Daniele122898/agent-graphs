@@ -108,8 +108,9 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
   cursor: pointer;
   transition: background 0.13s ease, color 0.13s ease, box-shadow 0.13s ease;
 }
-.icon-btn:hover { background: var(--surface-2); color: var(--text); }
+.icon-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
 .icon-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--primary-ring); }
+.icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .fab {
   width: 44px;
@@ -230,6 +231,77 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 }
 .tab:hover { color: var(--text); }
 .tab-active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+
+/* --- modal (centered dialog over a scrim) --- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(16, 24, 40, 0.34);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  animation: ag-fade 0.13s ease;
+}
+@keyframes ag-fade { from { opacity: 0; } to { opacity: 1; } }
+.modal {
+  width: 580px;
+  max-width: 100%;
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-lg);
+  animation: ag-pop 0.16s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@keyframes ag-pop {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+.modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+}
+.modal-body {
+  overflow-y: auto;
+  padding: 0 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+/* one team in the manager — name/description editors + actions */
+.team-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface);
+  transition: border-color 0.13s ease, box-shadow 0.13s ease;
+}
+.team-row:hover { border-color: var(--border-strong); box-shadow: var(--shadow-sm); }
+.team-row-new { border-color: var(--primary); background: var(--primary-soft); }
+.team-row .icon-btn:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
 
 /* --- misc --- */
 .muted { color: var(--text-muted); }

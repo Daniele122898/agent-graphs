@@ -6,7 +6,7 @@ run/test commands. Each package below has its own CLAUDE.md with that
 subsystem's invariants — read it before editing there.
 
 ## Package map
-- `main.py` — app factory + lifespan (boot, rehydrate sessions, orphan-task parking). Entry point: `uvicorn backend.main:app`.
+- `main.py` — app factory + lifespan (boot, rehydrate sessions, orphan-task parking). Entry point: `uvicorn backend.main:app`. **`create_app` honours `AGENT_GRAPHS_DB_PATH`** (explicit arg > env > default `backend/db.sqlite`) so a launcher can isolate the DB. **Shutdown is bounded at the APP level** by `_install_sse_shutdown`: a lifespan-installed SIGINT/SIGTERM handler closes every session's event bus (ends the infinite `/events` SSE generators) the instant a signal lands, so uvicorn's "Waiting for connections to close" can't hang forever — *independent of* `timeout_graceful_shutdown` (whose uvicorn default is `None` = wait forever; relying on each launcher to remember the flag is why the hang kept recurring). It chains uvicorn's own handler, is main-thread-guarded (TestClient skips it), self-restores, and is verified by `scripts/verify_shutdown.py`. Don't rip it out in favour of "just pass the flag".
 - `wiring.py` — the composition root: turns injected-callable abstractions into real agent/reviewer/check runs (`get_or_create_running`, `make_task_runner`, `apply_team_graph`, `resolve_session`, `starter_team_graph`, history clear/summarize helpers, the open-todos continuation nudge).
 - `util.py` — id generation + clock (the only places uuid/wall-clock are read).
 - `config.py` — user-local `config.yml` at the repo root (API keys, provider endpoints). **Gitignored — never commit it**; `config.example.yml` is the committed shape. Precedence: env var > config.yml > default.

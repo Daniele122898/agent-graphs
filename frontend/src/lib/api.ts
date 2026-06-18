@@ -52,7 +52,7 @@ export const api = {
     team_id: string,
     repo_path: string,
     mode: "parallel" | "serial",
-    harness: "native" | "opencode" = "native",
+    harness: "native" | "opencode" = "opencode",
   ) =>
     fetch("/api/sessions", {
       method: "POST",
@@ -73,12 +73,24 @@ export const api = {
     }).then(json<SessionInfo>),
   listTeams: () => fetch("/api/teams").then(json<{ teams: TeamRow[] }>),
   // Omit graph to get the backend's starter team (one lead agent).
-  createTeam: (name: string, graph?: TeamGraph) =>
+  createTeam: (body: { name: string; description?: string; graph?: TeamGraph }) =>
     fetch("/api/teams", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(graph ? { name, graph } : { name }),
+      body: JSON.stringify(body),
     }).then(json<TeamRow>),
+  // Partial metadata update — pass only the field(s) you're changing.
+  updateTeam: (teamId: string, body: { name?: string; description?: string }) =>
+    fetch(`/api/teams/${teamId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(json<TeamRow>),
+  // 409s (with a message) if a session is still bound to the team.
+  deleteTeam: (teamId: string) =>
+    fetch(`/api/teams/${teamId}`, { method: "DELETE" }).then(
+      json<{ status: string; team_id: string }>
+    ),
   getTeamGraph: (teamId: string) => fetch(`/api/teams/${teamId}/graph`).then(json<TeamGraph>),
   putTeamGraph: (teamId: string, graph: TeamGraph) =>
     fetch(`/api/teams/${teamId}/graph`, {
@@ -178,9 +190,13 @@ export interface TaskRow {
   updated_at: string;
 }
 
+// Summary shape from GET /api/teams (NOT the full Team — the graph is fetched on
+// demand via getTeamGraph). agent_count is the team's node count.
 export interface TeamRow {
   id: string;
   name: string;
+  description: string;
+  agent_count: number;
 }
 
 export interface LMStudioModel {

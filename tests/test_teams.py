@@ -21,14 +21,62 @@ def test_team_crud_round_trip(tmp_path):
     with TestClient(app) as client:
         assert client.get("/api/teams").json()["teams"] == []  # nothing auto-created
 
-        created = client.post("/api/teams", json={"name": "Web Squad", "graph": _graph()}).json()
+        created = client.post(
+            "/api/teams",
+            json={"name": "Web Squad", "description": "ships the marketing site", "graph": _graph()},
+        ).json()
         assert created["name"] == "Web Squad"
+        assert created["description"] == "ships the marketing site"  # round-trips
+        assert created["agent_count"] == 1  # summary shape: node count, not the full graph
 
         teams = client.get("/api/teams").json()["teams"]
         assert {t["name"] for t in teams} == {"Web Squad"}
+        # the list is a lightweight summary (id/name/description/agent_count), NOT
+        # the full team — it must not ship every team's graph topology.
+        assert teams[0]["agent_count"] == 1
+        assert "graph" not in teams[0]
 
-        renamed = client.post(f"/api/teams/{created['id']}/rename", json={"name": "Renamed"}).json()
+        # PATCH is partial: renaming leaves the description untouched...
+        renamed = client.patch(f"/api/teams/{created['id']}", json={"name": "Renamed"}).json()
         assert renamed["name"] == "Renamed"
+        assert renamed["description"] == "ships the marketing site"
+        # ...and editing the description leaves the name untouched.
+        described = client.patch(
+            f"/api/teams/{created['id']}", json={"description": "now the docs team"}
+        ).json()
+        assert described["name"] == "Renamed"
+        assert described["description"] == "now the docs team"
+
+        assert client.patch("/api/teams/nonexistent", json={"name": "x"}).status_code == 404
+
+
+def test_delete_team_when_unbound(tmp_path):
+    """A team no session is bound to deletes cleanly and disappears from the list."""
+    app = create_app(db_path=tmp_path / "t.sqlite")
+    with TestClient(app) as client:
+        team = client.post("/api/teams", json={"name": "Throwaway", "graph": _graph()}).json()
+        assert client.delete(f"/api/teams/{team['id']}").status_code == 200
+        assert client.get("/api/teams").json()["teams"] == []
+        assert client.delete(f"/api/teams/{team['id']}").status_code == 404  # already gone
+
+
+def test_delete_team_blocked_while_a_session_is_bound(tmp_path):
+    """Deleting a team a session is bound to would orphan that session (resume
+    404s after restart) — so it 409s, names the session, and leaves the team."""
+    app = create_app(db_path=tmp_path / "t.sqlite")
+    with TestClient(app) as client:
+        team, session = bootstrap_session(client, tmp_path / "repo", graph=_graph())
+        r = client.delete(f"/api/teams/{team['id']}")
+        assert r.status_code == 409
+        assert "in use" in r.text.lower()
+        assert client.get(f"/api/teams/{team['id']}").status_code == 200  # NOT deleted
+
+        # Rebinding the session off the team frees it for deletion.
+        other = client.post("/api/teams", json={"name": "Other", "graph": _graph()}).json()
+        assert client.post(
+            f"/api/sessions/{session['id']}/rebind", json={"team_id": other["id"]}
+        ).status_code == 200
+        assert client.delete(f"/api/teams/{team['id']}").status_code == 200
 
 
 def test_editing_a_template_does_not_mutate_a_running_session(tmp_path):

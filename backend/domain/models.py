@@ -159,6 +159,9 @@ class Team(BaseModel):
 
     id: str
     name: str
+    # Free-text note on what this team is set up to do — shown in the team
+    # manager and as the selector tooltip. Purely descriptive (no behaviour).
+    description: str = ""
     graph: TeamGraph = Field(default_factory=TeamGraph)
     created_at: str = ""
     updated_at: str = ""

@@ -19,8 +19,12 @@ isolated app against a temp DB. Run for real with::
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Callable
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,7 +39,65 @@ from .storage.agent_state import AgentStateStore
 from .storage.teams import TeamStore
 
 
-def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
+def _install_sse_shutdown(sessions: SessionManager) -> Callable[[], None]:
+    """Close every SSE /events stream the INSTANT a termination signal arrives,
+    so uvicorn's "Waiting for connections to close" can never block forever on an
+    open (infinite) /events generator — *regardless* of whether the launcher
+    passed ``timeout_graceful_shutdown`` (its default is None = wait forever, and
+    every ad-hoc ``uvicorn.run`` that forgot the flag re-introduced the hang —
+    this makes the bound a property of the APP, not the launch command).
+
+    We CHAIN uvicorn's own handler (it installs ``handle_exit`` via
+    ``signal.signal`` in ``capture_signals`` *before* this lifespan runs, and
+    ``signal.signal`` is chainable), so its shutdown still proceeds. Guarded to
+    the main thread + a callable predecessor: under TestClient the lifespan runs
+    off the main thread (``signal.signal`` would raise) and we simply skip; if no
+    uvicorn handler is present we don't hijack the default (no Ctrl+C swallowing).
+    Returns a restore() to reinstate the predecessors on clean shutdown."""
+    if threading.current_thread() is not threading.main_thread():
+        return lambda: None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return lambda: None
+
+    def close_all_buses() -> None:
+        for s in sessions.list():
+            s.bus.close()
+
+    def make_handler(prev):
+        def handler(signum, frame):
+            # Run the (loop-affecting) bus close on the loop thread; then let
+            # uvicorn's handler set should_exit and drive its own shutdown.
+            loop.call_soon_threadsafe(close_all_buses)
+            prev(signum, frame)
+        return handler
+
+    installed: list[tuple[int, object]] = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        prev = signal.getsignal(sig)
+        if not callable(prev):  # SIG_DFL / SIG_IGN — no uvicorn handler to chain
+            continue
+        signal.signal(sig, make_handler(prev))
+        installed.append((sig, prev))
+
+    def restore() -> None:
+        for sig, prev in installed:
+            try:
+                signal.signal(sig, prev)
+            except Exception:  # noqa: BLE001 — best-effort restore
+                pass
+
+    return restore
+
+
+def create_app(*, db_path: str | Path | None = None) -> FastAPI:
+    # Precedence: explicit arg (tests) > AGENT_GRAPHS_DB_PATH env > default. The
+    # env override lets `python -m backend [--reload]` run against an isolated DB
+    # (dev/verification) without touching the user's backend/db.sqlite.
+    if db_path is None:
+        db_path = os.environ.get("AGENT_GRAPHS_DB_PATH") or db_module.DEFAULT_DB_PATH
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         conn = db_module.connect(db_path)
@@ -75,15 +137,20 @@ def create_app(*, db_path: str | Path = db_module.DEFAULT_DB_PATH) -> FastAPI:
             app.state.tasks.set_result(row["id"], f"{prior}\n\n{note}".strip())
             app.state.tasks.set_status(row["id"], "blocked")
 
+        # Bound shutdown at the APP level: a signal handler that closes SSE
+        # streams the moment SIGINT/SIGTERM lands, so no launcher can re-introduce
+        # the "hangs forever on an open /events stream" bug by forgetting
+        # timeout_graceful_shutdown (see _install_sse_shutdown).
+        restore_signals = _install_sse_shutdown(sessions)
         try:
             yield
         finally:
-            # End every SSE /events stream first: those are infinite generators,
-            # so an open one makes uvicorn's graceful shutdown wait forever for the
-            # connection to close ("Waiting for connections to close"). Closing the
-            # bus pushes a sentinel that ends each subscriber. (The run entrypoint
-            # `python -m backend` also bakes in --timeout-graceful-shutdown as a
-            # backstop — see backend/__main__.py.)
+            restore_signals()
+            # End every SSE /events stream (also done by the signal handler above
+            # the instant a signal arrives; idempotent). Infinite generators, so an
+            # open one would make uvicorn's graceful shutdown wait for the
+            # connection to close. The `python -m backend` entrypoint ALSO bakes in
+            # --timeout-graceful-shutdown as defense-in-depth (backend/__main__.py).
             for s in sessions.list():
                 s.bus.close()
             # Tear down each session's harness — native stops its RunningAgents,

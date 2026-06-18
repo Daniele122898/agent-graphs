@@ -48,5 +48,16 @@ lifespan/CORS setup.
 - `/api/stats/models` returns a friendly `{models: [], error}` payload instead
   of a 500 when the model backend is unreachable — the UI must degrade
   gracefully without a local server.
+- **Team library (`teams.py`).** Metadata is one **`PATCH /api/teams/{id}`**
+  (partial `name`/`description`) — there is NO `/rename` route (retired; don't
+  re-add a per-field endpoint, extend the PATCH). Neither field is read by a live
+  run, so PATCH is **not** busy-guarded (only the graph PUT is async/guarded).
+  **`DELETE /api/teams/{id}` is block-if-bound**: it 409s (naming the session) if
+  any session is bound, via `SessionManager.sessions_using_team` (reads the
+  `sessions` table — the manager owns it — so it sees persisted-but-not-rehydrated
+  sessions too); deleting a bound team would orphan it (resume 404s). This is a
+  product guard, distinct from the `require_*_idle` busy-guard. Every mutating
+  `/api/teams` route is classified in `tests/test_endpoint_contracts.py`
+  (`test_mutating_team_routes_are_classified`) — a new one fails until added.
 - Task create/retry spawn the runner via `asyncio.create_task` and park the
   handle in `app.state.task_runs` (strong reference — GC would kill the run).

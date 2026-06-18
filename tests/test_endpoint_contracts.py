@@ -64,3 +64,32 @@ def test_mutating_session_agent_routes_are_classified(tmp_path):
                 "state a live run depends on. If yes, busy-guard it (wiring.require_*_idle) "
                 "and add it to _GUARDED; if no, add it to _EXEMPT. See backend/api/CLAUDE.md."
             )
+
+
+# Team-library mutating routes carry their OWN guard story (not the busy-guard):
+# the graph PUT swaps session.graph (must be async — covered above); DELETE must
+# refuse while a session is bound (block-if-bound, not require_*_idle); create +
+# metadata touch only the teams table. Each is consciously classified so a new
+# team route can't silently skip the deletion-safety / async decision.
+_TEAM_ROUTES = {
+    ("POST", "/api/teams"),                  # create — brand-new team, nothing bound
+    ("PATCH", "/api/teams/{team_id}"),       # name/description — not read by any live run
+    ("DELETE", "/api/teams/{team_id}"),      # block-if-bound (sessions_using_team → 409)
+    ("PUT", "/api/teams/{team_id}/graph"),   # session-syncing — async (see must_be_async)
+}
+
+
+def test_mutating_team_routes_are_classified(tmp_path):
+    app = create_app(db_path=tmp_path / "t.sqlite")
+    for _r, methods, path in _routes(app):
+        if not ({"POST", "PUT", "PATCH", "DELETE"} & methods):
+            continue
+        if not path.startswith("/api/teams"):
+            continue
+        for m in methods & {"POST", "PUT", "PATCH", "DELETE"}:
+            assert (m, path) in _TEAM_ROUTES, (
+                f"unclassified team-mutating route {m} {path!r}: if it swaps "
+                "session.graph make it async; if it removes a team, guard it "
+                "block-if-bound (SessionManager.sessions_using_team). See "
+                "backend/api/CLAUDE.md, then add it to _TEAM_ROUTES."
+            )

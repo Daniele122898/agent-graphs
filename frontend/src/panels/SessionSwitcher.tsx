@@ -24,7 +24,7 @@ export default function SessionSwitcher({
   const [teamId, setTeamId] = useState("");
   const [repo, setRepo] = useState("");
   const [mode, setMode] = useState<"parallel" | "serial">("parallel");
-  const [harness, setHarness] = useState<"native" | "opencode">("native");
+  const [harness, setHarness] = useState<"native" | "opencode">("opencode");
   const [error, setError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
 
@@ -79,7 +79,7 @@ export default function SessionSwitcher({
           <Field label="Team">
             <Select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
               {teams.map((t) => (
-                <option key={t.id} value={t.id}>{t.name}</option>
+                <option key={t.id} value={t.id} title={t.description || undefined}>{t.name}</option>
               ))}
             </Select>
           </Field>
@@ -94,8 +94,8 @@ export default function SessionSwitcher({
           </Field>
           <Field label="Agent harness">
             <Select value={harness} onChange={(e) => setHarness(e.target.value as "native" | "opencode")}>
-              <option value="native">native (Pydantic AI)</option>
               <option value="opencode">opencode</option>
+              <option value="native">native (Pydantic AI)</option>
             </Select>
           </Field>
           {error && (
